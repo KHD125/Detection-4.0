@@ -3,67 +3,167 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.preprocessing import MinMaxScaler, RobustScaler
 from datetime import datetime
 
 # =========================================================
 # 🚀 V4 ULTIMATE - INSTITUTIONAL GRADE STOCK ANALYZER
 # =========================================================
-# Features:
-# - 7-Factor Scoring Model (Quality, Growth, Value, Safety, Momentum, Institutional, Technical)
-# - Dynamic Market Regime Detection
-# - Smart Money Flow Tracking (FII/DII/Promoter)
-# - 52W High Breakout Detection
-# - Cash Flow Trap Detection
-# - Relative Strength Analysis
-# - Multi-Timeframe Momentum
-# =========================================================
 
 st.set_page_config(
-    page_title="Wave Detection | Pro Stock Analyzer",
-    page_icon="🌊",
+    page_title="V4 Ultimate | Stock Analyzer",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Professional Dark Theme UI
+# =========================================================
+# 🎨 CLEAN MINIMAL UI - PROFESSIONAL STYLING
+# =========================================================
 st.markdown("""
 <style>
-    .main-header {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        padding: 20px;
-        border-radius: 15px;
-        margin-bottom: 20px;
+    /* Main background */
+    .stApp {
+        background-color: #fafafa;
     }
-    .metric-card {
-        background: linear-gradient(145deg, #1e1e2e, #2d2d44);
-        border-radius: 15px;
-        padding: 20px;
-        border-left: 4px solid #00d4ff;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-        color: white;
+    
+    /* Remove default padding */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
     }
-    .metric-card h4 { color: #888; margin-bottom: 5px; font-size: 0.9rem; }
-    .metric-card h3 { color: #00d4ff; margin: 0; font-size: 1.5rem; }
-    .score-badge {
-        display: inline-block;
-        padding: 5px 15px;
-        border-radius: 20px;
-        font-weight: bold;
+    
+    /* Clean header */
+    .main-title {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #1a1a1a;
+        margin-bottom: 0.5rem;
+    }
+    .sub-title {
+        font-size: 1rem;
+        color: #666;
+        margin-bottom: 2rem;
+    }
+    
+    /* Metric cards - Clean design */
+    .metric-box {
+        background: white;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        border: 1px solid #e8e8e8;
+        text-align: center;
+    }
+    .metric-label {
         font-size: 0.85rem;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 0.5rem;
     }
-    .strong-buy { background: #00c853; color: white; }
-    .buy { background: #2196f3; color: white; }
-    .hold { background: #ff9800; color: white; }
-    .avoid { background: #f44336; color: white; }
-    .trap { background: #9c27b0; color: white; }
-    .stDataFrame { border-radius: 10px; }
-    div[data-testid="stMetricValue"] { font-size: 1.8rem; color: #00d4ff; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] {
-        background-color: #1e1e2e;
+    .metric-value {
+        font-size: 1.8rem;
+        font-weight: 600;
+        color: #1a1a1a;
+    }
+    .metric-value.green { color: #10b981; }
+    .metric-value.red { color: #ef4444; }
+    .metric-value.blue { color: #3b82f6; }
+    
+    /* Verdict badges */
+    .verdict-strong-buy {
+        background: linear-gradient(135deg, #10b981, #059669);
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    .verdict-buy {
+        background: linear-gradient(135deg, #3b82f6, #2563eb);
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    .verdict-hold {
+        background: linear-gradient(135deg, #f59e0b, #d97706);
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    .verdict-avoid {
+        background: linear-gradient(135deg, #ef4444, #dc2626);
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    .verdict-trap {
+        background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    
+    /* Clean dataframe */
+    .stDataFrame {
+        border-radius: 12px;
+        overflow: hidden;
+    }
+    
+    /* Sidebar styling */
+    section[data-testid="stSidebar"] {
+        background-color: #ffffff;
+        border-right: 1px solid #e8e8e8;
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 2rem;
+    }
+    
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0;
+        background-color: #f1f5f9;
         border-radius: 10px;
+        padding: 4px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
         padding: 10px 20px;
+        font-weight: 500;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: white;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    /* Progress bars */
+    .stProgress > div > div {
+        background-color: #3b82f6;
+    }
+    
+    /* Hide streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* Clean buttons */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #3b82f6, #2563eb);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 0.5rem 1.5rem;
+        font-weight: 500;
+    }
+    .stDownloadButton > button:hover {
+        background: linear-gradient(135deg, #2563eb, #1d4ed8);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -361,361 +461,309 @@ def analyze_market_regime(df):
     return regime, weights, strategy, {'r1m': r1m, 'r3m': r3m, 'r1y': r1y, 'breadth_3m': breadth_3m}
 
 # =========================================================
-# 🔥 7-FACTOR SCORING ENGINE (THE BRAIN) - ULTIMATE VERSION
+# 🔥 FIXED SCORING ENGINE - NO SOUP, NO PENALTY
 # =========================================================
-def run_ultimate_scoring(df, weights):
+def run_ultimate_scoring(df, base_weights):
     """
-    Institutional-Grade 7-Factor Model - USES ALL 67 COLUMNS:
-    1. Quality (Profitability & Efficiency)
-    2. Growth (Earnings & Revenue Expansion)
-    3. Value (Cheapness)
-    4. Safety (Financial Strength)
-    5. Momentum (Price Trend)
-    6. Institutional (Smart Money Flow)
-    7. Technical (Breakout Potential)
+    FIXED Algorithm:
+    1. NO SOUP: Stocks are classified into STYLE (Value/Growth/Momentum/Balanced)
+       and scored within their style - no cross-penalization
+    2. DYNAMIC WEIGHTS: Each stock gets personalized weights based on its strengths
+    3. NO MISSING DATA PENALTY: Uses median fallback, counts available data
     """
     n = len(df)
     
-    def safe_get(col, default=0):
-        """Safely get column or return default series"""
+    # ═══════════════════════════════════════════════════════
+    # HELPER FUNCTIONS - NO PENALTY APPROACH
+    # ═══════════════════════════════════════════════════════
+    
+    def safe_get(col, default=None):
+        """
+        Get column with smart fallback - NO PENALTY for missing data.
+        Returns (series, has_data_flag)
+        """
         if col in df.columns:
-            return df[col].fillna(default)
-        return pd.Series([default] * n, index=df.index)
+            series = df[col].copy()
+            # Use median for missing, not 0 (no penalty)
+            median_val = series.median()
+            if pd.isna(median_val):
+                median_val = default if default is not None else 0
+            filled = series.fillna(median_val)
+            return filled, True
+        # Column doesn't exist - use neutral default
+        default_val = default if default is not None else 0
+        return pd.Series([default_val] * n, index=df.index), False
     
-    def normalize(series, inverse=False):
-        """Robust normalization with outlier handling"""
-        s = series.copy()
-        if inverse:
-            s = -s
-        # Clip outliers at 1st and 99th percentile
-        lower, upper = s.quantile(0.01), s.quantile(0.99)
-        s = s.clip(lower, upper)
-        # Min-Max normalize
-        min_val, max_val = s.min(), s.max()
-        if max_val - min_val == 0:
+    def smart_rank(series, lower_better=False, available=True):
+        """
+        Percentile ranking (0 to 1).
+        If data not available, returns 0.5 (neutral) - NO PENALTY.
+        """
+        if not available:
             return pd.Series([0.5] * n, index=df.index)
-        return (s - min_val) / (max_val - min_val)
+        
+        s = series.copy()
+        if lower_better:
+            s = -s
+        ranked = s.rank(pct=True, method='average')
+        # Missing values get median rank (0.5) - NO PENALTY
+        return ranked.fillna(0.5)
+    
+    def weighted_avg(scores_weights):
+        """
+        Calculate weighted average, ignoring factors with no data.
+        Redistributes weights among available factors.
+        """
+        total_weight = sum(w for _, w, avail in scores_weights if avail)
+        if total_weight == 0:
+            return pd.Series([0.5] * n, index=df.index)
+        
+        result = pd.Series([0.0] * n, index=df.index)
+        for score, weight, avail in scores_weights:
+            if avail:
+                result += score * (weight / total_weight)
+        return result
     
     # ═══════════════════════════════════════════════════════
-    # FACTOR 1: QUALITY (Profitability & Efficiency)
-    # Uses: ROE, ROCE, NPM, OPM, Operating Cash Flow, Revenue,
-    #       Total Assets, Inventory (Asset Turnover)
+    # EXTRACT ALL DATA WITH AVAILABILITY FLAGS
     # ═══════════════════════════════════════════════════════
-    roe = safe_get('ROE')
-    roce = safe_get('ROCE')
-    npm = safe_get('NPM')
-    opm = safe_get('OPM')
     
-    # Operating Cash Flow / Revenue (Cash Conversion Efficiency)
-    ocf = safe_get('Operating Cash Flow')
-    revenue = safe_get('Revenue', 1)
-    cash_conversion = (ocf / revenue.replace(0, np.nan)).fillna(0).clip(-1, 1)
+    # Profitability
+    roe, has_roe = safe_get('ROE', 12)
+    roce, has_roce = safe_get('ROCE', 12)
+    npm, has_npm = safe_get('NPM', 8)
+    opm, has_opm = safe_get('OPM', 12)
     
-    # Asset Turnover = Revenue / Total Assets (Efficiency)
-    total_assets = safe_get('Total Assets', 1)
-    asset_turnover = (revenue / total_assets.replace(0, np.nan)).fillna(0).clip(0, 5)
+    # Growth
+    pat_ttm, has_pat_ttm = safe_get('PAT Growth TTM', 10)
+    pat_yoy, has_pat_yoy = safe_get('PAT Growth YoY', 10)
+    rev_ttm, has_rev_ttm = safe_get('Revenue Growth TTM', 10)
+    rev_yoy, has_rev_yoy = safe_get('Revenue Growth YoY', 10)
+    eps_ttm, has_eps_ttm = safe_get('EPS Growth TTM', 10)
     
-    # Inventory Efficiency (Lower inventory relative to revenue = better)
-    inventory = safe_get('Inventory', 0)
-    inventory_ratio = (inventory / revenue.replace(0, np.nan)).fillna(0).clip(0, 1)
+    # Valuation
+    pe, has_pe = safe_get('Price To Earnings', 25)
+    ps, has_ps = safe_get('Price To Sales', 3)
     
-    quality_raw = (
-        normalize(roe) * 0.22 +
-        normalize(roce) * 0.22 +
-        normalize(npm) * 0.18 +
-        normalize(opm) * 0.15 +
-        normalize(cash_conversion) * 0.10 +
-        normalize(asset_turnover) * 0.08 +
-        normalize(inventory_ratio, inverse=True) * 0.05
-    )
-    df['Score_Quality'] = quality_raw
+    # Safety
+    de, has_de = safe_get('Debt To Equity', 0.5)
+    promoter, has_promoter = safe_get('Promoter Holdings', 50)
+    fcf, has_fcf = safe_get('Free Cash Flow', 0)
+    ocf, has_ocf = safe_get('Operating Cash Flow', 0)
+    cash, has_cash = safe_get('Cash Equivalents', 0)
+    debt, has_debt = safe_get('Debt', 1)
     
-    # ═══════════════════════════════════════════════════════
-    # FACTOR 2: GROWTH (Earnings & Revenue Expansion)
-    # Uses: PAT Growth (TTM, YoY, QoQ), Revenue Growth (TTM, YoY, QoQ),
-    #       EPS Growth TTM, PBT Growth TTM
-    # ═══════════════════════════════════════════════════════
-    pat_ttm = safe_get('PAT Growth TTM')
-    pat_yoy = safe_get('PAT Growth YoY')
-    pat_qoq = safe_get('PAT Growth QoQ')
-    rev_ttm = safe_get('Revenue Growth TTM')
-    rev_yoy = safe_get('Revenue Growth YoY')
-    rev_qoq = safe_get('Revenue Growth QoQ')
-    eps_ttm = safe_get('EPS Growth TTM')
-    pbt_ttm = safe_get('PBT Growth TTM')
+    # Momentum
+    rsi_w, has_rsi_w = safe_get('RSI 14W', 50)
+    adx_w, has_adx_w = safe_get('ADX 14W', 25)
+    ret_1m, has_ret_1m = safe_get('Returns 1M', 0)
+    ret_3m, has_ret_3m = safe_get('Returns 3M', 0)
+    ret_6m, has_ret_6m = safe_get('Returns 6M', 0)
+    ret_1y, has_ret_1y = safe_get('Returns 1Y', 0)
     
-    # Growth Acceleration (QoQ > TTM = Accelerating Growth)
-    pat_accelerating = (pat_qoq > pat_ttm).astype(float)
-    rev_accelerating = (rev_qoq > rev_ttm).astype(float)
-    growth_accel_bonus = (pat_accelerating + rev_accelerating) * 0.1
+    # Institutional
+    fii, has_fii = safe_get('FII Holdings', 5)
+    dii, has_dii = safe_get('DII Holdings', 10)
+    fii_chg, has_fii_chg = safe_get('Change In FII Holdings Latest Quarter', 0)
+    dii_chg, has_dii_chg = safe_get('Change In DII Holdings Latest Quarter', 0)
+    prom_chg, has_prom_chg = safe_get('Change In Promoter Holdings Latest Quarter', 0)
     
-    # Consistent Growth (YoY and TTM both positive)
-    consistent_growth = ((pat_yoy > 0) & (pat_ttm > 0) & (rev_yoy > 0) & (rev_ttm > 0)).astype(float) * 0.1
-    
-    growth_raw = (
-        normalize(pat_ttm) * 0.20 +
-        normalize(pat_yoy) * 0.10 +
-        normalize(rev_ttm) * 0.15 +
-        normalize(rev_yoy) * 0.10 +
-        normalize(eps_ttm) * 0.15 +
-        normalize(pbt_ttm) * 0.10 +
-        growth_accel_bonus +
-        consistent_growth
-    )
-    df['Score_Growth'] = normalize(growth_raw)
+    # Technical
+    dist_52wh, has_52wh = safe_get('52WH Distance', -15)
+    ret_vs_nifty, has_vs_nifty = safe_get('Returns Vs Nifty 500 3M', 0)
+    ret_vs_ind, has_vs_ind = safe_get('Returns Vs Industry 3M', 0)
     
     # ═══════════════════════════════════════════════════════
-    # FACTOR 3: VALUE (Cheapness)
-    # Uses: Price To Earnings, Price To Sales, PAT Growth (for PEG)
+    # STEP 1: CLASSIFY STOCK STYLE (Avoid the "Soup" Problem)
     # ═══════════════════════════════════════════════════════
-    pe = safe_get('Price To Earnings', 50)
-    ps = safe_get('Price To Sales', 10)
     
-    # Earnings Yield (1/PE) - Higher is better (cheaper)
-    earnings_yield = (1 / pe.clip(lower=1)).fillna(0)
-    sales_yield = (1 / ps.clip(lower=0.1)).fillna(0)
+    # Value indicators: Low PE, Low PS
+    pe_capped = pe.clip(1, 200)
+    is_cheap = (pe_capped < pe_capped.median())
     
-    # PEG Ratio (PE / Growth) - Lower is better
-    growth_for_peg = pat_ttm.clip(lower=1)
-    peg = pe / growth_for_peg
-    peg_score = normalize(peg, inverse=True)
+    # Growth indicators: High earnings/revenue growth
+    is_growing = (pat_ttm > pat_ttm.median()) | (rev_ttm > rev_ttm.median())
     
-    value_raw = (
-        normalize(earnings_yield) * 0.40 +
-        normalize(sales_yield) * 0.30 +
-        peg_score * 0.30
-    )
-    df['Score_Value'] = value_raw
+    # Momentum indicators: High returns, strong RSI
+    is_momentum = (ret_3m > ret_3m.median()) & (rsi_w > 50)
     
-    # ═══════════════════════════════════════════════════════
-    # FACTOR 4: SAFETY (Financial Strength)
-    # Uses: Debt To Equity, Promoter Holdings, Free Cash Flow,
-    #       Cash Equivalents, Debt, Total Assets, Total Liabilities,
-    #       Operating/Net Cash Flow
-    # ═══════════════════════════════════════════════════════
-    de = safe_get('Debt To Equity', 1)
-    promoter = safe_get('Promoter Holdings', 50)
-    fcf = safe_get('Free Cash Flow')
-    ocf = safe_get('Operating Cash Flow')
-    ncf = safe_get('Net Cash Flow')
-    cash = safe_get('Cash Equivalents')
-    debt = safe_get('Debt', 1)
-    total_assets = safe_get('Total Assets', 1)
-    total_liab = safe_get('Total Liabilities', 0)
+    # Classify each stock's style
+    # 1 = Value, 2 = Growth, 3 = Momentum, 4 = Balanced (GARP)
+    stock_style = pd.Series([4] * n, index=df.index)  # Default: Balanced
     
-    # Debt Safety (Lower D/E = Better)
-    de_score = normalize(de, inverse=True)
+    # Pure Value: Cheap but not growing fast or momentum
+    stock_style = stock_style.where(~(is_cheap & ~is_growing & ~is_momentum), 1)
     
-    # Promoter Confidence (Higher = Better)
-    promoter_score = normalize(promoter)
+    # Pure Growth: Growing but not cheap
+    stock_style = stock_style.where(~(is_growing & ~is_cheap & ~is_momentum), 2)
     
-    # Cash to Debt Ratio (Higher = Safer)
-    cash_debt = (cash / debt.replace(0, np.nan)).fillna(1).clip(0, 5)
-    cash_debt_score = normalize(cash_debt)
+    # Pure Momentum: High momentum regardless of value
+    stock_style = stock_style.where(~(is_momentum & ~is_cheap), 3)
     
-    # Free Cash Flow Positive (Binary bonus)
-    fcf_positive = (fcf > 0).astype(float)
+    # GARP (Best): Cheap AND Growing
+    stock_style = stock_style.where(~(is_cheap & is_growing), 4)
     
-    # Operating Cash Flow Positive (Binary bonus)
-    ocf_positive = (ocf > 0).astype(float)
-    
-    # Net Cash Flow Trend
-    ncf_positive = (ncf > 0).astype(float)
-    
-    # Asset Coverage Ratio (Total Assets / Total Liabilities)
-    asset_coverage = (total_assets / total_liab.replace(0, np.nan)).fillna(2).clip(0, 5)
-    
-    safety_raw = (
-        de_score * 0.25 +
-        promoter_score * 0.20 +
-        cash_debt_score * 0.15 +
-        fcf_positive * 0.15 +
-        ocf_positive * 0.10 +
-        ncf_positive * 0.05 +
-        normalize(asset_coverage) * 0.10
-    )
-    df['Score_Safety'] = safety_raw
+    df['Stock_Style'] = stock_style.map({1: 'Value', 2: 'Growth', 3: 'Momentum', 4: 'GARP'})
     
     # ═══════════════════════════════════════════════════════
-    # FACTOR 5: MOMENTUM (Price Trend - Multi-Timeframe)
-    # Uses: RSI 14D/14W, ADX 14D/14W, Returns 1D/1W/1M/3M/6M/1Y/3Y/5Y
+    # STEP 2: CALCULATE FACTOR SCORES (No cross-contamination)
     # ═══════════════════════════════════════════════════════
-    rsi_w = safe_get('RSI 14W', 50)
-    rsi_d = safe_get('RSI 14D', 50)
-    adx_w = safe_get('ADX 14W', 20)
-    adx_d = safe_get('ADX 14D', 20)
-    ret_1d = safe_get('Returns 1D')
-    ret_1w = safe_get('Returns 1W')
-    ret_1m = safe_get('Returns 1M')
-    ret_3m = safe_get('Returns 3M')
-    ret_6m = safe_get('Returns 6M')
-    ret_1y = safe_get('Returns 1Y')
-    ret_3y = safe_get('Returns 3Y')
-    ret_5y = safe_get('Returns 5Y')
     
-    # RSI Sweet Spot (45-65 is ideal momentum zone)
-    rsi_score_w = 1 - np.abs(rsi_w - 55) / 55
-    rsi_score_d = 1 - np.abs(rsi_d - 55) / 55
-    rsi_combined = (rsi_score_w.clip(0, 1) * 0.6 + rsi_score_d.clip(0, 1) * 0.4)
+    # QUALITY SCORE - Same for all styles
+    quality_components = [
+        (smart_rank(roe, available=has_roe), 0.30, has_roe),
+        (smart_rank(roce, available=has_roce), 0.25, has_roce),
+        (smart_rank(npm, available=has_npm), 0.25, has_npm),
+        (smart_rank(opm, available=has_opm), 0.20, has_opm),
+    ]
+    df['Score_Quality'] = weighted_avg(quality_components)
     
-    # Trend Strength (ADX > 25 = Strong Trend)
-    adx_combined = normalize(adx_w) * 0.6 + normalize(adx_d) * 0.4
+    # GROWTH SCORE
+    growth_components = [
+        (smart_rank(pat_ttm, available=has_pat_ttm), 0.35, has_pat_ttm),
+        (smart_rank(rev_ttm, available=has_rev_ttm), 0.30, has_rev_ttm),
+        (smart_rank(eps_ttm, available=has_eps_ttm), 0.20, has_eps_ttm),
+        (smart_rank(pat_yoy, available=has_pat_yoy), 0.15, has_pat_yoy),
+    ]
+    df['Score_Growth'] = weighted_avg(growth_components)
     
-    # Short-term Momentum (1D, 1W, 1M)
-    short_term = (normalize(ret_1d) * 0.2 + normalize(ret_1w) * 0.3 + normalize(ret_1m) * 0.5)
+    # VALUE SCORE (Lower PE/PS = Better)
+    value_components = [
+        (smart_rank(pe_capped, lower_better=True, available=has_pe), 0.60, has_pe),
+        (smart_rank(ps.clip(0.1, 50), lower_better=True, available=has_ps), 0.40, has_ps),
+    ]
+    df['Score_Value'] = weighted_avg(value_components)
     
-    # Medium-term Momentum (3M, 6M)
-    medium_term = (normalize(ret_3m) * 0.5 + normalize(ret_6m) * 0.5)
+    # SAFETY SCORE
+    de_capped = de.clip(0, 5)
+    safety_components = [
+        (smart_rank(de_capped, lower_better=True, available=has_de), 0.30, has_de),
+        (smart_rank(promoter, available=has_promoter), 0.25, has_promoter),
+        (smart_rank(fcf, available=has_fcf), 0.25, has_fcf),
+        (smart_rank(ocf, available=has_ocf), 0.20, has_ocf),
+    ]
+    df['Score_Safety'] = weighted_avg(safety_components)
     
-    # Long-term Performance (1Y, 3Y, 5Y) - Consistency check
-    long_term = (normalize(ret_1y) * 0.5 + normalize(ret_3y) * 0.3 + normalize(ret_5y) * 0.2)
+    # MOMENTUM SCORE
+    momentum_components = [
+        (smart_rank(ret_3m, available=has_ret_3m), 0.30, has_ret_3m),
+        (smart_rank(ret_6m, available=has_ret_6m), 0.25, has_ret_6m),
+        (smart_rank(ret_1m, available=has_ret_1m), 0.20, has_ret_1m),
+        (smart_rank(ret_1y, available=has_ret_1y), 0.15, has_ret_1y),
+        (smart_rank(adx_w, available=has_adx_w), 0.10, has_adx_w),
+    ]
+    df['Score_Momentum'] = weighted_avg(momentum_components)
     
-    # Momentum Consistency (All timeframes positive = bonus)
-    momentum_consistency = (
-        (ret_1m > 0) & (ret_3m > 0) & (ret_6m > 0) & (ret_1y > 0)
-    ).astype(float) * 0.1
+    # INSTITUTIONAL SCORE
+    total_inst = fii + dii
+    has_total_inst = has_fii or has_dii
+    inst_components = [
+        (smart_rank(fii_chg, available=has_fii_chg), 0.35, has_fii_chg),
+        (smart_rank(dii_chg, available=has_dii_chg), 0.30, has_dii_chg),
+        (smart_rank(total_inst, available=has_total_inst), 0.20, has_total_inst),
+        (smart_rank(prom_chg, available=has_prom_chg), 0.15, has_prom_chg),
+    ]
+    df['Score_Institutional'] = weighted_avg(inst_components)
     
-    momentum_raw = (
-        short_term * 0.15 +
-        medium_term * 0.30 +
-        long_term * 0.15 +
-        rsi_combined * 0.15 +
-        adx_combined * 0.15 +
-        momentum_consistency
-    )
-    df['Score_Momentum'] = momentum_raw
-    
-    # ═══════════════════════════════════════════════════════
-    # FACTOR 6: INSTITUTIONAL (Smart Money Flow)
-    # Uses: FII/DII Holdings, ALL Change columns (Q/1Y/2Y/3Y),
-    #       Retail Holdings changes, Promoter changes
-    # ═══════════════════════════════════════════════════════
-    fii_hold = safe_get('FII Holdings')
-    dii_hold = safe_get('DII Holdings')
-    retail_hold = safe_get('Retail Holdings')
-    promoter_hold = safe_get('Promoter Holdings')
-    
-    # FII Changes (All timeframes)
-    fii_chg_q = safe_get('Change In FII Holdings Latest Quarter')
-    fii_chg_1y = safe_get('Change In FII Holdings 1 Year')
-    fii_chg_2y = safe_get('Change In FII Holdings 2 Years')
-    fii_chg_3y = safe_get('Change In FII Holdings 3 Years')
-    
-    # DII Changes (All timeframes)
-    dii_chg_q = safe_get('Change In DII Holdings Latest Quarter')
-    dii_chg_1y = safe_get('Change In DII Holdings 1 Year')
-    dii_chg_2y = safe_get('Change In DII Holdings 2 Years')
-    dii_chg_3y = safe_get('Change In DII Holdings 3 Years')
-    
-    # Promoter Changes
-    prom_chg_q = safe_get('Change In Promoter Holdings Latest Quarter')
-    prom_chg_1y = safe_get('Change In Promoter Holdings 1 Year')
-    
-    # Retail Changes (Inverse - retail selling while institutions buying = good)
-    retail_chg_q = safe_get('Change In Retail Holdings Latest Quarter')
-    
-    # FII Score (Recent > Old)
-    fii_score = (
-        normalize(fii_chg_q) * 0.40 +
-        normalize(fii_chg_1y) * 0.30 +
-        normalize(fii_chg_2y) * 0.15 +
-        normalize(fii_chg_3y) * 0.15
-    )
-    
-    # DII Score
-    dii_score = (
-        normalize(dii_chg_q) * 0.40 +
-        normalize(dii_chg_1y) * 0.30 +
-        normalize(dii_chg_2y) * 0.15 +
-        normalize(dii_chg_3y) * 0.15
-    )
-    
-    # Promoter Confidence Score
-    prom_score = normalize(prom_chg_q) * 0.6 + normalize(prom_chg_1y) * 0.4
-    
-    # Smart Money Rotation: Institutions buying + Retail selling = Smart accumulation
-    smart_rotation = ((fii_chg_q > 0) | (dii_chg_q > 0)) & (retail_chg_q < 0)
-    smart_rotation_bonus = smart_rotation.astype(float) * 0.1
-    
-    # Total Institutional Holdings
-    total_inst = fii_hold + dii_hold
-    inst_holding_score = normalize(total_inst)
-    
-    institutional_raw = (
-        fii_score * 0.30 +
-        dii_score * 0.25 +
-        prom_score * 0.20 +
-        inst_holding_score * 0.15 +
-        smart_rotation_bonus
-    )
-    df['Score_Institutional'] = institutional_raw
+    # TECHNICAL SCORE
+    tech_components = [
+        (smart_rank(dist_52wh, available=has_52wh), 0.35, has_52wh),
+        (smart_rank(ret_vs_nifty, available=has_vs_nifty), 0.30, has_vs_nifty),
+        (smart_rank(ret_vs_ind, available=has_vs_ind), 0.25, has_vs_ind),
+        (smart_rank(adx_w, available=has_adx_w), 0.10, has_adx_w),
+    ]
+    df['Score_Technical'] = weighted_avg(tech_components)
     
     # ═══════════════════════════════════════════════════════
-    # FACTOR 7: TECHNICAL (Breakout Potential)
-    # Uses: 52WH Distance, Returns Vs Nifty 500 (1W/3M),
-    #       Returns Vs Industry (1W/3M), RSI, ADX
+    # STEP 3: DYNAMIC WEIGHTS BASED ON STOCK STYLE
     # ═══════════════════════════════════════════════════════
-    dist_52wh = safe_get('52WH Distance', -20)
-    ret_vs_nifty_1w = safe_get('Returns Vs Nifty 500 1W')
-    ret_vs_nifty_3m = safe_get('Returns Vs Nifty 500 3M')
-    ret_vs_ind_1w = safe_get('Returns Vs Industry 1W')
-    ret_vs_ind_3m = safe_get('Returns Vs Industry 3M')
     
-    # Near 52W High Score (closer to high = stronger)
-    # -5% to 0% = Very Near High (Score: 1.0)
-    # -10% to -5% = Near High (Score: 0.7)
-    # -20% to -10% = Moderate (Score: 0.4)
-    # Below -20% = Far from High (Score: 0.2)
-    near_high_score = pd.Series(0.2, index=df.index)
-    near_high_score = near_high_score.where(dist_52wh <= -20, 0.4)
-    near_high_score = near_high_score.where(dist_52wh <= -10, 0.7)
-    near_high_score = near_high_score.where(dist_52wh <= -5, 1.0)
-    near_high_score = (dist_52wh > -5).astype(float) * 1.0 + \
-                      ((dist_52wh <= -5) & (dist_52wh > -10)).astype(float) * 0.7 + \
-                      ((dist_52wh <= -10) & (dist_52wh > -20)).astype(float) * 0.4 + \
-                      (dist_52wh <= -20).astype(float) * 0.2
+    def get_dynamic_weights(style, base_w):
+        """
+        Adjust weights based on stock's natural style.
+        Value stocks weighted more on Value, less on Momentum.
+        Growth stocks weighted more on Growth, less on Value.
+        This PREVENTS the soup problem!
+        """
+        if style == 1:  # Value Style
+            return {
+                'Quality': base_w['Quality'] * 1.0,
+                'Growth': base_w['Growth'] * 0.7,
+                'Value': base_w['Value'] * 1.5,      # Boost Value
+                'Safety': base_w['Safety'] * 1.2,
+                'Momentum': base_w['Momentum'] * 0.5,  # Reduce Momentum penalty
+                'Institutional': base_w['Institutional'] * 1.0,
+                'Technical': base_w['Technical'] * 0.6,
+            }
+        elif style == 2:  # Growth Style
+            return {
+                'Quality': base_w['Quality'] * 1.0,
+                'Growth': base_w['Growth'] * 1.5,    # Boost Growth
+                'Value': base_w['Value'] * 0.5,      # Reduce Value penalty
+                'Safety': base_w['Safety'] * 0.8,
+                'Momentum': base_w['Momentum'] * 1.2,
+                'Institutional': base_w['Institutional'] * 1.0,
+                'Technical': base_w['Technical'] * 1.0,
+            }
+        elif style == 3:  # Momentum Style
+            return {
+                'Quality': base_w['Quality'] * 0.8,
+                'Growth': base_w['Growth'] * 1.0,
+                'Value': base_w['Value'] * 0.3,      # Don't penalize for being expensive
+                'Safety': base_w['Safety'] * 0.7,
+                'Momentum': base_w['Momentum'] * 1.5,  # Boost Momentum
+                'Institutional': base_w['Institutional'] * 1.2,
+                'Technical': base_w['Technical'] * 1.3,
+            }
+        else:  # GARP / Balanced (style == 4)
+            return {
+                'Quality': base_w['Quality'] * 1.2,
+                'Growth': base_w['Growth'] * 1.2,
+                'Value': base_w['Value'] * 1.2,
+                'Safety': base_w['Safety'] * 1.0,
+                'Momentum': base_w['Momentum'] * 0.8,
+                'Institutional': base_w['Institutional'] * 1.0,
+                'Technical': base_w['Technical'] * 0.8,
+            }
     
-    # Relative Strength vs Market (Nifty 500)
-    rel_vs_market = (
-        normalize(ret_vs_nifty_1w) * 0.3 +
-        normalize(ret_vs_nifty_3m) * 0.7
-    )
+    # Calculate final score with dynamic weights per stock
+    final_scores = []
+    for idx in df.index:
+        style = stock_style[idx]
+        w = get_dynamic_weights(style, base_weights)
+        
+        # Normalize weights to sum to 1
+        total_w = sum(w.values())
+        
+        score = (
+            df.loc[idx, 'Score_Quality'] * w['Quality'] / total_w +
+            df.loc[idx, 'Score_Growth'] * w['Growth'] / total_w +
+            df.loc[idx, 'Score_Value'] * w['Value'] / total_w +
+            df.loc[idx, 'Score_Safety'] * w['Safety'] / total_w +
+            df.loc[idx, 'Score_Momentum'] * w['Momentum'] / total_w +
+            df.loc[idx, 'Score_Institutional'] * w['Institutional'] / total_w +
+            df.loc[idx, 'Score_Technical'] * w['Technical'] / total_w
+        ) * 100
+        
+        final_scores.append(score)
     
-    # Relative Strength vs Industry (Sector Outperformance)
-    rel_vs_industry = (
-        normalize(ret_vs_ind_1w) * 0.3 +
-        normalize(ret_vs_ind_3m) * 0.7
-    )
-    
-    # Breakout Confirmation (Near high + Strong ADX + RSI > 50)
-    breakout_setup = (
-        (dist_52wh > -10) & (adx_w > 25) & (rsi_w > 50) & (rsi_w < 70)
-    ).astype(float) * 0.15
-    
-    technical_raw = (
-        near_high_score * 0.25 +
-        rel_vs_market * 0.25 +
-        rel_vs_industry * 0.20 +
-        breakout_setup +
-        normalize(adx_w) * 0.15
-    )
-    df['Score_Technical'] = technical_raw
+    df['Final_Score'] = final_scores
+    df['Final_Score'] = df['Final_Score'].clip(0, 100)
     
     # ═══════════════════════════════════════════════════════
-    # FINAL COMPOSITE SCORE
+    # DATA AVAILABILITY TRACKING (For transparency, not penalty)
     # ═══════════════════════════════════════════════════════
-    df['Final_Score'] = (
-        df['Score_Quality'] * weights['Quality'] +
-        df['Score_Growth'] * weights['Growth'] +
-        df['Score_Value'] * weights['Value'] +
-        df['Score_Safety'] * weights['Safety'] +
-        df['Score_Momentum'] * weights['Momentum'] +
-        df['Score_Institutional'] * weights['Institutional'] +
-        df['Score_Technical'] * weights['Technical']
-    )
-    
-    # Normalize final score to 0-100
-    df['Final_Score'] = normalize(df['Final_Score']) * 100
+    total_expected = 25  # Total columns we try to use
+    data_available = sum([
+        has_roe, has_roce, has_npm, has_opm,
+        has_pat_ttm, has_pat_yoy, has_rev_ttm, has_rev_yoy, has_eps_ttm,
+        has_pe, has_ps,
+        has_de, has_promoter, has_fcf, has_ocf, has_cash, has_debt,
+        has_rsi_w, has_adx_w, has_ret_1m, has_ret_3m, has_ret_6m, has_ret_1y,
+        has_fii, has_dii, has_fii_chg, has_dii_chg, has_prom_chg,
+        has_52wh, has_vs_nifty, has_vs_ind
+    ])
+    df['Data_Coverage'] = f"{data_available}/{total_expected}"
     
     return df
 
@@ -907,95 +955,61 @@ def get_ultimate_verdict(row):
     return "⏸️ NEUTRAL", "hold"
 
 # =========================================================
-# 📊 MAIN DASHBOARD
+# 📊 MAIN DASHBOARD - CLEAN UI
 # =========================================================
 def main():
+    # Clean Header
     st.markdown("""
-    <div class='main-header'>
-        <h1 style='color: #00d4ff; margin:0;'>🔥 V4 ULTIMATE</h1>
-        <p style='color: #888; margin:0;'>Institutional-Grade 7-Factor Stock Analyzer</p>
+    <div style='text-align:center; padding:1rem 0 1.5rem 0;'>
+        <h1 style='margin:0; font-weight:700; color:#1a1a2e;'>V4 Stock Analyzer</h1>
+        <p style='color:#666; margin:0.3rem 0 0 0; font-size:0.95rem;'>7-Factor Scoring • Market Regime Detection • Trap Identification</p>
     </div>
     """, unsafe_allow_html=True)
     
     with st.sidebar:
-        st.header("📂 Data Upload")
+        st.markdown("### 📂 Upload Data")
         uploaded_files = st.file_uploader(
-            "Upload CSV Files",
+            "CSV Files",
             accept_multiple_files=True,
             type=['csv'],
-            help="Upload your stock data CSV files"
+            label_visibility="collapsed"
         )
         
-        st.markdown("---")
-        st.markdown("### 🎛️ Settings")
-        
-        show_all_columns = st.checkbox("Show All Scores", value=False)
-        top_n = st.slider("Top Stocks to Show", 10, 100, 30)
+        if uploaded_files:
+            st.success(f"✓ {len(uploaded_files)} files loaded")
         
         st.markdown("---")
-        st.markdown("### 📊 Factor Weights")
-        st.caption("Auto-adjusted based on market regime")
+        st.markdown("### Settings")
+        
+        show_all_columns = st.checkbox("Show Factor Scores", value=False)
+        top_n = st.slider("Display Top", 10, 100, 30, help="Number of stocks to show")
     
     if not uploaded_files:
-        st.info("👆 Upload your CSV files to begin analysis")
+        # Simple welcome message
+        st.markdown("""
+        <div style='text-align:center; padding:3rem; background:#f8f9fa; border-radius:12px; margin:2rem 0;'>
+            <h3 style='color:#333; margin-bottom:0.5rem;'>Upload Your CSV Files to Start</h3>
+            <p style='color:#666;'>Drag and drop your stock data files in the sidebar</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # Show complete expected columns organized by CSV
-        with st.expander("📋 Complete Data Headers Reference (67 Columns)"):
-            col1, col2 = st.columns(2)
+        # Expected columns in simple format
+        with st.expander("📋 Expected Data Columns"):
+            st.markdown("""
+            **Required columns across your CSV files:**
             
-            with col1:
-                st.markdown("""
-                **📁 CSV 1 - Returns & Price:**
-                - companyId, Name, Market Capitalization
-                - Close Price, 52WH Distance
-                - Returns 1D, 1W, 1M, 3M, 6M, 1Y, 3Y, 5Y
-                - Returns Vs Nifty 500 1W/3M
-                - Returns Vs Industry 1W/3M
-                
-                **📁 CSV 2 - Technical:**
-                - RSI 14D, RSI 14W
-                - ADX 14D, ADX 14W
-                
-                **📁 CSV 3 - Valuation:**
-                - Price To Earnings
-                - Price To Sales
-                - Debt To Equity
-                
-                **📁 CSV 4 - Holdings:**
-                - DII/FII/Retail/Promoter Holdings
-                - Change In DII Holdings (Q/1Y/2Y/3Y)
-                - Change In FII Holdings (Q/1Y/2Y/3Y)
-                - Change In Retail Holdings (Q/1Y/2Y/3Y)
-                - Change In Promoter Holdings (Q/1Y/2Y/3Y)
-                """)
-            
-            with col2:
-                st.markdown("""
-                **📁 CSV 5 - Growth:**
-                - PAT Growth YoY, QoQ, TTM
-                - Revenue Growth YoY, QoQ, TTM
-                - EPS Growth TTM
-                - PBT Growth TTM
-                
-                **📁 CSV 6 - Fundamentals:**
-                - Industry, Revenue
-                
-                **📁 CSV 7 - Balance Sheet:**
-                - Inventory, CWIP
-                - Cash Equivalents
-                - Total Assets, Total Liabilities
-                - Debt
-                
-                **📁 CSV 8 - Cash Flow:**
-                - Operating Cash Flow
-                - Investing Cash Flow
-                - Financing Cash Flow
-                - Net Cash Flow
-                - Free Cash Flow
-                
-                **📁 CSV 9 - Profitability:**
-                - NPM, OPM, ROCE, ROE
-                """)
+            | Category | Columns |
+            |----------|---------|
+            | **Identity** | companyId, Name, Industry |
+            | **Price** | Close Price, Market Cap, 52WH Distance |
+            | **Returns** | Returns 1D/1W/1M/3M/6M/1Y/3Y/5Y |
+            | **Technical** | RSI 14D/14W, ADX 14D/14W |
+            | **Valuation** | Price To Earnings, Price To Sales, Debt To Equity |
+            | **Holdings** | FII/DII/Retail/Promoter Holdings + Changes |
+            | **Growth** | PAT/Revenue Growth (YoY/QoQ/TTM), EPS Growth |
+            | **Cash Flow** | Operating/Free/Net Cash Flow |
+            | **Profitability** | ROE, ROCE, NPM, OPM |
+            """)
         return
     
     # Process Data
@@ -1012,46 +1026,23 @@ def main():
     # Analyze Market Regime
     regime, weights, strategy, regime_stats = analyze_market_regime(df)
     
-    # Display Regime Info
-    col1, col2, col3, col4 = st.columns(4)
+    # Clean summary bar
+    st.markdown(f"""
+    <div style='display:grid; grid-template-columns:repeat(4, 1fr); gap:1rem; margin:0.5rem 0 1.5rem 0;'>
+        <div class='metric-box'><div class='metric-label'>Market Regime</div><div class='metric-value'>{regime}</div></div>
+        <div class='metric-box'><div class='metric-label'>Strategy</div><div class='metric-value' style='font-size:1rem;'>{strategy}</div></div>
+        <div class='metric-box'><div class='metric-label'>Stocks</div><div class='metric-value'>{len(df):,}</div></div>
+        <div class='metric-box'><div class='metric-label'>Breadth 3M</div><div class='metric-value' style='color:{"#00c853" if regime_stats["breadth_3m"] > 50 else "#f44336"}'>{regime_stats["breadth_3m"]:.0f}%</div></div>
+    </div>
+    """, unsafe_allow_html=True)
     
-    with col1:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <h4>📡 Market Regime</h4>
-            <h3>{regime}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <h4>🎯 Strategy</h4>
-            <h3>{strategy}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
-        <div class='metric-card'>
-            <h4>📊 Stocks Analyzed</h4>
-            <h3>{len(df):,}</h3>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        breadth_color = "#00c853" if regime_stats['breadth_3m'] > 50 else "#f44336"
-        st.markdown(f"""
-        <div class='metric-card'>
-            <h4>📈 Market Breadth (3M)</h4>
-            <h3 style='color: {breadth_color}'>{regime_stats['breadth_3m']:.1f}%</h3>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Show Weight Distribution
+    # Show weights in sidebar
     with st.sidebar:
+        st.markdown("---")
+        st.markdown("### Factor Weights")
         for factor, weight in weights.items():
-            st.progress(weight, text=f"{factor}: {weight*100:.0f}%")
+            st.markdown(f"**{factor}**: {weight*100:.0f}%")
+            st.progress(weight)
     
     # Run Scoring Engine
     df = run_ultimate_scoring(df, weights)
@@ -1066,140 +1057,91 @@ def main():
     df.insert(0, 'Rank', range(1, len(df) + 1))
     
     # ═══════════════════════════════════════════════════════
-    # TABS
+    # TABS - CLEAN LAYOUT
     # ═══════════════════════════════════════════════════════
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🏆 Rankings", "📊 Factor Analysis", "🔍 Stock Scanner", "📈 Charts", "📥 Export"
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Rankings", " Scanner", "� Charts", "📥 Export"
     ])
     
     with tab1:
-        st.subheader("🏆 Top Ranked Stocks")
+        # Style and Verdict Filters
+        col_filter1, col_filter2 = st.columns([1, 2])
+        with col_filter1:
+            style_options = df['Stock_Style'].unique().tolist()
+            style_filter = st.multiselect("Stock Style", options=style_options, default=style_options)
         
-        # Verdict Filter
-        verdict_filter = st.multiselect(
-            "Filter by Verdict",
-            options=df['Verdict'].unique().tolist(),
-            default=[v for v in df['Verdict'].unique() if any(x in v for x in ['BUY', 'ACCUMULATE', 'BREAKOUT', 'GROWTH', 'MOMENTUM', 'VALUE'])]
-        )
+        with col_filter2:
+            verdict_options = df['Verdict'].unique().tolist()
+            buy_verdicts = [v for v in verdict_options if any(x in v for x in ['BUY', 'ACCUMULATE', 'BREAKOUT', 'GROWTH', 'MOMENTUM', 'VALUE', 'QUALITY', 'OUTPERFORMER', 'TURNAROUND'])]
+            verdict_filter = st.multiselect("Verdict", options=verdict_options, default=buy_verdicts if buy_verdicts else None)
         
-        filtered_df = df[df['Verdict'].isin(verdict_filter)] if verdict_filter else df
+        # Apply both filters
+        filtered_df = df.copy()
+        if style_filter:
+            filtered_df = filtered_df[filtered_df['Stock_Style'].isin(style_filter)]
+        if verdict_filter:
+            filtered_df = filtered_df[filtered_df['Verdict'].isin(verdict_filter)]
         
-        # Display Columns
-        base_cols = ['Rank', 'Name', 'Verdict', 'Final_Score', 'Close Price']
+        # Display Columns - Include Stock_Style
+        base_cols = ['Rank', 'Name', 'Stock_Style', 'Verdict', 'Final_Score']
+        price_cols = ['Close Price', 'Price To Earnings']
+        metric_cols = ['ROE', 'PAT Growth TTM', 'Debt To Equity', 'Free Cash Flow']
         score_cols = ['Score_Quality', 'Score_Growth', 'Score_Value', 'Score_Safety', 'Score_Momentum', 'Score_Institutional', 'Score_Technical']
-        metric_cols = ['Price To Earnings', 'ROE', 'PAT Growth TTM', 'Debt To Equity', 'Free Cash Flow', 'FII Holdings', '52WH Distance']
         
         if show_all_columns:
-            display_cols = base_cols + score_cols + [c for c in metric_cols if c in df.columns]
+            display_cols = base_cols + score_cols
         else:
-            display_cols = base_cols + [c for c in metric_cols if c in df.columns]
+            display_cols = base_cols + [c for c in price_cols + metric_cols if c in df.columns]
         
         display_cols = [c for c in display_cols if c in filtered_df.columns]
         
-        # Styling
-        def style_dataframe(row):
+        # Color styling based on verdict
+        def color_row(row):
             verdict_class = row.get('Verdict_Class', 'hold')
-            if verdict_class == 'strong-buy':
-                return ['background-color: rgba(0, 200, 83, 0.2)'] * len(row)
-            elif verdict_class == 'buy':
-                return ['background-color: rgba(33, 150, 243, 0.2)'] * len(row)
-            elif verdict_class == 'trap':
-                return ['background-color: rgba(244, 67, 54, 0.2)'] * len(row)
-            elif verdict_class == 'avoid':
-                return ['background-color: rgba(244, 67, 54, 0.1)'] * len(row)
-            return [''] * len(row)
+            colors = {
+                'strong-buy': 'background-color: rgba(0, 200, 83, 0.15)',
+                'buy': 'background-color: rgba(33, 150, 243, 0.12)',
+                'trap': 'background-color: rgba(244, 67, 54, 0.15)',
+                'avoid': 'background-color: rgba(244, 67, 54, 0.08)'
+            }
+            color = colors.get(verdict_class, '')
+            return [color] * len(row)
         
-        styled_df = filtered_df[display_cols].head(top_n).style.apply(style_dataframe, axis=1)
+        styled_df = filtered_df[display_cols].head(top_n).style.apply(color_row, axis=1)
         styled_df = styled_df.format({'Final_Score': '{:.1f}'})
-        
         for col in score_cols:
             if col in display_cols:
                 styled_df = styled_df.format({col: '{:.2f}'})
         
-        st.dataframe(styled_df, height=700, use_container_width=True)
+        st.dataframe(styled_df, height=600, use_container_width=True)
         
-        # Summary Stats
-        st.markdown("---")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        strong_buys = len(df[df['Verdict_Class'] == 'strong-buy'])
-        buys = len(df[df['Verdict_Class'] == 'buy'])
-        traps = len(df[df['Verdict_Class'] == 'trap'])
-        avoids = len(df[df['Verdict_Class'] == 'avoid'])
-        
-        col1.metric("💎 Strong Buys", strong_buys)
-        col2.metric("📈 Buys", buys)
-        col3.metric("🚨 Traps Detected", traps)
-        col4.metric("❌ Avoid", avoids)
+        # Quick Stats with style breakdown
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("💎 Strong Buy", len(df[df['Verdict_Class'] == 'strong-buy']))
+        col2.metric("📈 Buy", len(df[df['Verdict_Class'] == 'buy']))
+        col3.metric("🚨 Traps", len(df[df['Verdict_Class'] == 'trap']))
+        col4.metric("📊 GARP", len(df[df['Stock_Style'] == 'GARP']))
+        col5.metric("💰 Value", len(df[df['Stock_Style'] == 'Value']))
     
     with tab2:
-        st.subheader("📊 Factor Score Distribution")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Radar Chart for Top Stock
-            if len(df) > 0:
-                top_stock = df.iloc[0]
-                categories = ['Quality', 'Growth', 'Value', 'Safety', 'Momentum', 'Institutional', 'Technical']
-                values = [
-                    top_stock['Score_Quality'],
-                    top_stock['Score_Growth'],
-                    top_stock['Score_Value'],
-                    top_stock['Score_Safety'],
-                    top_stock['Score_Momentum'],
-                    top_stock['Score_Institutional'],
-                    top_stock['Score_Technical']
-                ]
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatterpolar(
-                    r=values + [values[0]],
-                    theta=categories + [categories[0]],
-                    fill='toself',
-                    name=top_stock['Name']
-                ))
-                fig.update_layout(
-                    polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-                    title=f"Factor Profile: {top_stock['Name']}",
-                    height=400
-                )
-                st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # Factor Correlation
-            factor_cols = ['Score_Quality', 'Score_Growth', 'Score_Value', 'Score_Safety', 'Score_Momentum', 'Score_Institutional', 'Score_Technical']
-            available_factors = [c for c in factor_cols if c in df.columns]
-            
-            if len(available_factors) > 1:
-                corr_matrix = df[available_factors].corr()
-                fig = px.imshow(
-                    corr_matrix,
-                    labels=dict(color="Correlation"),
-                    title="Factor Correlations",
-                    color_continuous_scale='RdBu_r'
-                )
-                st.plotly_chart(fig, use_container_width=True)
-    
-    with tab3:
-        st.subheader("🔍 Custom Stock Scanner")
+        st.markdown("#### Custom Scanner")
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            min_score = st.slider("Minimum Score", 0, 100, 60)
-            max_pe = st.slider("Max P/E Ratio", 5, 200, 50)
+            min_score = st.slider("Min Score", 0, 100, 60)
+            max_pe = st.slider("Max P/E", 5, 200, 50)
         
         with col2:
             min_roe = st.slider("Min ROE %", 0, 50, 10)
-            min_growth = st.slider("Min PAT Growth %", -50, 100, 0)
+            min_growth = st.slider("Min Growth %", -50, 100, 0)
         
         with col3:
-            require_fcf_positive = st.checkbox("Positive FCF Only", value=True)
-            require_inst_buying = st.checkbox("Institutional Buying", value=False)
+            require_fcf_positive = st.checkbox("Positive FCF", value=True)
+            require_inst_buying = st.checkbox("Inst. Buying", value=False)
         
         # Apply Filters
-        scanner_df = df[df['Final_Score'] >= min_score]
+        scanner_df = df[df['Final_Score'] >= min_score].copy()
         
         if 'Price To Earnings' in scanner_df.columns:
             scanner_df = scanner_df[scanner_df['Price To Earnings'] <= max_pe]
@@ -1213,23 +1155,21 @@ def main():
         if require_fcf_positive and 'Free Cash Flow' in scanner_df.columns:
             scanner_df = scanner_df[scanner_df['Free Cash Flow'] > 0]
         
-        if require_inst_buying:
-            if 'Change In FII Holdings Latest Quarter' in scanner_df.columns:
-                scanner_df = scanner_df[scanner_df['Change In FII Holdings Latest Quarter'] > 0]
+        if require_inst_buying and 'Change In FII Holdings Latest Quarter' in scanner_df.columns:
+            scanner_df = scanner_df[scanner_df['Change In FII Holdings Latest Quarter'] > 0]
         
-        st.metric("Stocks Matching Criteria", len(scanner_df))
+        st.metric("Matches", len(scanner_df))
         
         if len(scanner_df) > 0:
             scanner_cols = ['Rank', 'Name', 'Verdict', 'Final_Score', 'Close Price', 'Price To Earnings', 'ROE', 'PAT Growth TTM']
             scanner_cols = [c for c in scanner_cols if c in scanner_df.columns]
             st.dataframe(scanner_df[scanner_cols], height=400, use_container_width=True)
     
-    with tab4:
-        st.subheader("📈 Visual Analysis")
-        
+    with tab3:
         col1, col2 = st.columns(2)
         
         with col1:
+            # GARP Chart
             if 'Price To Earnings' in df.columns and 'PAT Growth TTM' in df.columns:
                 fig = px.scatter(
                     df.head(100),
@@ -1239,69 +1179,100 @@ def main():
                     size='Final_Score',
                     hover_name='Name',
                     log_x=True,
-                    title="GARP: Growth at Reasonable Price",
-                    color_continuous_scale='Viridis'
+                    title="Growth at Reasonable Price",
+                    color_continuous_scale='Viridis',
+                    height=350
                 )
-                fig.add_hline(y=20, line_dash="dash", line_color="green", annotation_text="Growth Target")
-                fig.add_vline(x=25, line_dash="dash", line_color="red", annotation_text="Value Threshold")
+                fig.add_hline(y=20, line_dash="dash", line_color="green")
+                fig.add_vline(x=25, line_dash="dash", line_color="red")
                 st.plotly_chart(fig, use_container_width=True)
+            
+            # Score Distribution
+            fig = px.histogram(df, x='Final_Score', nbins=25, title="Score Distribution", height=300)
+            fig.add_vline(x=70, line_dash="dash", line_color="green")
+            fig.add_vline(x=35, line_dash="dash", line_color="red")
+            st.plotly_chart(fig, use_container_width=True)
         
         with col2:
+            # Radar Chart for Top Stock
+            if len(df) > 0:
+                top_stock = df.iloc[0]
+                categories = ['Quality', 'Growth', 'Value', 'Safety', 'Momentum', 'Institutional', 'Technical']
+                values = [
+                    top_stock.get('Score_Quality', 0.5),
+                    top_stock.get('Score_Growth', 0.5),
+                    top_stock.get('Score_Value', 0.5),
+                    top_stock.get('Score_Safety', 0.5),
+                    top_stock.get('Score_Momentum', 0.5),
+                    top_stock.get('Score_Institutional', 0.5),
+                    top_stock.get('Score_Technical', 0.5)
+                ]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Scatterpolar(
+                    r=values + [values[0]],
+                    theta=categories + [categories[0]],
+                    fill='toself',
+                    name=top_stock.get('Name', 'Top Stock')
+                ))
+                fig.update_layout(
+                    polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+                    title=f"Top Stock Profile: {top_stock.get('Name', 'N/A')}",
+                    height=350
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Momentum Matrix
             if 'RSI 14W' in df.columns and 'ADX 14W' in df.columns:
                 fig = px.scatter(
-                    df.head(100),
+                    df.head(80),
                     x='RSI 14W',
                     y='ADX 14W',
                     color='Final_Score',
                     hover_name='Name',
                     title="Momentum Matrix",
-                    color_continuous_scale='Viridis'
+                    color_continuous_scale='Viridis',
+                    height=300
                 )
-                # Highlight sweet spot
                 fig.add_shape(type="rect", x0=50, y0=25, x1=70, y1=50,
-                            line=dict(color="Green", width=2), fillcolor="green", opacity=0.1)
-                fig.add_annotation(x=60, y=45, text="SWEET SPOT", showarrow=False)
+                            line=dict(color="Green"), fillcolor="green", opacity=0.1)
                 st.plotly_chart(fig, use_container_width=True)
-        
-        # Score Distribution
-        st.markdown("### Score Distribution")
-        fig = px.histogram(df, x='Final_Score', nbins=30, title="Final Score Distribution")
-        fig.add_vline(x=70, line_dash="dash", line_color="green", annotation_text="Buy Zone")
-        fig.add_vline(x=35, line_dash="dash", line_color="red", annotation_text="Avoid Zone")
-        st.plotly_chart(fig, use_container_width=True)
     
-    with tab5:
-        st.subheader("📥 Export Analysis")
+    with tab4:
+        col1, col2, col3 = st.columns(3)
         
         # Full Export
         csv_full = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "📥 Download Full Analysis (CSV)",
+        col1.download_button(
+            "📥 Full Analysis",
             csv_full,
-            f"V4_Ultimate_Analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv"
+            f"V4_Analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv",
+            use_container_width=True
         )
         
-        # Strong Buys Only
-        strong_buy_df = df[df['Verdict_Class'].isin(['strong-buy', 'buy'])]
-        if len(strong_buy_df) > 0:
-            csv_buys = strong_buy_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Buy Recommendations Only",
+        # Buy Signals Only
+        buy_df = df[df['Verdict_Class'].isin(['strong-buy', 'buy'])]
+        if len(buy_df) > 0:
+            csv_buys = buy_df.to_csv(index=False).encode('utf-8')
+            col2.download_button(
+                "� Buy Signals",
                 csv_buys,
-                f"V4_Buy_Signals_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                "text/csv"
+                f"V4_Buys_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                "text/csv",
+                use_container_width=True
             )
         
-        # Traps List
+        # Traps
         trap_df = df[df['Verdict_Class'] == 'trap']
         if len(trap_df) > 0:
             csv_traps = trap_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "⚠️ Download Traps List (Avoid These!)",
+            col3.download_button(
+                "⚠️ Traps List",
                 csv_traps,
                 f"V4_Traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                "text/csv"
+                "text/csv",
+                use_container_width=True
             )
 
 if __name__ == "__main__":
