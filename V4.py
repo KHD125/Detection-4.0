@@ -29,19 +29,133 @@ st.set_page_config(
 # Clean CSS
 st.markdown("""
 <style>
-    .stApp { background-color: #0e1117; }
-    .metric-card {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        border-radius: 10px;
-        padding: 1.2rem;
+    /* Dark theme base */
+    .stApp { background: linear-gradient(180deg, #0a0a0f 0%, #0d1117 100%); }
+    
+    /* Remove default padding */
+    .block-container { padding: 1rem 2rem; max-width: 100%; }
+    
+    /* Header styling */
+    .main-header {
+        background: linear-gradient(135deg, #1a1a2e 0%, #0f3460 50%, #16213e 100%);
+        border-radius: 16px;
+        padding: 2rem;
+        margin-bottom: 1.5rem;
         border: 1px solid #2d3748;
+        text-align: center;
     }
-    .score-high { color: #00ff88; font-size: 2rem; font-weight: 700; }
-    .score-mid { color: #ffd700; font-size: 2rem; font-weight: 700; }
-    .score-low { color: #ff4757; font-size: 2rem; font-weight: 700; }
-    .signal-buy { background: #00ff88; color: black; padding: 4px 12px; border-radius: 4px; font-weight: 600; }
-    .signal-hold { background: #ffd700; color: black; padding: 4px 12px; border-radius: 4px; font-weight: 600; }
-    .signal-avoid { background: #ff4757; color: white; padding: 4px 12px; border-radius: 4px; font-weight: 600; }
+    .main-header h1 {
+        background: linear-gradient(90deg, #00ff88, #00d4ff);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2.5rem;
+        font-weight: 800;
+        margin: 0;
+        letter-spacing: -1px;
+    }
+    .main-header p {
+        color: #64748b;
+        font-size: 0.95rem;
+        margin-top: 0.5rem;
+    }
+    
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border: 1px solid #2d3748;
+        border-radius: 12px;
+        padding: 1rem;
+    }
+    [data-testid="stMetricLabel"] { color: #94a3b8 !important; font-size: 0.85rem; }
+    [data-testid="stMetricValue"] { color: #f1f5f9 !important; font-size: 1.8rem; font-weight: 700; }
+    
+    /* Signal badges */
+    .signal-badge {
+        display: inline-block;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.85rem;
+    }
+    .signal-buy { background: linear-gradient(135deg, #00ff88, #00cc6a); color: #000; }
+    .signal-trap { background: linear-gradient(135deg, #ff0040, #cc0033); color: #fff; }
+    .signal-avoid { background: linear-gradient(135deg, #ff4757, #ff6b7a); color: #fff; }
+    .signal-hold { background: linear-gradient(135deg, #ffd700, #ffed4a); color: #000; }
+    
+    /* Alert boxes */
+    .trap-alert {
+        background: linear-gradient(135deg, rgba(255,0,64,0.15), rgba(255,0,64,0.05));
+        border: 1px solid #ff0040;
+        border-left: 4px solid #ff0040;
+        border-radius: 8px;
+        padding: 1rem 1.2rem;
+        margin: 0.5rem 0;
+    }
+    .trap-alert h4 { color: #ff4757; margin: 0 0 0.3rem 0; font-size: 1rem; }
+    .trap-alert p { color: #94a3b8; margin: 0; font-size: 0.85rem; }
+    
+    /* Section headers */
+    .section-header {
+        color: #f1f5f9;
+        font-size: 1.2rem;
+        font-weight: 600;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid #2d3748;
+        margin: 1.5rem 0 1rem 0;
+    }
+    
+    /* Data table styling */
+    .stDataFrame { border-radius: 12px; overflow: hidden; }
+    .stDataFrame [data-testid="stDataFrameResizable"] {
+        border: 1px solid #2d3748;
+        border-radius: 12px;
+    }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
+        border-right: 1px solid #21262d;
+    }
+    [data-testid="stSidebar"] .block-container { padding: 1rem; }
+    
+    /* Buttons */
+    .stDownloadButton button {
+        background: linear-gradient(135deg, #1a1a2e, #16213e);
+        border: 1px solid #2d3748;
+        color: #f1f5f9;
+        border-radius: 8px;
+        transition: all 0.2s;
+    }
+    .stDownloadButton button:hover {
+        border-color: #00ff88;
+        box-shadow: 0 0 20px rgba(0,255,136,0.2);
+    }
+    
+    /* Info cards */
+    .info-card {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border: 1px solid #2d3748;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+    }
+    .info-card h3 { color: #00ff88; margin-top: 0; }
+    .info-card p { color: #94a3b8; }
+    
+    /* Welcome state */
+    .welcome-box {
+        background: linear-gradient(135deg, #1a1a2e 0%, #0f3460 50%, #16213e 100%);
+        border: 1px solid #2d3748;
+        border-radius: 16px;
+        padding: 3rem;
+        text-align: center;
+        margin: 2rem 0;
+    }
+    .welcome-box h2 { color: #f1f5f9; margin-bottom: 0.5rem; }
+    .welcome-box p { color: #64748b; }
+    
+    /* Plotly charts */
+    .js-plotly-plot { border-radius: 12px; overflow: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -278,70 +392,98 @@ def quant_score(df):
 # MAIN APP
 # ============================================================
 def main():
+    # Header
     st.markdown("""
-    <h1 style='text-align:center; color:#00ff88;'>V5 QUANT</h1>
-    <p style='text-align:center; color:#888;'>Data-Driven • 3-Factor Model • No Bullshit</p>
+    <div class="main-header">
+        <h1>V5 QUANT</h1>
+        <p>Data-Driven • 3-Factor Model • Momentum + Smart Money + Safety Net</p>
+    </div>
     """, unsafe_allow_html=True)
     
     # Sidebar
     with st.sidebar:
-        st.markdown("### Upload Data")
-        files = st.file_uploader("CSVs", accept_multiple_files=True, type=['csv'])
+        st.markdown("## 📊 Data Input")
+        files = st.file_uploader("Upload CSVs", accept_multiple_files=True, type=['csv'], label_visibility="collapsed")
         
         st.markdown("---")
+        st.markdown("## 🧠 Model Logic")
+        
         st.markdown("""
-        ### Model Logic
+        **Factor Weights:**
         
-        **Factor Weights (by correlation):**
-        - 🔥 Momentum: 70%
-        - 💰 Smart Money: 20%  
-        - 📊 Fundamentals: 10%
-        
-        **Momentum (0.80+ corr):**
-        - RSI 14W
-        - Returns 3M
-        - 52WH Distance
-        
-        **Smart Money (0.40+ corr):**
-        - FII Changes
-        - Promoter stability
-        
-        **Fundamentals (0.35+ corr):**
-        - ROCE
-        - Revenue Growth
+        | Factor | Weight | Why |
+        |--------|--------|-----|
+        | 🔥 Momentum | 70% | Corr: 0.80+ |
+        | 💰 Smart Money | 20% | Corr: 0.40+ |
+        | 📊 Fundamentals | 10% | Corr: 0.35+ |
         """)
+        
+        with st.expander("📈 Momentum Metrics"):
+            st.markdown("""
+            - **RSI 14W** (0.878 corr)
+            - **Returns 3M** (0.707 corr)
+            - **52WH Distance** (-0.655 corr)
+            """)
+        
+        with st.expander("💰 Smart Money Metrics"):
+            st.markdown("""
+            - **FII Changes** (0.499 corr)
+            - **Promoter Stability**
+            """)
+        
+        with st.expander("🛡️ Safety Net (Trap Detection)"):
+            st.markdown("""
+            - **Cash Trap**: Negative FCF + OCF
+            - **Debt Bomb**: D/E > 2, ICR < 2
+            - **Insider Exit**: Promoter selling > 3%
+            - **Smart Exit**: FII dumping
+            """)
     
     if not files:
         st.markdown("""
-        <div style='text-align:center; padding:4rem; background:#1a1a2e; border-radius:12px; margin:2rem 0;'>
-            <h3 style='color:#fff;'>Upload CSV Files</h3>
-            <p style='color:#888;'>Drop your stock data files in the sidebar</p>
+        <div class="welcome-box">
+            <h2>📁 Upload Your CSV Files</h2>
+            <p>Drop your stock data files in the sidebar to begin analysis</p>
         </div>
         """, unsafe_allow_html=True)
         
-        st.markdown("""
-        ### Why This Model Works
+        # Info section
+        col1, col2 = st.columns(2)
         
-        Traditional stock screeners use **theory-based** factors:
-        - Low P/E = Good (Theory)
-        - High ROE = Good (Theory)
-        - Low Debt = Good (Theory)
+        with col1:
+            st.markdown("""
+            <div class="info-card">
+                <h3>🎯 Why This Model Works</h3>
+                <p>Traditional screeners use theory-based factors. V5 uses <strong>data-backed correlations</strong>.</p>
+                <br>
+                <table style="width:100%; color:#94a3b8;">
+                    <tr><td>RSI 14W</td><td style="color:#00ff88; text-align:right;"><strong>+0.878</strong></td></tr>
+                    <tr><td>Returns 3M</td><td style="color:#00ff88; text-align:right;"><strong>+0.707</strong></td></tr>
+                    <tr><td>52WH Distance</td><td style="color:#00ff88; text-align:right;"><strong>-0.655</strong></td></tr>
+                    <tr><td>FII Changes</td><td style="color:#00d4ff; text-align:right;"><strong>+0.499</strong></td></tr>
+                    <tr><td>ROCE</td><td style="color:#ffd700; text-align:right;">+0.413</td></tr>
+                    <tr><td>NPM</td><td style="color:#ff4757; text-align:right;">-0.013 ❌</td></tr>
+                    <tr><td>D/E Ratio</td><td style="color:#ff4757; text-align:right;">+0.068 ❌</td></tr>
+                </table>
+            </div>
+            """, unsafe_allow_html=True)
         
-        **But data shows different story:**
-        
-        | Factor | Correlation with Returns |
-        |--------|-------------------------|
-        | RSI 14W | **+0.878** 🔥 |
-        | Returns 3M | **+0.707** 🔥 |
-        | 52WH Distance | **-0.655** 🔥 |
-        | FII Changes | **+0.499** |
-        | P/E Ratio | **+0.385** (High PE wins!) |
-        | ROCE | +0.413 |
-        | NPM | -0.013 (useless) |
-        | D/E Ratio | +0.068 (useless) |
-        
-        **The truth:** Momentum + Smart Money = 90% of returns.
-        """)
+        with col2:
+            st.markdown("""
+            <div class="info-card">
+                <h3>🛡️ Safety Net Feature</h3>
+                <p>V5 catches <strong>Pump & Dump</strong> traps that pure momentum models miss.</p>
+                <br>
+                <p style="color:#ff4757;"><strong>🚨 DEATH SPIRAL</strong><br>
+                <span style="color:#64748b;">Negative cash + Heavy debt</span></p>
+                <p style="color:#ff4757;"><strong>🚨 PUMP & DUMP</strong><br>
+                <span style="color:#64748b;">High momentum + Burning cash</span></p>
+                <p style="color:#ff4757;"><strong>🚨 INSIDER EXIT</strong><br>
+                <span style="color:#64748b;">Promoters dumping shares</span></p>
+                <p style="color:#ff4757;"><strong>🚨 SMART EXIT</strong><br>
+                <span style="color:#64748b;">FIIs leaving before crash</span></p>
+            </div>
+            """, unsafe_allow_html=True)
         return
     
     # Load and process data
@@ -361,7 +503,7 @@ def main():
     avoid_count = len(df[df['Signal_Class'] == 'avoid'])
     trap_count = len(df[df['Signal_Class'] == 'trap'])
     
-    col1.metric("🚀 Buy Signals", buy_count)
+    col1.metric("🚀 Buy", buy_count)
     col2.metric("⏸️ Hold", hold_count)
     col3.metric("⚠️ Avoid", avoid_count)
     col4.metric("🚨 Traps", trap_count)
@@ -369,13 +511,18 @@ def main():
     # TRAP ALERTS (Show prominently if any)
     trap_df = df[df['Signal_Class'] == 'trap']
     if len(trap_df) > 0:
-        st.markdown("### 🚨 TRAP ALERTS - Do NOT Buy These!")
+        st.markdown('<div class="section-header">🚨 TRAP ALERTS — Do NOT Buy</div>', unsafe_allow_html=True)
         for _, row in trap_df.iterrows():
             flags_str = ', '.join(row['Red_Flags']) if row['Red_Flags'] else 'Multiple issues'
-            st.error(f"**{row.get('Name', 'Unknown')}**: {row['Signal']} - {row.get('Signal_Reason', '')} | Flags: {flags_str}")
+            st.markdown(f"""
+            <div class="trap-alert">
+                <h4>{row.get('Name', 'Unknown')} — {row['Signal']}</h4>
+                <p>{row.get('Signal_Reason', '')} | Flags: {flags_str}</p>
+            </div>
+            """, unsafe_allow_html=True)
     
     # Main Table
-    st.markdown("### Rankings")
+    st.markdown('<div class="section-header">📊 Stock Rankings</div>', unsafe_allow_html=True)
     
     display_cols = ['Rank', 'Name', 'Signal', 'Signal_Reason', 'Quant_Score', 
                     'Momentum_Score', 'SmartMoney_Score', 'Fundamental_Score', 'Flag_Count']
@@ -412,7 +559,7 @@ def main():
     st.dataframe(styled, height=500, use_container_width=True)
     
     # Charts
-    st.markdown("### Analysis")
+    st.markdown('<div class="section-header">📈 Visual Analysis</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     
     with col1:
@@ -424,7 +571,13 @@ def main():
             color='Signal_Class',
             hover_name='Name',
             title="Momentum vs Total Score",
-            color_discrete_map={'buy': '#00ff88', 'hold': '#ffd700', 'avoid': '#ff4757'}
+            color_discrete_map={'buy': '#00ff88', 'hold': '#ffd700', 'avoid': '#ff4757', 'trap': '#ff0040'}
+        )
+        fig.update_layout(
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(26,26,46,0.8)',
+            font_color='#94a3b8',
+            title_font_color='#f1f5f9'
         )
         st.plotly_chart(fig, use_container_width=True)
     
@@ -432,35 +585,47 @@ def main():
         # Factor breakdown for top stock
         if len(df) > 0:
             top = df.iloc[0]
-            factors = ['Momentum', 'Smart Money', 'Fundamentals']
+            factors = ['Momentum (70%)', 'Smart Money (20%)', 'Fundamentals (10%)']
             values = [
-                top['Momentum_Score'] * 0.70,
-                top['SmartMoney_Score'] * 0.20,
-                top['Fundamental_Score'] * 0.10
+                top['Momentum_Score'] * 0.70 * 100,
+                top['SmartMoney_Score'] * 0.20 * 100,
+                top['Fundamental_Score'] * 0.10 * 100
             ]
             
             fig = go.Figure(go.Bar(
                 x=factors,
                 y=values,
-                marker_color=['#00ff88', '#3b82f6', '#ffd700']
+                marker_color=['#00ff88', '#3b82f6', '#ffd700'],
+                text=[f'{v:.1f}' for v in values],
+                textposition='outside'
             ))
             fig.update_layout(
                 title=f"Score Breakdown: {top.get('Name', 'Top Stock')}",
-                yaxis_title="Contribution to Score"
+                yaxis_title="Contribution to Score",
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(26,26,46,0.8)',
+                font_color='#94a3b8',
+                title_font_color='#f1f5f9',
+                showlegend=False
             )
             st.plotly_chart(fig, use_container_width=True)
     
     # Export
-    st.markdown("### Export")
-    col1, col2 = st.columns(2)
+    st.markdown('<div class="section-header">📥 Export Data</div>', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
     
     csv_all = df.to_csv(index=False).encode('utf-8')
-    col1.download_button("📥 All Data", csv_all, "V5_Quant_All.csv", use_container_width=True)
+    col1.download_button("📥 All Stocks", csv_all, "V5_Quant_All.csv", use_container_width=True)
     
     buy_df = df[df['Signal_Class'] == 'buy']
     if len(buy_df) > 0:
         csv_buy = buy_df.to_csv(index=False).encode('utf-8')
-        col2.download_button("🚀 Buy Signals", csv_buy, "V5_Quant_Buys.csv", use_container_width=True)
+        col2.download_button("🚀 Buy Only", csv_buy, "V5_Quant_Buys.csv", use_container_width=True)
+    
+    avoid_df = df[df['Signal_Class'].isin(['avoid', 'trap'])]
+    if len(avoid_df) > 0:
+        csv_avoid = avoid_df.to_csv(index=False).encode('utf-8')
+        col3.download_button("🚨 Avoid/Traps", csv_avoid, "V5_Quant_Avoid.csv", use_container_width=True)
 
 if __name__ == "__main__":
     main()
