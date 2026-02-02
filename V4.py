@@ -64,11 +64,14 @@ def analyze_market_regime(df):
     m1y = df['Returns 1Y'].median() if 'Returns 1Y' in df.columns else 0
     
     if m3 > 8 and m1y > 15:
+        # BULL: Aggressive on Growth & Momentum, but verified by Cash
         return "🚀 BULL RUN", {'Quality':0.15, 'Growth':0.25, 'Valuation':0.10, 'Safety':0.10, 'Momentum':0.25, 'Cash':0.15}
     elif m3 < -5:
-        return "🐻 BEAR MARKET", {'Quality':0.20, 'Growth':0.10, 'Valuation':0.25, 'Safety':0.20, 'Momentum':0.05, 'Cash':0.20}
+        # BEAR: Safety, Valuation and Cash Flow are King
+        return "🐻 BEAR MARKET", {'Quality':0.20, 'Growth':0.05, 'Valuation':0.25, 'Safety':0.20, 'Momentum':0.05, 'Cash':0.25}
     else:
-        return "⚖️ SIDEWAYS", {'Quality':0.20, 'Growth':0.20, 'Valuation':0.15, 'Safety':0.15, 'Momentum':0.15, 'Cash':0.15}
+        # SIDEWAYS: Balanced approach
+        return "⚖️ SIDEWAYS", {'Quality':0.20, 'Growth':0.15, 'Valuation':0.15, 'Safety':0.15, 'Momentum':0.15, 'Cash':0.20}
 
 # =========================================================
 # 4. GOD MODE SCORING ENGINE (100% DATA USAGE)
@@ -84,14 +87,13 @@ def run_god_mode_scoring(df, weights):
     else: df['Score_Quality'] = 0
 
     # 2. GROWTH (Expansion + Acceleration)
-    # Uses: TTM Growth, YoY Growth, QoQ Growth (Acceleration)
+    # Uses: TTM Growth + QoQ Growth (Acceleration)
     g_cols = [c for c in ['PAT Growth TTM', 'Revenue Growth TTM', 'PAT Growth QoQ', 'Revenue Growth QoQ'] if c in df.columns]
     if g_cols:
         df['Score_Growth'] = scaler.fit_transform(df[g_cols].mean(axis=1).values.reshape(-1,1))
     else: df['Score_Growth'] = 0
 
     # 3. VALUATION (Cheapness)
-    # Uses: PE, Price/Sales. Inverts them (lower is better).
     if 'Price To Earnings' in df.columns:
         pe_inv = 1 / df['Price To Earnings'].clip(lower=0.1)
         ps_inv = 1 / df['Price To Sales'].clip(lower=0.1) if 'Price To Sales' in df.columns else 0
@@ -99,7 +101,6 @@ def run_god_mode_scoring(df, weights):
     else: df['Score_Valuation'] = 0
 
     # 4. SAFETY (Balance Sheet Strength)
-    # Uses: Debt/Equity, Promoter Holdings
     if 'Debt To Equity' in df.columns:
         de_inv = 1 / (df['Debt To Equity'].clip(lower=0.01) + 1)
         prom = df.get('Promoter Holdings', 0) / 100
@@ -107,24 +108,22 @@ def run_god_mode_scoring(df, weights):
     else: df['Score_Safety'] = 0
 
     # 5. CASH FLOW KING (The "Truth" Indicator) - NEW!
-    # Uses: Operating Cash Flow, Free Cash Flow
-    # Logic: High OCF and FCF is the ultimate quality signal.
+    # Uses: Operating Cash Flow + Free Cash Flow
     c_cols = [c for c in ['Operating Cash Flow', 'Free Cash Flow'] if c in df.columns]
     if c_cols:
         df['Score_Cash'] = scaler.fit_transform(df[c_cols].mean(axis=1).values.reshape(-1,1))
     else: df['Score_Cash'] = 0.5
 
     # 6. POWER MOMENTUM (Technicals + Institutional Flow) - UPGRADED!
-    # Uses: RSI Daily, RSI Weekly, ADX, FII Change, DII Change
+    # Uses: RSI Daily + Weekly + ADX + FII + DII
     rsi_w = df.get('RSI 14W', 50)
-    rsi_d = df.get('RSI 14D', 50) # Added Daily for confirmation
+    rsi_d = df.get('RSI 14D', 50) 
     adx = df.get('ADX 14W', 20)
     fii = df.get('Change In FII Holdings Latest Quarter', 0)
-    dii = df.get('Change In DII Holdings Latest Quarter', 0) # Added DII
+    dii = df.get('Change In DII Holdings Latest Quarter', 0) 
     
     # Momentum Formula: 
-    # (Weekly RSI * 30%) + (Daily RSI * 10%) + (ADX * 20%) + (Inst. Flows * 40%)
-    mom_score = (rsi_w * 0.3) + (rsi_d * 0.1) + (adx * 0.2) + ((fii + dii) * 10)
+    mom_score = (rsi_w * 0.25) + (rsi_d * 0.1) + (adx * 0.2) + ((fii + dii) * 15)
     df['Score_Momentum'] = scaler.fit_transform(mom_score.values.reshape(-1,1))
 
     # FINAL FORMULA
@@ -182,7 +181,7 @@ def main():
             st.subheader("🏆 The Ultimate Rankings")
             
             # Select columns dynamically (only if they exist)
-            show_cols = ['Rank','Name','Verdict','Final_Score','Close Price','Price To Earnings','PAT Growth QoQ','Free Cash Flow','RSI 14W']
+            show_cols = ['Rank','Name','Verdict','Final_Score','Price To Earnings','PAT Growth QoQ','Free Cash Flow','RSI 14W']
             show_cols = [c for c in show_cols if c in df.columns]
             
             st.dataframe(df[show_cols].head(50).style.background_gradient(subset=['Final_Score'], cmap='Greens'), height=800)
