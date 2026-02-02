@@ -10,8 +10,8 @@ from datetime import datetime
 # =========================================================
 
 st.set_page_config(
-    page_title="V4 Ultimate | Stock Analyzer",
-    page_icon="📊",
+    page_title="Wave Detection | Pro Stock Analyzer",
+    page_icon="🌊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
