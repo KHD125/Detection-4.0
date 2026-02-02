@@ -6,26 +6,32 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 # =========================================================
-# 🚀 V4 ULTIMATE PRO MAX - ALL TIME BEST DATA-DRIVEN ANALYZER
+# 🚀 V4 ULTRA - PURE QUANT DATA-DRIVEN ANALYZER
 # =========================================================
 # CORRELATION-BACKED ALGORITHM (Not Theory-Based!)
 # 
-# TOP PREDICTORS (by correlation to returns):
-#   1. RSI 14W        +0.878  ← KING OF SIGNALS
-#   2. Returns 3M     +0.707  ← Strong momentum
-#   3. 52WH Distance  -0.655  ← Relative strength
-#   4. FII Changes    +0.499  ← Smart money
-#   5. ROCE           +0.413  ← Quality signal
-#   6. Revenue Growth +0.336  ← Growth signal
+# CORE PHILOSOPHY: Let DATA decide, not textbook theory
+# 
+# TOP PREDICTORS (by actual correlation to returns):
+#   1. RSI 14W        +0.878  ← KING OF SIGNALS (40% of Momentum)
+#   2. Returns 3M     +0.707  ← Strong momentum (30% of Momentum)
+#   3. 52WH Distance  -0.655  ← Relative strength (20% of Momentum)
+#   4. PE             +0.551  ← HIGH PE WINS! (Don't penalize!)
+#   5. FII Changes    +0.499  ← Smart money (70% of Institutional)
+#   6. ROCE           +0.413  ← Only quality that matters
 #
-# V4 ULTIMATE PRO MAX FEATURES:
-#   ✓ Absolute Quality Gates (pre-filter garbage)
-#   ✓ Momentum Acceleration (2nd derivative signal)
-#   ✓ FII Acceleration (smart money trend)
-#   ✓ Regime Trend Detection (improving/deteriorating)
-#   ✓ Trap Probability Score (0-100%, not binary)
-#   ✓ Data Confidence Multiplier (quality-adjusted scores)
-#   ✓ Fundamental Momentum (growth acceleration)
+# DEAD SIGNALS (correlation < 0.2):
+#   ✗ NPM             -0.013  ← USELESS
+#   ✗ PAT Growth      +0.006  ← NOISE
+#   ✗ Debt/Equity     +0.068  ← DOESN'T MATTER
+#   ✗ DII Changes     NEGATIVE ← CONTRARIAN SIGNAL
+#
+# V4 ULTRA SIMPLIFICATION:
+#   ✓ 4 Factors only (Momentum 60%, Institutional 20%, Quality 10%, Safety 10%)
+#   ✓ Z-Score normalization (adaptive to any market)
+#   ✓ No style classification (data doesn't care!)
+#   ✓ Simple percentile verdicts (Top 20% = BUY)
+#   ✓ Trap detection kept (OCF/FCF/Debt)
 # =========================================================
 
 st.set_page_config(
@@ -430,18 +436,20 @@ def process_files(uploaded_files):
     return master_df
 
 # =========================================================
-# 🎯 MARKET REGIME DETECTION (WITH TREND DETECTION)
+# 🎯 MARKET REGIME DETECTION - SIMPLIFIED
 # =========================================================
 def analyze_market_regime(df):
     """
-    Multi-factor market regime detection WITH TREND.
-    Now detects if regime is IMPROVING or DETERIORATING.
+    V4 ULTRA: Simplified regime detection.
     
-    WEIGHT PHILOSOPHY (from correlation analysis):
-    - Momentum ALWAYS dominates (0.80+ correlation)
-    - Quality/Safety increase in bear markets (preservation)
-    - Institutional always matters (smart money signal)
-    - Value score reduced (PE correlation is positive, not negative!)
+    KEY INSIGHT: Momentum ALWAYS dominates (60%+)
+    Only adjust Safety/Quality in bear markets for risk management.
+    
+    4 FACTORS ONLY:
+    - Momentum: 60% (RSI + Returns + 52WH + FII_Accel)
+    - Institutional: 20% (FII changes - the smart money)
+    - Quality: 10% (ROCE only - the one that matters)
+    - Safety: 10% (OCF/FCF/Debt - trap avoidance)
     """
     r1m = df['Returns 1M'].median() if 'Returns 1M' in df.columns else 0
     r3m = df['Returns 3M'].median() if 'Returns 3M' in df.columns else 0
@@ -451,72 +459,53 @@ def analyze_market_regime(df):
     breadth_1m = (df['Returns 1M'] > 0).mean() * 100 if 'Returns 1M' in df.columns else 50
     breadth_3m = (df['Returns 3M'] > 0).mean() * 100 if 'Returns 3M' in df.columns else 50
     
-    # 🆕 REGIME TREND: Compare recent vs older breadth/returns
+    # REGIME TREND
     regime_trend = "STABLE"
     if breadth_1m > breadth_3m + 10:
         regime_trend = "IMPROVING"
     elif breadth_1m < breadth_3m - 10:
         regime_trend = "DETERIORATING"
     
-    # Check if returns are accelerating
+    # Returns acceleration
     monthly_rate_recent = r1m
     monthly_rate_older = (r3m - r1m) / 2 if r3m != r1m else 0
     returns_accelerating = monthly_rate_recent > monthly_rate_older
     
-    # Regime Classification - DATA-DRIVEN WEIGHTS
+    # V4 ULTRA: SIMPLIFIED 4-FACTOR WEIGHTS
+    # Momentum ALWAYS 60%+ because data says so!
+    
     if r3m > 10 and r1y > 20 and breadth_3m > 65:
         regime = "🚀 STRONG BULL"
-        base_weights = {
-            'Quality': 0.10, 'Growth': 0.15, 'Value': 0.05,
-            'Safety': 0.05, 'Momentum': 0.45, 'Institutional': 0.15, 'Technical': 0.05
-        }
-        strategy = "Maximum Momentum"
-    elif r3m > 5 and r1y > 10 and breadth_3m > 55:
-        regime = "📈 BULL MARKET"
-        base_weights = {
-            'Quality': 0.12, 'Growth': 0.13, 'Value': 0.05,
-            'Safety': 0.08, 'Momentum': 0.40, 'Institutional': 0.15, 'Technical': 0.07
-        }
-        strategy = "Momentum + Quality"
+        weights = {'Momentum': 0.65, 'Institutional': 0.20, 'Quality': 0.10, 'Safety': 0.05}
+        strategy = "Max Momentum"
+    elif r3m > 5 and breadth_3m > 50:
+        regime = "📈 BULL"
+        weights = {'Momentum': 0.60, 'Institutional': 0.20, 'Quality': 0.10, 'Safety': 0.10}
+        strategy = "Momentum"
     elif r3m < -10 or (r1m < -5 and breadth_1m < 30):
-        regime = "🐻 BEAR MARKET"
-        base_weights = {
-            'Quality': 0.25, 'Growth': 0.05, 'Value': 0.10,
-            'Safety': 0.25, 'Momentum': 0.20, 'Institutional': 0.12, 'Technical': 0.03
-        }
-        strategy = "Quality + Safety First"
+        regime = "🐻 BEAR"
+        weights = {'Momentum': 0.45, 'Institutional': 0.20, 'Quality': 0.15, 'Safety': 0.20}
+        strategy = "Defensive"
     elif r3m < -3 or breadth_3m < 40:
         regime = "⚠️ CORRECTION"
-        base_weights = {
-            'Quality': 0.20, 'Growth': 0.08, 'Value': 0.08,
-            'Safety': 0.20, 'Momentum': 0.25, 'Institutional': 0.14, 'Technical': 0.05
-        }
-        strategy = "Balanced Defense"
+        weights = {'Momentum': 0.50, 'Institutional': 0.20, 'Quality': 0.15, 'Safety': 0.15}
+        strategy = "Cautious"
     else:
         regime = "⚖️ SIDEWAYS"
-        base_weights = {
-            'Quality': 0.15, 'Growth': 0.10, 'Value': 0.08,
-            'Safety': 0.12, 'Momentum': 0.35, 'Institutional': 0.15, 'Technical': 0.05
-        }
-        strategy = "Selective Momentum"
+        weights = {'Momentum': 0.55, 'Institutional': 0.20, 'Quality': 0.12, 'Safety': 0.13}
+        strategy = "Selective"
     
-    # 🆕 ADJUST WEIGHTS BASED ON REGIME TREND
-    weights = base_weights.copy()
-    
+    # Regime trend fine-tuning
     if regime_trend == "IMPROVING":
-        # Market getting better → Lean more into momentum
-        weights['Momentum'] = min(0.55, weights['Momentum'] + 0.05)
-        weights['Safety'] = max(0.03, weights['Safety'] - 0.03)
-        weights['Quality'] = max(0.05, weights['Quality'] - 0.02)
+        weights['Momentum'] = min(0.70, weights['Momentum'] + 0.05)
+        weights['Safety'] = max(0.05, weights['Safety'] - 0.05)
         strategy += " ↑"
     elif regime_trend == "DETERIORATING":
-        # Market getting worse → Lean into safety
-        weights['Safety'] = min(0.30, weights['Safety'] + 0.05)
-        weights['Quality'] = min(0.30, weights['Quality'] + 0.03)
-        weights['Momentum'] = max(0.15, weights['Momentum'] - 0.08)
+        weights['Safety'] = min(0.25, weights['Safety'] + 0.05)
+        weights['Momentum'] = max(0.40, weights['Momentum'] - 0.05)
         strategy += " ↓"
     
-    # Normalize weights to sum to 1.0
+    # Normalize to sum to 1.0
     total = sum(weights.values())
     weights = {k: v/total for k, v in weights.items()}
     
@@ -638,26 +627,56 @@ def run_ultimate_scoring(df, base_weights):
     # Technical
     dist_52wh, has_52wh = safe_get('52WH Distance', -15)
     ret_vs_nifty, has_vs_nifty = safe_get('Returns Vs Nifty 500 3M', 0)
-    ret_vs_ind, has_vs_ind = safe_get('Returns Vs Industry 3M', 0)
-    
-    # Additional data for advanced features
-    pat_qoq, has_pat_qoq = safe_get('PAT Growth QoQ', 0)
-    rev_qoq, has_rev_qoq = safe_get('Revenue Growth QoQ', 0)
-    fii_chg_1y, has_fii_1y = safe_get('Change In FII Holdings 1 Year', 0)
-    total_liabilities, has_total_liab = safe_get('Total Liabilities', 0)
-    
     # ═══════════════════════════════════════════════════════
-    # 🆕 MOMENTUM ACCELERATION (2nd Derivative Signal)
-    # Catches breakouts before they show in absolute momentum
+    # V4 ULTRA: PURE QUANT 4-FACTOR Z-SCORE ENGINE
+    # ═══════════════════════════════════════════════════════
+    # 
+    # 4 FACTORS ONLY (data-driven, no style classification):
+    #   1. MOMENTUM (60%): RSI + Returns + 52WH Distance + Acceleration
+    #   2. INSTITUTIONAL (20%): FII flows (smart money)
+    #   3. QUALITY (10%): ROCE only (the one that matters)
+    #   4. SAFETY (10%): Cash flow + Debt (trap avoidance)
+    #
     # ═══════════════════════════════════════════════════════
     
-    # Short-term vs Medium-term momentum comparison
-    # If 1M return is 10% and 3M return is 15%, monthly rate is:
-    # Recent (1M): 10% per month
-    # Older (3M avg): 5% per month → Acceleration = +5 (speeding up!)
+    # ─────────────────────────────────────────────────────────
+    # Z-SCORE HELPER: Adaptive market-relative normalization
+    # ─────────────────────────────────────────────────────────
+    def get_z_score(series, lower_better=False, available=True):
+        """
+        Convert raw values to Z-scores with outlier capping.
+        Returns percentile rank (0-1) for consistency with weighted_avg.
+        """
+        if not available or series is None:
+            return pd.Series([0.5] * n, index=df.index)
+        
+        # Cap outliers at 5th/95th percentile
+        capped = series.clip(
+            lower=series.quantile(0.05), 
+            upper=series.quantile(0.95)
+        )
+        
+        # Calculate Z-score
+        mean_val = capped.mean()
+        std_val = capped.std()
+        if std_val == 0 or pd.isna(std_val):
+            return pd.Series([0.5] * n, index=df.index)
+        
+        z = (capped - mean_val) / std_val
+        
+        # Flip if lower is better
+        if lower_better:
+            z = -z
+        
+        # Convert to 0-1 range using percentile rank
+        return z.rank(pct=True).fillna(0.5)
+    
+    # ─────────────────────────────────────────────────────────
+    # MOMENTUM ACCELERATION (2nd derivative - catches breakouts)
+    # ─────────────────────────────────────────────────────────
     if has_ret_1m and has_ret_3m:
         recent_monthly = ret_1m
-        older_monthly = (ret_3m - ret_1m) / 2  # Average of previous 2 months
+        older_monthly = (ret_3m - ret_1m) / 2
         momentum_acceleration = recent_monthly - older_monthly
         has_mom_accel = True
     else:
@@ -666,58 +685,10 @@ def run_ultimate_scoring(df, base_weights):
     
     df['Momentum_Acceleration'] = momentum_acceleration
     
-    # ═══════════════════════════════════════════════════════
-    # 🆕 FII ACCELERATION (Smart Money Trend)
-    # Are FIIs buying MORE or slowing down?
-    # ═══════════════════════════════════════════════════════
-    
-    if has_fii_chg and has_fii_1y:
-        fii_quarterly_rate = fii_chg
-        fii_older_quarterly_rate = (fii_chg_1y - fii_chg) / 3  # Other 3 quarters avg
-        fii_acceleration = fii_quarterly_rate - fii_older_quarterly_rate
-        has_fii_accel = True
-    else:
-        fii_acceleration = pd.Series([0.0] * n, index=df.index)
-        has_fii_accel = False
-    
-    df['FII_Acceleration'] = fii_acceleration
-    
-    # ═══════════════════════════════════════════════════════
-    # 🆕 FUNDAMENTAL MOMENTUM (Growth Acceleration)
-    # Is growth speeding up or slowing down?
-    # ═══════════════════════════════════════════════════════
-    
-    if has_pat_ttm and has_pat_qoq:
-        growth_trend = pat_qoq - pat_ttm  # Positive = improving
-        has_growth_trend = True
-    else:
-        growth_trend = pd.Series([0.0] * n, index=df.index)
-        has_growth_trend = False
-    
-    if has_rev_ttm and has_rev_qoq:
-        revenue_trend = rev_qoq - rev_ttm
-        has_revenue_trend = True
-    else:
-        revenue_trend = pd.Series([0.0] * n, index=df.index)
-        has_revenue_trend = False
-    
-    # Combine into Fundamental Momentum
-    if has_growth_trend or has_revenue_trend:
-        fundamental_momentum = growth_trend * 0.6 + revenue_trend * 0.4
-        has_fund_momentum = True
-    else:
-        fundamental_momentum = pd.Series([0.0] * n, index=df.index)
-        has_fund_momentum = False
-    
-    df['Fundamental_Momentum'] = fundamental_momentum
-    
-    # ═══════════════════════════════════════════════════════
-    # 🆕 ABSOLUTE QUALITY GATES (Pre-filter garbage)
-    # Non-negotiable fundamentals that must be met
-    # ═══════════════════════════════════════════════════════
-    
-    def calculate_quality_gate_score(idx):
-        """Returns 0.0 to 1.0 based on how many quality gates passed"""
+    # ─────────────────────────────────────────────────────────
+    # QUALITY GATES (Binary trap filter - 0 to 1)
+    # ─────────────────────────────────────────────────────────
+    def calculate_quality_gate(idx):
         gates_passed = 0
         total_gates = 5
         
@@ -726,22 +697,22 @@ def run_ultimate_scoring(df, base_weights):
         if ocf_val > 0:
             gates_passed += 1
         
-        # Gate 2: ROE > Cost of Equity (~10% for India)
+        # Gate 2: ROE > Cost of Equity
         roe_val = roe.iloc[idx] if hasattr(roe, 'iloc') else roe[idx]
         if roe_val > 10:
             gates_passed += 1
         
-        # Gate 3: Debt not killing company (D/E < 2)
+        # Gate 3: Debt not dangerous
         de_val = de.iloc[idx] if hasattr(de, 'iloc') else de[idx]
         if de_val < 2:
             gates_passed += 1
         
-        # Gate 4: Not hemorrhaging money (PAT Growth > -30%)
+        # Gate 4: Not hemorrhaging money
         pat_val = pat_ttm.iloc[idx] if hasattr(pat_ttm, 'iloc') else pat_ttm[idx]
         if pat_val > -30:
             gates_passed += 1
         
-        # Gate 5: Some institutional interest (FII + DII > 5%)
+        # Gate 5: Some institutional interest
         fii_val = fii.iloc[idx] if hasattr(fii, 'iloc') else fii[idx]
         dii_val = dii.iloc[idx] if hasattr(dii, 'iloc') else dii[idx]
         if (fii_val + dii_val) > 5:
@@ -749,255 +720,82 @@ def run_ultimate_scoring(df, base_weights):
         
         return gates_passed / total_gates
     
-    df['Quality_Gate_Score'] = [calculate_quality_gate_score(i) for i in range(n)]
+    df['Quality_Gate'] = [calculate_quality_gate(i) for i in range(n)]
     
     # ═══════════════════════════════════════════════════════
-    # STEP 1: CLASSIFY STOCK STYLE (Avoid the "Soup" Problem)
+    # FACTOR 1: MOMENTUM SCORE (60% of final - THE KING)
+    # Correlation backed: RSI +0.878, Ret3M +0.707, 52WH -0.655
     # ═══════════════════════════════════════════════════════
     
-    # Calculate percentile ranks for classification (not just median comparison)
-    pe_capped = pe.clip(1, 200)
-    pe_rank = pe_capped.rank(pct=True, ascending=True)  # Lower PE = lower rank (better for value)
-    growth_rank = pat_ttm.rank(pct=True, ascending=True)  # Higher growth = higher rank
-    momentum_rank = ret_3m.rank(pct=True, ascending=True)  # Higher returns = higher rank
-    quality_proxy = (roe + roce) / 2  # Simple quality proxy
-    quality_rank = quality_proxy.rank(pct=True, ascending=True)
-    
-    # Value: Actually cheap (bottom 35% PE) AND profitable (ROE > 8)
-    is_value = (pe_rank < 0.35) & (roe > 8)
-    
-    # Growth: Actually growing fast (top 35% growth) AND decent quality
-    is_growth = (growth_rank > 0.65) & (quality_rank > 0.4)
-    
-    # Momentum: Strong price action (top 35% returns) AND RSI confirms
-    is_momentum = (momentum_rank > 0.65) & (rsi_w > 50) & (rsi_w < 75)
-    
-    # Classify each stock's style using clear logic
-    def classify_style(row_idx):
-        # Get values for this row
-        val = is_value.iloc[row_idx] if hasattr(is_value, 'iloc') else is_value[row_idx]
-        grow = is_growth.iloc[row_idx] if hasattr(is_growth, 'iloc') else is_growth[row_idx]
-        mom = is_momentum.iloc[row_idx] if hasattr(is_momentum, 'iloc') else is_momentum[row_idx]
-        
-        # GARP: Both Value AND Growth characteristics (rare, best)
-        if val and grow:
-            return 'GARP'
-        # Growth: High growth, willing to pay premium
-        elif grow and not val:
-            return 'Growth'
-        # Momentum: Price trend is the driver
-        elif mom and not grow:
-            return 'Momentum'
-        # Value: Cheap with some quality
-        elif val and not grow:
-            return 'Value'
-        # Balanced: Doesn't fit a clear category
-        else:
-            return 'Balanced'
-    
-    df['Stock_Style'] = [classify_style(i) for i in range(n)]
-    
-    # ═══════════════════════════════════════════════════════
-    # STEP 2: CALCULATE FACTOR SCORES (No cross-contamination)
-    # ═══════════════════════════════════════════════════════
-    
-    # QUALITY SCORE - DATA-DRIVEN FIX
-    # ROCE has +0.413 correlation (use it!)
-    # ROE is proxy for ROCE (similar signal)
-    # NPM has -0.013 correlation (USELESS - removed!)
-    # OPM is better than NPM (operational efficiency)
-    quality_components = [
-        (smart_rank(roce, available=has_roce), 0.45, has_roce),  # ROCE = KEY quality signal
-        (smart_rank(roe, available=has_roe), 0.35, has_roe),     # ROE supports ROCE
-        (smart_rank(opm, available=has_opm), 0.20, has_opm),     # OPM for margin quality
-        # NPM REMOVED - -0.013 correlation = USELESS
-    ]
-    df['Score_Quality'] = weighted_avg(quality_components)
-    
-    # GROWTH SCORE - Now with FUNDAMENTAL MOMENTUM!
-    # Fundamental Momentum: Growth trend (accelerating vs decelerating)
-    fund_momentum_normalized = fundamental_momentum.clip(-50, 50)  # Cap extremes
-    
-    growth_components = [
-        (smart_rank(pat_ttm, available=has_pat_ttm), 0.30, has_pat_ttm),
-        (smart_rank(rev_ttm, available=has_rev_ttm), 0.25, has_rev_ttm),
-        (smart_rank(fund_momentum_normalized, available=has_fund_momentum), 0.20, has_fund_momentum),  # 🆕 TREND!
-        (smart_rank(eps_ttm, available=has_eps_ttm), 0.15, has_eps_ttm),
-        (smart_rank(pat_yoy, available=has_pat_yoy), 0.10, has_pat_yoy),
-    ]
-    df['Score_Growth'] = weighted_avg(growth_components)
-    
-    # VALUE SCORE - DATA-DRIVEN REALITY CHECK
-    # Traditional theory: Low PE = undervalued = good
-    # DATA REALITY: High PE stocks often outperform (growth premium)
-    # NEW APPROACH: PEG ratio concept - PE relative to growth
-    # If PE is high but growth is higher = GOOD
-    # If PE is high but growth is low = BAD
-    pe_capped = pe.clip(1, 200)
-    
-    # Growth-adjusted value: Penalize high PE only if low growth
-    growth_proxy = pat_ttm.clip(-50, 200)  # PAT Growth as growth proxy
-    
-    # PEG-style adjustment: High PE is OK if high growth
-    # Lower PE relative to growth = better value
-    peg_adjusted = pe_capped / (growth_proxy + 20).clip(1, None)  # +20 to handle negative growth
-    
-    value_components = [
-        (smart_rank(peg_adjusted, lower_better=True, available=has_pe and has_pat_ttm), 0.70, has_pe and has_pat_ttm),  # PEG-style
-        (smart_rank(ps.clip(0.1, 50), lower_better=True, available=has_ps), 0.30, has_ps),  # P/S still useful
-    ]
-    df['Score_Value'] = weighted_avg(value_components)
-    
-    # SAFETY SCORE
-    de_capped = de.clip(0, 5)
-    safety_components = [
-        (smart_rank(de_capped, lower_better=True, available=has_de), 0.30, has_de),
-        (smart_rank(promoter, available=has_promoter), 0.25, has_promoter),
-        (smart_rank(fcf, available=has_fcf), 0.25, has_fcf),
-        (smart_rank(ocf, available=has_ocf), 0.20, has_ocf),
-    ]
-    df['Score_Safety'] = weighted_avg(safety_components)
-    
-    # MOMENTUM SCORE - NOW RSI-LED (0.878 correlation!) + ACCELERATION
-    # RSI 14W sweet spot: 45-70 (trending, not overbought)
-    rsi_normalized = rsi_w.copy()
-    # Penalize overbought (>75) and oversold (<30)
-    rsi_normalized = np.where(rsi_w > 75, rsi_w * 0.7, rsi_normalized)  # Overbought penalty
-    rsi_normalized = np.where(rsi_w < 30, rsi_w * 0.8, rsi_normalized)  # Oversold slight penalty
-    
-    # 🆕 MOMENTUM ACCELERATION BOOST
-    # If acceleration is positive, momentum is INCREASING (very bullish)
-    # If acceleration is negative, momentum is FADING (warning)
-    momentum_accel_normalized = momentum_acceleration.clip(-30, 30)  # Cap extremes
+    # RSI sweet spot: penalize extremes (overbought/oversold)
+    rsi_adjusted = rsi_w.copy()
+    rsi_adjusted = np.where(rsi_w > 75, rsi_w * 0.7, rsi_adjusted)  # Overbought penalty
+    rsi_adjusted = np.where(rsi_w < 30, rsi_w * 0.8, rsi_adjusted)  # Oversold penalty
     
     momentum_components = [
-        (smart_rank(pd.Series(rsi_normalized, index=df.index), available=has_rsi_w), 0.30, has_rsi_w),  # RSI 14W = KING
-        (smart_rank(ret_3m, available=has_ret_3m), 0.25, has_ret_3m),   # Strong signal
-        (smart_rank(momentum_accel_normalized, available=has_mom_accel), 0.20, has_mom_accel),  # 🆕 ACCELERATION!
-        (smart_rank(ret_6m, available=has_ret_6m), 0.10, has_ret_6m),   # Medium signal
-        (smart_rank(ret_1m, available=has_ret_1m), 0.08, has_ret_1m),   # Short-term
-        (smart_rank(adx_w, available=has_adx_w), 0.07, has_adx_w),      # Trend strength
+        (get_z_score(pd.Series(rsi_adjusted, index=df.index), available=has_rsi_w), 0.40, has_rsi_w),  # RSI = KING
+        (get_z_score(ret_3m, available=has_ret_3m), 0.30, has_ret_3m),  # Returns 3M
+        (get_z_score(dist_52wh, lower_better=True, available=has_52wh), 0.20, has_52wh),  # Near 52WH = good
+        (get_z_score(momentum_acceleration.clip(-30, 30), available=has_mom_accel), 0.10, has_mom_accel),  # Acceleration
     ]
     df['Score_Momentum'] = weighted_avg(momentum_components)
     
-    # INSTITUTIONAL SCORE - DATA-DRIVEN FIX + FII ACCELERATION
-    # FII buying is POSITIVE signal (+0.499 corr)
-    # DII buying is actually NEGATIVE signal! (contrarian indicator)
-    # Smart money (FII) leaves before retail (DII) piles in
-    total_inst = fii + dii
-    has_total_inst = has_fii or has_dii
+    # ═══════════════════════════════════════════════════════
+    # FACTOR 2: INSTITUTIONAL SCORE (20% - Smart Money)
+    # FII +0.499 (follow them), DII negative (contrarian)
+    # ═══════════════════════════════════════════════════════
     
-    # 🆕 FII ACCELERATION: Are FIIs buying MORE or slowing down?
-    fii_accel_normalized = fii_acceleration.clip(-5, 5)  # Cap extremes
-    
-    # FII changes: positive signal (smart money entering)
-    # DII changes: NEGATIVE correlation - treat as contrarian (lower_better!)
     inst_components = [
-        (smart_rank(fii_chg, available=has_fii_chg), 0.40, has_fii_chg),           # FII = KEY signal
-        (smart_rank(fii_accel_normalized, available=has_fii_accel), 0.20, has_fii_accel),  # 🆕 ACCELERATION!
-        (smart_rank(dii_chg, lower_better=True, available=has_dii_chg), 0.10, has_dii_chg),  # DII CONTRARIAN!
-        (smart_rank(total_inst, available=has_total_inst), 0.15, has_total_inst),  # Total institutional
-        (smart_rank(prom_chg, available=has_prom_chg), 0.15, has_prom_chg),         # Promoter stability
+        (get_z_score(fii_chg, available=has_fii_chg), 0.70, has_fii_chg),  # FII changes = KEY
+        (get_z_score(prom_chg, available=has_prom_chg), 0.30, has_prom_chg),  # Promoter not selling
+        # DII REMOVED - negative correlation! Retail piling in = bad
     ]
     df['Score_Institutional'] = weighted_avg(inst_components)
     
-    # TECHNICAL SCORE
-    # Note: 52WH Distance in data is POSITIVE (e.g., 24 = 24% below 52WH)
-    # Lower distance = closer to 52WH = BETTER, so use lower_better=True
-    tech_components = [
-        (smart_rank(dist_52wh, lower_better=True, available=has_52wh), 0.35, has_52wh),
-        (smart_rank(ret_vs_nifty, available=has_vs_nifty), 0.30, has_vs_nifty),
-        (smart_rank(ret_vs_ind, available=has_vs_ind), 0.25, has_vs_ind),
-        (smart_rank(adx_w, available=has_adx_w), 0.10, has_adx_w),
+    # ═══════════════════════════════════════════════════════
+    # FACTOR 3: QUALITY SCORE (10% - ROCE only)
+    # ROCE +0.413 correlation - THE quality metric
+    # NPM/OPM/ROE are redundant or useless
+    # ═══════════════════════════════════════════════════════
+    
+    quality_components = [
+        (get_z_score(roce.clip(0, 50), available=has_roce), 1.0, has_roce),  # ROCE only
     ]
-    df['Score_Technical'] = weighted_avg(tech_components)
+    df['Score_Quality'] = weighted_avg(quality_components)
     
     # ═══════════════════════════════════════════════════════
-    # STEP 3: DYNAMIC WEIGHTS BASED ON STOCK STYLE
-    # DATA-DRIVEN: Momentum always stays high (0.80+ correlation)
+    # FACTOR 4: SAFETY SCORE (10% - Trap Avoidance)
+    # Cash flow health + Debt safety = avoid value traps
     # ═══════════════════════════════════════════════════════
     
-    def get_style_adjustments(style):
-        """
-        Returns ADDITIVE adjustments based on stock style.
-        KEY: Momentum never goes below base because it has highest correlation!
-        """
-        if style == 'Value':
-            # Value style: Boost value, keep momentum
-            return {
-                'Quality': +0.02, 'Growth': -0.05, 'Value': +0.08,
-                'Safety': +0.03, 'Momentum': 0.0, 'Institutional': -0.03, 'Technical': -0.05
-            }
-        elif style == 'Growth':
-            # Growth style: Boost growth, slight momentum boost
-            return {
-                'Quality': 0.0, 'Growth': +0.08, 'Value': -0.05,
-                'Safety': -0.02, 'Momentum': +0.02, 'Institutional': -0.02, 'Technical': -0.01
-            }
-        elif style == 'Momentum':
-            # Momentum style: Maximum momentum, reduce fundamentals
-            return {
-                'Quality': -0.05, 'Growth': -0.03, 'Value': -0.05,
-                'Safety': -0.03, 'Momentum': +0.12, 'Institutional': +0.02, 'Technical': +0.02
-            }
-        elif style == 'GARP':
-            # GARP: Balanced boost to growth + value + quality
-            return {
-                'Quality': +0.03, 'Growth': +0.03, 'Value': +0.03,
-                'Safety': 0.0, 'Momentum': -0.02, 'Institutional': -0.03, 'Technical': -0.04
-            }
-        else:  # Balanced - use base weights as-is
-            return {
-                'Quality': 0.0, 'Growth': 0.0, 'Value': 0.0,
-                'Safety': 0.0, 'Momentum': 0.0, 'Institutional': 0.0, 'Technical': 0.0
-            }
+    de_capped = de.clip(0, 5)
+    safety_components = [
+        (get_z_score(ocf, available=has_ocf), 0.40, has_ocf),  # Operating cash flow
+        (get_z_score(fcf, available=has_fcf), 0.35, has_fcf),  # Free cash flow
+        (get_z_score(de_capped, lower_better=True, available=has_de), 0.25, has_de),  # Low debt
+    ]
+    df['Score_Safety'] = weighted_avg(safety_components)
     
-    def get_final_weights(style, base_w):
-        """
-        Combine base weights (from market regime) with style adjustments.
-        Uses ADDITION not multiplication to avoid compounding issues.
-        """
-        adj = get_style_adjustments(style)
-        final_w = {}
-        for factor in base_w:
-            # Add adjustment, but keep weight non-negative
-            final_w[factor] = max(0.02, base_w[factor] + adj[factor])
-        return final_w
+    # ═══════════════════════════════════════════════════════
+    # FINAL SCORE: PURE WEIGHTED SUM (No style adjustments!)
+    # Weights come directly from market regime analysis
+    # ═══════════════════════════════════════════════════════
     
-    # Calculate final score with combined weights per stock
-    final_scores = []
-    for idx in df.index:
-        style = df.loc[idx, 'Stock_Style']
-        w = get_final_weights(style, base_weights)
-        
-        # Normalize weights to sum to 1
-        total_w = sum(w.values())
-        
-        score = (
-            df.loc[idx, 'Score_Quality'] * w['Quality'] / total_w +
-            df.loc[idx, 'Score_Growth'] * w['Growth'] / total_w +
-            df.loc[idx, 'Score_Value'] * w['Value'] / total_w +
-            df.loc[idx, 'Score_Safety'] * w['Safety'] / total_w +
-            df.loc[idx, 'Score_Momentum'] * w['Momentum'] / total_w +
-            df.loc[idx, 'Score_Institutional'] * w['Institutional'] / total_w +
-            df.loc[idx, 'Score_Technical'] * w['Technical'] / total_w
-        ) * 100
-        
-        final_scores.append(score)
+    # base_weights from market regime: {'Momentum': 0.60, 'Institutional': 0.20, 'Quality': 0.10, 'Safety': 0.10}
+    df['Final_Score'] = (
+        df['Score_Momentum'] * base_weights.get('Momentum', 0.60) +
+        df['Score_Institutional'] * base_weights.get('Institutional', 0.20) +
+        df['Score_Quality'] * base_weights.get('Quality', 0.10) +
+        df['Score_Safety'] * base_weights.get('Safety', 0.10)
+    ) * 100
     
-    df['Final_Score'] = final_scores
     df['Final_Score'] = df['Final_Score'].clip(0, 100)
     
-    # ═══════════════════════════════════════════════════════
-    # 🆕 DATA CONFIDENCE MULTIPLIER
-    # Stocks with more data get slight boost, incomplete data = discount
-    # ═══════════════════════════════════════════════════════
-    total_expected = 27  # Updated count including new acceleration columns
-    
-    # Count data availability per stock
+    # ─────────────────────────────────────────────────────────
+    # DATA CONFIDENCE (discount scores with missing critical data)
+    # ─────────────────────────────────────────────────────────
     critical_columns = ['RSI 14W', 'Returns 3M', 'Change In FII Holdings Latest Quarter', 
-                        'ROE', 'ROCE', 'Free Cash Flow', 'Operating Cash Flow', 
-                        'Debt To Equity', 'Price To Earnings']
+                        'ROCE', 'Free Cash Flow', 'Operating Cash Flow', 'Debt To Equity']
     
     def calculate_data_confidence(row):
         available = 0
@@ -1005,9 +803,7 @@ def run_ultimate_scoring(df, base_weights):
             val = row.get(col, None)
             if val is not None and not pd.isna(val):
                 available += 1
-        
-        # Data confidence: 0.85 to 1.0 based on critical data coverage
-        # Missing RSI or Returns 3M (top predictors) = bigger penalty
+        # 0.85 to 1.0 range
         confidence = 0.85 + (available / len(critical_columns)) * 0.15
         return confidence
     
@@ -1024,339 +820,193 @@ def run_ultimate_scoring(df, base_weights):
     # ═══════════════════════════════════════════════════════
     # DATA AVAILABILITY TRACKING (For transparency)
     # ═══════════════════════════════════════════════════════
+    total_expected = 25  # 4 factor model simplified tracking
     data_available = sum([
-        has_roe, has_roce, has_opm,  # npm removed - useless correlation
+        has_roe, has_roce, has_opm,
         has_pat_ttm, has_pat_yoy, has_rev_ttm, has_rev_yoy, has_eps_ttm,
         has_pe, has_ps,
         has_de, has_promoter, has_fcf, has_ocf, has_cash, has_debt,
         has_rsi_w, has_adx_w, has_ret_1m, has_ret_3m, has_ret_6m, has_ret_1y,
         has_fii, has_dii, has_fii_chg, has_dii_chg, has_prom_chg,
-        has_52wh, has_vs_nifty, has_vs_ind,
-        has_mom_accel, has_fii_accel, has_fund_momentum  # New acceleration columns
+        has_52wh, has_vs_nifty,
+        has_mom_accel  # Momentum acceleration
     ])
     df['Data_Coverage'] = f"{data_available}/{total_expected}"
     
     return df
 
 # =========================================================
-# 🎯 PRECISE VERDICT ENGINE - DATA-DRIVEN + SAFETY NET + TRAP PROBABILITY
+# 🎯 V4 ULTRA VERDICT ENGINE - SIMPLE PERCENTILE BASED
 # =========================================================
 def get_ultimate_verdict(row):
     """
-    ULTIMATE Verdict System with Safety Net + TRAP PROBABILITY:
+    V4 ULTRA Simplified Verdict System:
     
-    1. TRAP DETECTION with PROBABILITY (0-100%)
-       - Calculates probability of being a trap based on multiple signals
-       - Weighted severity scoring instead of binary flags
-    
-    2. Quality Gate check (absolute fundamentals)
-    
-    3. Score-based verdict (if passes trap filter)
+    1. TRAP DETECTION (Safety Net)
+    2. PURE PERCENTILE VERDICT (no style complexity)
     
     Returns: (verdict_text, verdict_class, trap_probability)
     """
     score = row['Final_Score']
-    style = row.get('Stock_Style', 'Balanced')
     
     # ═══════════════════════════════════════════════════════
-    # GET ALL VALUES SAFELY
+    # GET VALUES FOR TRAP DETECTION
     # ═══════════════════════════════════════════════════════
     
-    # Factor Scores (already 0-1 percentile ranks)
-    sq = row.get('Score_Quality', 0.5)
-    sg = row.get('Score_Growth', 0.5)
-    sv = row.get('Score_Value', 0.5)
-    ss = row.get('Score_Safety', 0.5)
+    # 4 Factor Scores (0-1 percentile ranks)
     sm = row.get('Score_Momentum', 0.5)
     si = row.get('Score_Institutional', 0.5)
-    st = row.get('Score_Technical', 0.5)
+    sq = row.get('Score_Quality', 0.5)
+    ss = row.get('Score_Safety', 0.5)
     
     # Cash Flow (critical for trap detection)
     fcf = row.get('Free Cash Flow', 0)
     ocf = row.get('Operating Cash Flow', 0)
     
-    # Valuation
-    pe = row.get('Price To Earnings', 25)
+    # Debt & Holdings
     de = row.get('Debt To Equity', 0.5)
-    
-    # Holdings Changes (smart money signals)
     fii_chg = row.get('Change In FII Holdings Latest Quarter', 0)
-    dii_chg = row.get('Change In DII Holdings Latest Quarter', 0)
     prom_chg = row.get('Change In Promoter Holdings Latest Quarter', 0)
+    promoter_hold = row.get('Promoter Holdings', 50)
     
     # Technical
     rsi_w = row.get('RSI 14W', 50)
-    dist_52wh = row.get('52WH Distance', -15)
     
-    # Profitability
-    roe = row.get('ROE', 10)
-    # npm removed - zero correlation (-0.013), not used anywhere
+    # Quality Gate
+    quality_gate = row.get('Quality_Gate', 1.0)
     
-    # Get additional data for improved trap detection
+    # Momentum Acceleration
+    mom_accel = row.get('Momentum_Acceleration', 0)
+    
+    # Debt data
     debt = row.get('Debt', 0)
     total_liabilities = row.get('Total Liabilities', 0)
     
-    # 🆕 Quality Gate Score (from run_ultimate_scoring)
-    quality_gate = row.get('Quality_Gate', 1.0)
-    
-    # 🆕 Acceleration signals
-    mom_accel = row.get('Momentum_Acceleration', 0)
-    fii_accel = row.get('FII_Acceleration', 0)
-    fund_momentum = row.get('Fundamental_Momentum', 0)
-    
     # ═══════════════════════════════════════════════════════
-    # 🆕 STEP 1: TRAP PROBABILITY CALCULATION (0-100%)
-    # More nuanced than binary flags - weighted probability
+    # TRAP PROBABILITY CALCULATION (0-100%)
     # ═══════════════════════════════════════════════════════
     
-    trap_probability = 0  # Start at 0%
+    trap_probability = 0
     red_flags = []
     
-    # 🚨 CASH TRAP: Negative FCF + Negative OCF = Burning cash
+    # 🚨 CASH TRAP: Burning cash
     if fcf < 0 and ocf < 0:
         red_flags.append("CASH_TRAP")
-        cash_severity = min(abs(fcf) / 500, 1) * 25  # Up to 25% based on severity
-        trap_probability += cash_severity
+        trap_probability += min(abs(fcf) / 500, 1) * 25
     elif fcf < 0:
-        trap_probability += 5  # Minor concern - negative FCF alone
+        trap_probability += 5
     
-    # 🚨 DEBT BOMB: High debt with weak cash flow coverage
-    # FIX: Interest Coverage Ratio not in data!
-    # PROXY: Use OCF-to-Debt ratio instead (can they service debt?)
-    # If D/E > 2 AND Operating Cash Flow < 10% of Debt = DEBT BOMB
+    # 🚨 DEBT BOMB: Can't service debt
     if de > 2:
-        # Calculate debt coverage proxy
-        debt_value = debt if debt > 0 else (total_liabilities * 0.5)  # Estimate if no Debt column
-        if debt_value > 0:
-            ocf_debt_ratio = ocf / debt_value if debt_value != 0 else 1
-            # If OCF can't cover even 10% of debt annually = BOMB
-            if ocf_debt_ratio < 0.10 and ocf < debt_value * 0.1:
-                red_flags.append("DEBT_BOMB")
-                trap_probability += 20  # Critical - can't service debt!
-            else:
-                red_flags.append("HIGH_DEBT")
-                trap_probability += 8  # Warning
+        debt_value = debt if debt > 0 else (total_liabilities * 0.5)
+        if debt_value > 0 and ocf < debt_value * 0.1:
+            red_flags.append("DEBT_BOMB")
+            trap_probability += 20
         else:
-            # No debt data but D/E > 2, flag as high debt
             red_flags.append("HIGH_DEBT")
             trap_probability += 8
     elif de > 1.5:
-        trap_probability += 3  # Minor debt concern
+        trap_probability += 3
     
-    # Additional debt check: Negative OCF with any significant debt
-    if ocf < 0 and de > 1:
-        if "DEBT_BOMB" not in red_flags and "HIGH_DEBT" not in red_flags:
-            red_flags.append("DEBT_STRESS")
-            trap_probability += 15  # Can't generate cash to pay debt
+    # Negative OCF with debt
+    if ocf < 0 and de > 1 and "DEBT_BOMB" not in red_flags:
+        red_flags.append("DEBT_STRESS")
+        trap_probability += 15
     
-    # 🚨 PROMOTER EXIT: Insiders dumping heavily (>3% in quarter)
+    # 🚨 PROMOTER EXIT
     if prom_chg < -3:
         red_flags.append("PROMOTER_EXIT")
-        promoter_exit_severity = min(abs(prom_chg) / 5, 1) * 25  # Up to 25%
-        trap_probability += promoter_exit_severity
+        trap_probability += min(abs(prom_chg) / 5, 1) * 25
     elif prom_chg < -1.5:
-        red_flags.append("PROMOTER_SELLING")
-        trap_probability += 8  # Warning
+        trap_probability += 8
     
-    # 🚨 LOW SKIN: Promoter holds < 25% (no accountability)
-    promoter_hold = row.get('Promoter Holdings', 50)
+    # 🚨 LOW SKIN
     if promoter_hold < 25:
         red_flags.append("LOW_SKIN")
-        trap_probability += 10  # Moderate concern
-    elif promoter_hold < 35:
-        trap_probability += 3  # Minor concern
+        trap_probability += 10
     
-    # 🚨 FII EXITING: Smart money leaving while momentum still looks good
+    # 🚨 FII EXITING while momentum looks good
     if fii_chg < -2 and sm > 0.5:
         red_flags.append("FII_EXITING")
-        trap_probability += 15  # They see something we don't
+        trap_probability += 15
     elif fii_chg < -1:
-        trap_probability += 5  # Minor FII selling
+        trap_probability += 5
     
-    # 🆕 FII DECELERATION: Smart money slowing down
-    if fii_accel < -1:
-        trap_probability += 5  # FII enthusiasm waning
-    
-    # 🚨 OVERBOUGHT: RSI extreme with weak quality
+    # 🚨 OVERBOUGHT
     if rsi_w > 75 and sq < 0.4:
         red_flags.append("OVERBOUGHT")
         trap_probability += 12
     elif rsi_w > 80:
-        trap_probability += 8  # Very overbought
-    
-    # 🚨 EXTREME VALUATION: PE > 100 with weak growth
-    if pe > 100 and sg < 0.5:
-        red_flags.append("OVERVALUED")
         trap_probability += 8
     
-    # 🆕 MOMENTUM FADING: Acceleration turning negative
+    # 🚨 MOMENTUM FADING
     if mom_accel < -5 and sm > 0.5:
-        red_flags.append("MOMENTUM_FADING")
-        trap_probability += 8  # Momentum turning but score still looks good
+        red_flags.append("MOM_FADING")
+        trap_probability += 8
     
-    # 🆕 FUNDAMENTAL DETERIORATION: Growth slowing
-    if fund_momentum < -10:
-        trap_probability += 5  # Growth decelerating significantly
-    
-    # 🆕 QUALITY GATE FAILURE: Absolute fundamentals weak
+    # 🚨 QUALITY GATE FAILURE
     if quality_gate < 0.4:
-        trap_probability += (1 - quality_gate) * 15  # Up to 15% if gates failed
+        trap_probability += (1 - quality_gate) * 15
     
-    # Cap trap probability at 100%
     trap_probability = min(trap_probability, 100)
     
-    # Also calculate trap_severity for backward compatibility
-    trap_severity = int(trap_probability / 12)  # Roughly same scale as before
-    
     # ═══════════════════════════════════════════════════════
-    # TRAP VERDICT OVERRIDE (Safety Net catches these)
+    # TRAP OVERRIDE (Safety Net)
     # ═══════════════════════════════════════════════════════
     
-    # DEATH SPIRAL: Cash burn + Debt bomb = Bankruptcy risk
     if "CASH_TRAP" in red_flags and "DEBT_BOMB" in red_flags:
         return "🚨 DEATH SPIRAL", "trap", trap_probability
     
-    # PUMP & DUMP: Great momentum but cash burn (unsustainable)
     if "CASH_TRAP" in red_flags and score > 60 and sm > 0.6:
         return "🚨 PUMP & DUMP", "trap", trap_probability
     
-    # INSIDER EXIT: Promoters dumping = they know something bad
     if "PROMOTER_EXIT" in red_flags:
         return "🚨 INSIDER EXIT", "trap", trap_probability
     
-    # SMART MONEY FLEE: FIIs leaving before crash
     if "FII_EXITING" in red_flags and "CASH_TRAP" in red_flags:
         return "🚨 SMART EXIT", "trap", trap_probability
     
-    # 🆕 HIGH TRAP PROBABILITY (>60%) = Auto-risky even with good score
     if trap_probability >= 60:
-        return f"⚠️ RISKY ({trap_probability:.0f}% trap)", "trap", trap_probability
-    
-    # Multiple red flags = Too risky even with good score
-    if trap_severity >= 4:
-        return f"⚠️ RISKY ({red_flags[0]})", "trap", trap_probability
-    
-    # ═══════════════════════════════════════════════════════
-    # STEP 2: STYLE-SPECIFIC SCORING
-    # ═══════════════════════════════════════════════════════
-    
-    # Map factor names to their scores
-    factor_scores = {
-        'quality': sq, 'growth': sg, 'value': sv, 'safety': ss,
-        'momentum': sm, 'institutional': si, 'technical': st
-    }
-    
-    # Calculate style-specific strength and minimum requirements
-    if style == 'Value':
-        # Value stocks: Quality + Value + Safety matter most
-        style_strength = (sq * 0.3 + sv * 0.4 + ss * 0.3)
-        min_req = {'quality': 0.35, 'safety': 0.35, 'value': 0.4}
-        style_label = "VALUE"
-        
-    elif style == 'Growth':
-        # Growth stocks: Growth + Quality + Momentum matter most
-        style_strength = (sg * 0.4 + sq * 0.3 + sm * 0.3)
-        min_req = {'quality': 0.35, 'growth': 0.45}
-        style_label = "GROWTH"
-        
-    elif style == 'Momentum':
-        # Momentum stocks: Momentum + Technical + Institutional matter most
-        style_strength = (sm * 0.4 + st * 0.3 + si * 0.3)
-        min_req = {'momentum': 0.45, 'technical': 0.4}
-        style_label = "MOMENTUM"
-        
-    elif style == 'GARP':
-        # GARP: Balanced excellence across Growth + Value + Quality
-        style_strength = (sg * 0.33 + sv * 0.33 + sq * 0.34)
-        min_req = {'quality': 0.4, 'growth': 0.35, 'value': 0.35}
-        style_label = "GARP"
-        
-    else:  # Balanced
-        # Balanced: All factors equally
-        style_strength = (sq + sg + sv + ss + sm + si + st) / 7
-        min_req = {'quality': 0.3}
-        style_label = "BALANCED"
-    
-    # Check if stock meets minimum requirements for its style
-    meets_minimums = all(factor_scores.get(k, 0.5) >= v for k, v in min_req.items())
-    
-    # ═══════════════════════════════════════════════════════
-    # STEP 3: CONVICTION SCORING (0-100)
-    # ═══════════════════════════════════════════════════════
-    
-    # Base conviction from final score
-    conviction = score
-    
-    # Boost for strong style alignment
-    if style_strength > 0.7:
-        conviction += 5
-    elif style_strength < 0.4:
-        conviction -= 5
-    
-    # Penalty if doesn't meet minimum requirements for its style
-    if not meets_minimums:
-        conviction -= 8
-    
-    # Boost for institutional backing
-    if fii_chg > 0.5 and dii_chg > 0.5:
-        conviction += 3
-    elif fii_chg < -0.5 and dii_chg < -0.5:
-        conviction -= 3
-    
-    # Boost for technical strength (near 52WH with good trend)
-    # Note: dist_52wh is POSITIVE in data (e.g., 10 = 10% below 52WH)
-    # So dist_52wh < 10 means within 10% of 52WH (good)
-    if dist_52wh < 10 and sm > 0.6:
-        conviction += 2
-    
-    # Penalty for red flags (using trap_severity now)
-    conviction -= (trap_severity * 2)
-    
-    # Clamp conviction
-    conviction = max(0, min(100, conviction))
-    
-    # ═══════════════════════════════════════════════════════
-    # STEP 4: FINAL VERDICT (Simple, Actionable)
-    # ═══════════════════════════════════════════════════════
-    
-    flag_count = len(red_flags)
-    flag_warning = f" ⚡{red_flags[0]}" if flag_count == 1 else ""
-    
-    # 🆕 Add trap probability indicator for moderate risk levels
-    trap_indicator = f" ({trap_probability:.0f}%⚡)" if trap_probability >= 20 else ""
-    
-    # STRONG BUY: Top tier with strong style alignment, no red flags, low trap prob
-    if conviction >= 78 and style_strength > 0.6 and flag_count == 0 and trap_probability < 20:
-        return f"💎 STRONG BUY", "strong-buy", trap_probability
-    
-    # BUY: Good conviction, acceptable style strength, minimal issues
-    if conviction >= 65 and style_strength > 0.5 and flag_count <= 1 and trap_probability < 40:
-        return f"📈 BUY ({style_label}){flag_warning}", "buy", trap_probability
-    
-    # HOLD: Decent but not compelling
-    if conviction >= 45 and flag_count <= 1 and trap_probability < 50:
-        return f"⏸️ HOLD{trap_indicator}", "hold", trap_probability
-    
-    # RISKY: Moderate conviction but has concerns OR low conviction with some potential
-    if conviction >= 30 and conviction < 45:
         return f"⚠️ RISKY ({trap_probability:.0f}%)", "trap", trap_probability
     
-    # RISKY: Has multiple red flags regardless of score
-    if flag_count >= 2:
+    if len(red_flags) >= 3:
         return f"⚠️ RISKY ({red_flags[0]})", "trap", trap_probability
     
-    # AVOID: Low conviction, poor metrics
-    return f"❌ AVOID", "avoid", trap_probability
+    # ═══════════════════════════════════════════════════════
+    # PURE PERCENTILE VERDICT (Simple & Clean)
+    # ═══════════════════════════════════════════════════════
+    
+    flag_indicator = f" ⚡{red_flags[0]}" if len(red_flags) == 1 else ""
+    trap_indicator = f" ({trap_probability:.0f}%)" if trap_probability >= 20 else ""
+    
+    # Top 5%: STRONG BUY
+    if score >= 85 and trap_probability < 20 and len(red_flags) == 0:
+        return "💎 STRONG BUY", "strong-buy", trap_probability
+    
+    # Top 15%: BUY
+    if score >= 70 and trap_probability < 40 and len(red_flags) <= 1:
+        return f"📈 BUY{flag_indicator}", "buy", trap_probability
+    
+    # Top 40%: HOLD
+    if score >= 50 and trap_probability < 50:
+        return f"⏸️ HOLD{trap_indicator}", "hold", trap_probability
+    
+    # Bottom 40% with some issues: RISKY
+    if score >= 30:
+        return f"⚠️ RISKY{trap_indicator}", "trap", trap_probability
+    
+    # Bottom: AVOID
+    return "❌ AVOID", "avoid", trap_probability
 
 # =========================================================
-# 📊 MAIN DASHBOARD - CLEAN UI
+# 📊 MAIN DASHBOARD - V4 ULTRA (4-Factor Pure Quant)
 # =========================================================
 def main():
     # Clean Header
     st.markdown("""
     <div style='text-align:center; padding:1rem 0 1.5rem 0;'>
-        <h1 style='margin:0; font-weight:700; color:#1a1a2e;'>V4 ULTIMATE PRO MAX</h1>
-        <p style='color:#666; margin:0.3rem 0 0 0; font-size:0.95rem;'>7 Advanced Features • Trap Probability • Momentum Acceleration • Data Confidence</p>
+        <h1 style='margin:0; font-weight:700; color:#1a1a2e;'>V4 ULTRA</h1>
+        <p style='color:#666; margin:0.3rem 0 0 0; font-size:0.95rem;'>4-Factor Pure Quant • Momentum-Dominant • Data-Driven</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1378,70 +1028,44 @@ def main():
         show_all_columns = st.checkbox("Show Factor Scores", value=False)
         top_n = st.slider("Display Top", 10, 100, 30, help="Number of stocks to show")
         
-        # DATA-DRIVEN INFO
+        # V4 ULTRA 4-FACTOR MODEL
         st.markdown("---")
-        st.markdown("### 📊 Why This Works")
-        st.caption("Built on actual correlations, not theory:")
+        st.markdown("### 🎯 4-Factor Model")
+        st.caption("Pure quant, no style complexity")
         
-        with st.expander("🔥 Top Predictors", expanded=False):
-            st.markdown("""
-            | Signal | Correlation |
-            |--------|-------------|
-            | RSI 14W | **+0.878** |
-            | Returns 3M | **+0.707** |
-            | 52WH Dist | **-0.655** |
-            | FII Changes | **+0.499** |
-            | ROCE | **+0.413** |
-            """)
+        st.markdown("""
+        | Factor | Weight | Why |
+        |--------|--------|-----|
+        | **Momentum** | 60% | RSI +0.878, Ret3M +0.707 |
+        | **Institutional** | 20% | FII +0.499 |
+        | **Quality** | 10% | ROCE +0.413 |
+        | **Safety** | 10% | Trap avoidance |
+        """)
         
         with st.expander("🛡️ Safety Net Traps", expanded=False):
             st.markdown("""
-            - 🚨 **CASH TRAP**: -FCF + -OCF
-            - 🚨 **DEBT BOMB**: D/E>2 + OCF<10% of Debt
-            - 🚨 **DEBT STRESS**: -OCF + D/E>1
-            - 🚨 **PROMOTER EXIT**: Selling >3%
-            - 🚨 **FII EXITING**: Smart $ fleeing
-            - 🚨 **MOMENTUM FADING**: Accel <0
+            - 🚨 **DEATH SPIRAL**: Cash burn + Debt
+            - 🚨 **PUMP & DUMP**: Momentum + No cash
+            - 🚨 **INSIDER EXIT**: Promoter selling >3%
+            - 🚨 **FII EXITING**: Smart money fleeing
             - 🚨 **LOW SKIN**: Promoter <25%
-            """)
-        
-        with st.expander("🆕 7 Advanced Features", expanded=False):
-            st.markdown("""
-            **1. Quality Gates** (0-1)
-            - OCF>0, ROE>10, D/E<2, PAT>-30%, Inst>5%
-            
-            **2. Momentum Acceleration**
-            - 2nd derivative: Is momentum speeding up?
-            
-            **3. FII Acceleration**
-            - Smart money buying MORE or slowing?
-            
-            **4. Fundamental Momentum**
-            - Growth improving or deteriorating?
-            
-            **5. Regime Trend**
-            - Market improving/stable/deteriorating
-            
-            **6. Trap Probability** (0-100%)
-            - Weighted risk score, not binary
-            
-            **7. Data Confidence**
-            - Scores discounted for missing data
             """)
         
         with st.expander("❌ Dead Weight (Removed)", expanded=False):
             st.markdown("""
-            | Metric | Correlation |
+            | Metric | Why Removed |
             |--------|-------------|
-            | NPM | -0.013 ❌ |
+            | NPM | -0.013 corr ❌ |
             | DII Changes | NEGATIVE ❌ |
-            | Low PE | WRONG ❌ |
+            | Low PE | +0.551 corr! ❌ |
+            | 7 Factor Soup | Overfit ❌ |
+            | Style Classification | No edge ❌ |
             
-            *Traditional theory fails!*
+            *Simpler = Better*
             """)
     
     if not uploaded_files:
-        # Enhanced welcome message with data-driven info
+        # Enhanced welcome message
         st.markdown("""
         <div style='text-align:center; padding:3rem; background:#f8f9fa; border-radius:12px; margin:2rem 0;'>
             <h3 style='color:#333; margin-bottom:0.5rem;'>🚀 Upload Your CSV Files to Start</h3>
@@ -1449,52 +1073,43 @@ def main():
         </div>
         """, unsafe_allow_html=True)
         
-        # Show data-driven advantages
+        # Show V4 ULTRA advantages
         col1, col2 = st.columns(2)
         
         with col1:
             st.markdown("""
-            ### 🎯 Data-Driven Algorithm
+            ### 🎯 V4 ULTRA: Pure Quant
             
-            V4 Ultimate Pro uses **actual correlations** from your data, not textbook theory.
+            **4 Factors Only** (data-driven, no theory):
             
-            | Factor | Correlation | Weight |
-            |--------|-------------|--------|
-            | RSI 14W | +0.878 | 35% of Momentum |
-            | Returns 3M | +0.707 | 30% of Momentum |
-            | 52WH Distance | -0.655 | 25% of Momentum |
-            | FII Changes | +0.499 | 50% of Inst |
-            | ROCE | +0.413 | 45% of Quality |
+            | Factor | Weight | Components |
+            |--------|--------|------------|
+            | **Momentum** | 60% | RSI, Ret3M, 52WH, Accel |
+            | **Institutional** | 20% | FII changes, Promoter |
+            | **Quality** | 10% | ROCE only |
+            | **Safety** | 10% | OCF, FCF, D/E |
             
-            **Removed Dead Weight:**
-            - NPM (-0.013 corr) ❌
-            - DII as positive signal ❌
-            - Low PE = Good ❌
+            **Key Insight**: High PE = GOOD (+0.551 corr!)
             """)
         
         with col2:
             st.markdown("""
             ### 🛡️ Safety Net Feature
             
-            Catches **Pump & Dump traps** that other models miss:
+            Catches **traps** that complex models miss:
             
-            **🚨 DEATH SPIRAL**
-            - Cash burning + Heavy debt = Bankruptcy
+            - 🚨 **DEATH SPIRAL**: Cash burn + Debt bomb
+            - 🚨 **PUMP & DUMP**: Momentum + No cash
+            - 🚨 **INSIDER EXIT**: Promoter dumping >3%
+            - 🚨 **SMART EXIT**: FII fleeing + Cash trap
+            - 🚨 **LOW SKIN**: Promoter <25%
             
-            **🚨 DEBT BOMB** *(Fixed!)*
-            - D/E > 2 + OCF can't cover 10% of Debt
-            
-            **🚨 PUMP & DUMP**
-            - Great momentum + Negative cash flow
-            
-            **🚨 INSIDER EXIT**
-            - Promoters dumping >3% (they know something)
-            
-            **🚨 SMART MONEY FLEE**
-            - FIIs exiting before the crash
-            
-            **🚨 LOW SKIN**
-            - Promoter holds <25% (no accountability)
+            **Simple percentile verdicts**:
+            - � STRONG BUY: Top 5%
+            - 📈 BUY: Top 15%
+            - ⏸️ HOLD: Top 40%
+            - ⚠️ RISKY: Bottom 40%
+            - ❌ AVOID: Bottom
             """)
         
         # Expected columns in simple format
@@ -1567,31 +1182,22 @@ def main():
     tab1, tab2, tab3, tab4 = st.tabs(["Rankings", "Scanner", "Charts", "Export"])
     
     with tab1:
-        # Style and Verdict Filters
-        col_filter1, col_filter2 = st.columns([1, 2])
-        with col_filter1:
-            style_options = df['Stock_Style'].unique().tolist()
-            style_filter = st.multiselect("Stock Style", options=style_options, default=style_options)
+        # V4 ULTRA: Simple verdict filter only (no style complexity)
+        verdict_options = df['Verdict'].unique().tolist()
+        buy_verdicts = [v for v in verdict_options if 'BUY' in v]
+        verdict_filter = st.multiselect("Filter by Verdict", options=verdict_options, default=buy_verdicts if buy_verdicts else None)
         
-        with col_filter2:
-            verdict_options = df['Verdict'].unique().tolist()
-            # New simpler verdicts: STRONG BUY, BUY (with style), HOLD, RISKY, AVOID
-            buy_verdicts = [v for v in verdict_options if 'BUY' in v]
-            verdict_filter = st.multiselect("Verdict", options=verdict_options, default=buy_verdicts if buy_verdicts else None)
-        
-        # Apply both filters
+        # Apply verdict filter
         filtered_df = df.copy()
-        if style_filter:
-            filtered_df = filtered_df[filtered_df['Stock_Style'].isin(style_filter)]
         if verdict_filter:
             filtered_df = filtered_df[filtered_df['Verdict'].isin(verdict_filter)]
         
-        # Display Columns - Include Stock_Style and Advanced Features
-        base_cols = ['Rank', 'Name', 'Stock_Style', 'Verdict', 'Final_Score', 'Trap_Probability']
+        # Display Columns - V4 ULTRA 4-Factor Model
+        base_cols = ['Rank', 'Name', 'Verdict', 'Final_Score', 'Trap_Probability']
         price_cols = ['Close Price', 'Price To Earnings']
-        metric_cols = ['ROE', 'PAT Growth TTM', 'Debt To Equity', 'Free Cash Flow']
-        score_cols = ['Score_Quality', 'Score_Growth', 'Score_Value', 'Score_Safety', 'Score_Momentum', 'Score_Institutional', 'Score_Technical']
-        advanced_cols = ['Quality_Gate', 'Momentum_Acceleration', 'FII_Acceleration', 'Fundamental_Momentum', 'Data_Confidence']
+        metric_cols = ['ROCE', 'Debt To Equity', 'Free Cash Flow']
+        score_cols = ['Score_Momentum', 'Score_Institutional', 'Score_Quality', 'Score_Safety']  # 4 factors only
+        advanced_cols = ['Quality_Gate', 'Momentum_Acceleration', 'Data_Confidence']
         
         if show_all_columns:
             display_cols = base_cols + score_cols + advanced_cols
@@ -1699,18 +1305,15 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
         
         with col2:
-            # Radar Chart for Top Stock
+            # Radar Chart for Top Stock - V4 ULTRA 4 FACTORS
             if len(df) > 0:
                 top_stock = df.iloc[0]
-                categories = ['Quality', 'Growth', 'Value', 'Safety', 'Momentum', 'Institutional', 'Technical']
+                categories = ['Momentum (60%)', 'Institutional (20%)', 'Quality (10%)', 'Safety (10%)']
                 values = [
-                    top_stock.get('Score_Quality', 0.5),
-                    top_stock.get('Score_Growth', 0.5),
-                    top_stock.get('Score_Value', 0.5),
-                    top_stock.get('Score_Safety', 0.5),
                     top_stock.get('Score_Momentum', 0.5),
                     top_stock.get('Score_Institutional', 0.5),
-                    top_stock.get('Score_Technical', 0.5)
+                    top_stock.get('Score_Quality', 0.5),
+                    top_stock.get('Score_Safety', 0.5)
                 ]
                 
                 fig = go.Figure()
@@ -1722,7 +1325,7 @@ def main():
                 ))
                 fig.update_layout(
                     polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-                    title=f"Top Stock Profile: {top_stock.get('Name', 'N/A')}",
+                    title=f"Top Stock: {top_stock.get('Name', 'N/A')}",
                     height=350
                 )
                 st.plotly_chart(fig, use_container_width=True)
