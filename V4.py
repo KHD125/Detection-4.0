@@ -587,23 +587,30 @@ def run_ultimate_scoring(df, base_weights):
     # Momentum indicators: High returns, strong RSI
     is_momentum = (ret_3m > ret_3m.median()) & (rsi_w > 50)
     
-    # Classify each stock's style
-    # 1 = Value, 2 = Growth, 3 = Momentum, 4 = Balanced (GARP)
-    stock_style = pd.Series([4] * n, index=df.index)  # Default: Balanced
+    # Classify each stock's style using clear logic
+    # Priority: GARP > Momentum > Growth > Value > Balanced
+    def classify_style(row_idx):
+        cheap = is_cheap.iloc[row_idx] if hasattr(is_cheap, 'iloc') else is_cheap[row_idx]
+        growing = is_growing.iloc[row_idx] if hasattr(is_growing, 'iloc') else is_growing[row_idx]
+        momentum = is_momentum.iloc[row_idx] if hasattr(is_momentum, 'iloc') else is_momentum[row_idx]
+        
+        # GARP: Cheap AND Growing (best combination)
+        if cheap and growing:
+            return 'GARP'
+        # Momentum: Strong price action
+        elif momentum:
+            return 'Momentum'
+        # Growth: Growing but not cheap
+        elif growing and not cheap:
+            return 'Growth'
+        # Value: Cheap but not growing
+        elif cheap and not growing:
+            return 'Value'
+        # Balanced: Nothing stands out
+        else:
+            return 'Balanced'
     
-    # Pure Value: Cheap but not growing fast or momentum
-    stock_style = stock_style.where(~(is_cheap & ~is_growing & ~is_momentum), 1)
-    
-    # Pure Growth: Growing but not cheap
-    stock_style = stock_style.where(~(is_growing & ~is_cheap & ~is_momentum), 2)
-    
-    # Pure Momentum: High momentum regardless of value
-    stock_style = stock_style.where(~(is_momentum & ~is_cheap), 3)
-    
-    # GARP (Best): Cheap AND Growing
-    stock_style = stock_style.where(~(is_cheap & is_growing), 4)
-    
-    df['Stock_Style'] = stock_style.map({1: 'Value', 2: 'Growth', 3: 'Momentum', 4: 'GARP'})
+    df['Stock_Style'] = [classify_style(i) for i in range(n)]
     
     # ═══════════════════════════════════════════════════════
     # STEP 2: CALCULATE FACTOR SCORES (No cross-contamination)
@@ -685,7 +692,7 @@ def run_ultimate_scoring(df, base_weights):
         Growth stocks weighted more on Growth, less on Value.
         This PREVENTS the soup problem!
         """
-        if style == 1:  # Value Style
+        if style == 'Value':
             return {
                 'Quality': base_w['Quality'] * 1.0,
                 'Growth': base_w['Growth'] * 0.7,
@@ -695,7 +702,7 @@ def run_ultimate_scoring(df, base_weights):
                 'Institutional': base_w['Institutional'] * 1.0,
                 'Technical': base_w['Technical'] * 0.6,
             }
-        elif style == 2:  # Growth Style
+        elif style == 'Growth':
             return {
                 'Quality': base_w['Quality'] * 1.0,
                 'Growth': base_w['Growth'] * 1.5,    # Boost Growth
@@ -705,7 +712,7 @@ def run_ultimate_scoring(df, base_weights):
                 'Institutional': base_w['Institutional'] * 1.0,
                 'Technical': base_w['Technical'] * 1.0,
             }
-        elif style == 3:  # Momentum Style
+        elif style == 'Momentum':
             return {
                 'Quality': base_w['Quality'] * 0.8,
                 'Growth': base_w['Growth'] * 1.0,
@@ -715,7 +722,7 @@ def run_ultimate_scoring(df, base_weights):
                 'Institutional': base_w['Institutional'] * 1.2,
                 'Technical': base_w['Technical'] * 1.3,
             }
-        else:  # GARP / Balanced (style == 4)
+        elif style == 'GARP':
             return {
                 'Quality': base_w['Quality'] * 1.2,
                 'Growth': base_w['Growth'] * 1.2,
@@ -725,11 +732,13 @@ def run_ultimate_scoring(df, base_weights):
                 'Institutional': base_w['Institutional'] * 1.0,
                 'Technical': base_w['Technical'] * 0.8,
             }
+        else:  # Balanced
+            return base_w.copy()
     
     # Calculate final score with dynamic weights per stock
     final_scores = []
     for idx in df.index:
-        style = stock_style[idx]
+        style = df.loc[idx, 'Stock_Style']
         w = get_dynamic_weights(style, base_weights)
         
         # Normalize weights to sum to 1
@@ -1059,9 +1068,7 @@ def main():
     # ═══════════════════════════════════════════════════════
     # TABS - CLEAN LAYOUT
     # ═══════════════════════════════════════════════════════
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Rankings", " Scanner", "� Charts", "📥 Export"
-    ])
+    tab1, tab2, tab3, tab4 = st.tabs(["Rankings", "Scanner", "Charts", "Export"])
     
     with tab1:
         # Style and Verdict Filters
@@ -1256,7 +1263,7 @@ def main():
         if len(buy_df) > 0:
             csv_buys = buy_df.to_csv(index=False).encode('utf-8')
             col2.download_button(
-                "� Buy Signals",
+                "Buy Signals",
                 csv_buys,
                 f"V4_Buys_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 "text/csv",
