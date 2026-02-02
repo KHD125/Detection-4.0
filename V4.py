@@ -577,36 +577,43 @@ def run_ultimate_scoring(df, base_weights):
     # STEP 1: CLASSIFY STOCK STYLE (Avoid the "Soup" Problem)
     # ═══════════════════════════════════════════════════════
     
-    # Value indicators: Low PE, Low PS
+    # Calculate percentile ranks for classification (not just median comparison)
     pe_capped = pe.clip(1, 200)
-    is_cheap = (pe_capped < pe_capped.median())
+    pe_rank = pe_capped.rank(pct=True, ascending=True)  # Lower PE = lower rank (better for value)
+    growth_rank = pat_ttm.rank(pct=True, ascending=True)  # Higher growth = higher rank
+    momentum_rank = ret_3m.rank(pct=True, ascending=True)  # Higher returns = higher rank
+    quality_proxy = (roe + roce) / 2  # Simple quality proxy
+    quality_rank = quality_proxy.rank(pct=True, ascending=True)
     
-    # Growth indicators: High earnings/revenue growth
-    is_growing = (pat_ttm > pat_ttm.median()) | (rev_ttm > rev_ttm.median())
+    # Value: Actually cheap (bottom 35% PE) AND profitable (ROE > 8)
+    is_value = (pe_rank < 0.35) & (roe > 8)
     
-    # Momentum indicators: High returns, strong RSI
-    is_momentum = (ret_3m > ret_3m.median()) & (rsi_w > 50)
+    # Growth: Actually growing fast (top 35% growth) AND decent quality
+    is_growth = (growth_rank > 0.65) & (quality_rank > 0.4)
+    
+    # Momentum: Strong price action (top 35% returns) AND RSI confirms
+    is_momentum = (momentum_rank > 0.65) & (rsi_w > 50) & (rsi_w < 75)
     
     # Classify each stock's style using clear logic
-    # Priority: GARP > Momentum > Growth > Value > Balanced
     def classify_style(row_idx):
-        cheap = is_cheap.iloc[row_idx] if hasattr(is_cheap, 'iloc') else is_cheap[row_idx]
-        growing = is_growing.iloc[row_idx] if hasattr(is_growing, 'iloc') else is_growing[row_idx]
-        momentum = is_momentum.iloc[row_idx] if hasattr(is_momentum, 'iloc') else is_momentum[row_idx]
+        # Get values for this row
+        val = is_value.iloc[row_idx] if hasattr(is_value, 'iloc') else is_value[row_idx]
+        grow = is_growth.iloc[row_idx] if hasattr(is_growth, 'iloc') else is_growth[row_idx]
+        mom = is_momentum.iloc[row_idx] if hasattr(is_momentum, 'iloc') else is_momentum[row_idx]
         
-        # GARP: Cheap AND Growing (best combination)
-        if cheap and growing:
+        # GARP: Both Value AND Growth characteristics (rare, best)
+        if val and grow:
             return 'GARP'
-        # Momentum: Strong price action
-        elif momentum:
-            return 'Momentum'
-        # Growth: Growing but not cheap
-        elif growing and not cheap:
+        # Growth: High growth, willing to pay premium
+        elif grow and not val:
             return 'Growth'
-        # Value: Cheap but not growing
-        elif cheap and not growing:
+        # Momentum: Price trend is the driver
+        elif mom and not grow:
+            return 'Momentum'
+        # Value: Cheap with some quality
+        elif val and not grow:
             return 'Value'
-        # Balanced: Nothing stands out
+        # Balanced: Doesn't fit a clear category
         else:
             return 'Balanced'
     
@@ -673,8 +680,10 @@ def run_ultimate_scoring(df, base_weights):
     df['Score_Institutional'] = weighted_avg(inst_components)
     
     # TECHNICAL SCORE
+    # Note: 52WH Distance in data is POSITIVE (e.g., 24 = 24% below 52WH)
+    # Lower distance = closer to 52WH = BETTER, so use lower_better=True
     tech_components = [
-        (smart_rank(dist_52wh, available=has_52wh), 0.35, has_52wh),
+        (smart_rank(dist_52wh, lower_better=True, available=has_52wh), 0.35, has_52wh),
         (smart_rank(ret_vs_nifty, available=has_vs_nifty), 0.30, has_vs_nifty),
         (smart_rank(ret_vs_ind, available=has_vs_ind), 0.25, has_vs_ind),
         (smart_rank(adx_w, available=has_adx_w), 0.10, has_adx_w),
@@ -685,61 +694,56 @@ def run_ultimate_scoring(df, base_weights):
     # STEP 3: DYNAMIC WEIGHTS BASED ON STOCK STYLE
     # ═══════════════════════════════════════════════════════
     
-    def get_dynamic_weights(style, base_w):
+    def get_style_adjustments(style):
         """
-        Adjust weights based on stock's natural style.
-        Value stocks weighted more on Value, less on Momentum.
-        Growth stocks weighted more on Growth, less on Value.
-        This PREVENTS the soup problem!
+        Returns ADDITIVE adjustments based on stock style.
+        These are added to base_weights, then normalized.
+        Positive = boost that factor, Negative = reduce that factor.
         """
+        # Adjustments sum to 0 to keep total weight stable
         if style == 'Value':
             return {
-                'Quality': base_w['Quality'] * 1.0,
-                'Growth': base_w['Growth'] * 0.7,
-                'Value': base_w['Value'] * 1.5,      # Boost Value
-                'Safety': base_w['Safety'] * 1.2,
-                'Momentum': base_w['Momentum'] * 0.5,  # Reduce Momentum penalty
-                'Institutional': base_w['Institutional'] * 1.0,
-                'Technical': base_w['Technical'] * 0.6,
+                'Quality': 0.0, 'Growth': -0.05, 'Value': +0.10,
+                'Safety': +0.05, 'Momentum': -0.08, 'Institutional': 0.0, 'Technical': -0.02
             }
         elif style == 'Growth':
             return {
-                'Quality': base_w['Quality'] * 1.0,
-                'Growth': base_w['Growth'] * 1.5,    # Boost Growth
-                'Value': base_w['Value'] * 0.5,      # Reduce Value penalty
-                'Safety': base_w['Safety'] * 0.8,
-                'Momentum': base_w['Momentum'] * 1.2,
-                'Institutional': base_w['Institutional'] * 1.0,
-                'Technical': base_w['Technical'] * 1.0,
+                'Quality': 0.0, 'Growth': +0.10, 'Value': -0.08,
+                'Safety': -0.02, 'Momentum': +0.03, 'Institutional': 0.0, 'Technical': -0.03
             }
         elif style == 'Momentum':
             return {
-                'Quality': base_w['Quality'] * 0.8,
-                'Growth': base_w['Growth'] * 1.0,
-                'Value': base_w['Value'] * 0.3,      # Don't penalize for being expensive
-                'Safety': base_w['Safety'] * 0.7,
-                'Momentum': base_w['Momentum'] * 1.5,  # Boost Momentum
-                'Institutional': base_w['Institutional'] * 1.2,
-                'Technical': base_w['Technical'] * 1.3,
+                'Quality': -0.03, 'Growth': 0.0, 'Value': -0.10,
+                'Safety': -0.02, 'Momentum': +0.10, 'Institutional': +0.02, 'Technical': +0.03
             }
         elif style == 'GARP':
             return {
-                'Quality': base_w['Quality'] * 1.2,
-                'Growth': base_w['Growth'] * 1.2,
-                'Value': base_w['Value'] * 1.2,
-                'Safety': base_w['Safety'] * 1.0,
-                'Momentum': base_w['Momentum'] * 0.8,
-                'Institutional': base_w['Institutional'] * 1.0,
-                'Technical': base_w['Technical'] * 0.8,
+                'Quality': +0.03, 'Growth': +0.05, 'Value': +0.05,
+                'Safety': 0.0, 'Momentum': -0.05, 'Institutional': 0.0, 'Technical': -0.08
             }
-        else:  # Balanced
-            return base_w.copy()
+        else:  # Balanced - no adjustments
+            return {
+                'Quality': 0.0, 'Growth': 0.0, 'Value': 0.0,
+                'Safety': 0.0, 'Momentum': 0.0, 'Institutional': 0.0, 'Technical': 0.0
+            }
     
-    # Calculate final score with dynamic weights per stock
+    def get_final_weights(style, base_w):
+        """
+        Combine base weights (from market regime) with style adjustments.
+        Uses ADDITION not multiplication to avoid compounding issues.
+        """
+        adj = get_style_adjustments(style)
+        final_w = {}
+        for factor in base_w:
+            # Add adjustment, but keep weight non-negative
+            final_w[factor] = max(0.02, base_w[factor] + adj[factor])
+        return final_w
+    
+    # Calculate final score with combined weights per stock
     final_scores = []
     for idx in df.index:
         style = df.loc[idx, 'Stock_Style']
-        w = get_dynamic_weights(style, base_weights)
+        w = get_final_weights(style, base_weights)
         
         # Normalize weights to sum to 1
         total_w = sum(w.values())
@@ -777,191 +781,199 @@ def run_ultimate_scoring(df, base_weights):
     return df
 
 # =========================================================
-# 🎯 SMART VERDICT ENGINE - ULTIMATE VERSION
+# 🎯 PRECISE VERDICT ENGINE - STYLE-AWARE, DATA-DRIVEN
 # =========================================================
 def get_ultimate_verdict(row):
     """
-    Multi-layer verdict system with comprehensive trap detection.
-    Uses ALL available data for maximum accuracy.
+    PRECISE Verdict System:
+    1. Style-Aware: Value stocks judged differently than Momentum stocks
+    2. Data-Driven: Uses percentile ranks, not arbitrary thresholds
+    3. Actionable: Only 5 clear verdicts - STRONG BUY, BUY, HOLD, RISKY, AVOID
+    4. Trap Detection: Red flags override good scores
     """
     score = row['Final_Score']
+    style = row.get('Stock_Style', 'Balanced')
     
     # ═══════════════════════════════════════════════════════
-    # GET ALL VALUES SAFELY
+    # GET ALL VALUES SAFELY (with sensible defaults)
     # ═══════════════════════════════════════════════════════
-    # Cash Flow
-    fcf = row.get('Free Cash Flow', 1)
-    ocf = row.get('Operating Cash Flow', 1)
-    ncf = row.get('Net Cash Flow', 0)
+    
+    # Factor Scores (already 0-1 percentile ranks)
+    sq = row.get('Score_Quality', 0.5)
+    sg = row.get('Score_Growth', 0.5)
+    sv = row.get('Score_Value', 0.5)
+    ss = row.get('Score_Safety', 0.5)
+    sm = row.get('Score_Momentum', 0.5)
+    si = row.get('Score_Institutional', 0.5)
+    st = row.get('Score_Technical', 0.5)
+    
+    # Cash Flow (critical for trap detection)
+    fcf = row.get('Free Cash Flow', 0)
+    ocf = row.get('Operating Cash Flow', 0)
     
     # Valuation
-    pe = row.get('Price To Earnings', 20)
-    ps = row.get('Price To Sales', 5)
+    pe = row.get('Price To Earnings', 25)
+    de = row.get('Debt To Equity', 0.5)
     
-    # Safety
-    de = row.get('Debt To Equity', 0)
-    cash = row.get('Cash Equivalents', 0)
-    debt = row.get('Debt', 1)
-    
-    # Holdings
-    promoter = row.get('Promoter Holdings', 50)
-    fii = row.get('FII Holdings', 0)
-    dii = row.get('DII Holdings', 0)
-    
-    # Holdings Changes
-    promoter_chg_q = row.get('Change In Promoter Holdings Latest Quarter', 0)
-    promoter_chg_1y = row.get('Change In Promoter Holdings 1 Year', 0)
-    fii_chg_q = row.get('Change In FII Holdings Latest Quarter', 0)
-    fii_chg_1y = row.get('Change In FII Holdings 1 Year', 0)
-    dii_chg_q = row.get('Change In DII Holdings Latest Quarter', 0)
-    dii_chg_1y = row.get('Change In DII Holdings 1 Year', 0)
-    retail_chg_q = row.get('Change In Retail Holdings Latest Quarter', 0)
-    
-    # Growth
-    pat_ttm = row.get('PAT Growth TTM', 0)
-    pat_qoq = row.get('PAT Growth QoQ', 0)
-    rev_ttm = row.get('Revenue Growth TTM', 0)
-    eps_ttm = row.get('EPS Growth TTM', 0)
+    # Holdings Changes (smart money signals)
+    fii_chg = row.get('Change In FII Holdings Latest Quarter', 0)
+    dii_chg = row.get('Change In DII Holdings Latest Quarter', 0)
+    prom_chg = row.get('Change In Promoter Holdings Latest Quarter', 0)
     
     # Technical
-    dist_52wh = row.get('52WH Distance', -20)
     rsi_w = row.get('RSI 14W', 50)
-    rsi_d = row.get('RSI 14D', 50)
-    adx_w = row.get('ADX 14W', 20)
-    adx_d = row.get('ADX 14D', 20)
-    
-    # Returns
-    ret_1m = row.get('Returns 1M', 0)
-    ret_3m = row.get('Returns 3M', 0)
-    ret_1y = row.get('Returns 1Y', 0)
-    ret_vs_nifty = row.get('Returns Vs Nifty 500 3M', 0)
-    ret_vs_ind = row.get('Returns Vs Industry 3M', 0)
+    dist_52wh = row.get('52WH Distance', -15)
     
     # Profitability
-    roe = row.get('ROE', 0)
-    roce = row.get('ROCE', 0)
-    npm = row.get('NPM', 0)
+    roe = row.get('ROE', 10)
+    npm = row.get('NPM', 5)
     
     # ═══════════════════════════════════════════════════════
-    # 🚨 TRAP DETECTION (Check these FIRST - Highest Priority)
+    # STEP 1: RED FLAG CHECK (Traps override everything)
     # ═══════════════════════════════════════════════════════
     
-    # 🚨 CASH FLOW TRAP: High score but negative cash flow
-    if score > 70 and fcf < 0 and ocf < 0:
-        return "🚨 CASH TRAP", "trap"
+    red_flags = 0
+    trap_reason = ""
     
-    # 🚨 DEBT TRAP: High score but dangerous debt levels
-    if score > 65 and de > 2:
-        return "🚨 DEBT TRAP", "trap"
+    # Critical: Cash flow negative
+    if fcf < 0 and ocf < 0:
+        red_flags += 2
+        trap_reason = "CASH BURN"
     
-    # 🚨 PROMOTER DUMPING: Significant promoter selling
-    if score > 65 and promoter_chg_q < -2 and promoter_chg_1y < -3:
-        return "🚨 PROMOTER EXIT", "trap"
+    # Critical: Dangerous debt
+    if de > 2:
+        red_flags += 2
+        trap_reason = "HIGH DEBT"
     
-    # 🚨 SMART MONEY EXIT: Both FII and DII selling
-    if score > 60 and fii_chg_q < -1 and dii_chg_q < -1:
-        return "⚠️ INST. EXIT", "trap"
+    # Warning: Promoter dumping
+    if prom_chg < -2:
+        red_flags += 1
+        trap_reason = "PROMOTER SELLING"
     
-    # 🚨 OVERBOUGHT TRAP: High RSI with weak fundamentals
-    if score > 60 and rsi_w > 75 and rsi_d > 75 and (roe < 10 or npm < 5):
-        return "⚠️ OVERBOUGHT", "trap"
+    # Warning: All institutions exiting
+    if fii_chg < -1 and dii_chg < -1:
+        red_flags += 1
+        trap_reason = "INST. EXITING"
     
-    # 🚨 MOMENTUM TRAP: High returns but weak fundamentals
-    if score > 60 and ret_3m > 50 and pe > 100 and fcf < 0:
-        return "⚠️ MOMENTUM TRAP", "trap"
+    # Warning: Overbought with weak quality
+    if rsi_w > 75 and sq < 0.4:
+        red_flags += 1
+        trap_reason = "OVERBOUGHT"
     
-    # ═══════════════════════════════════════════════════════
-    # 💎 STRONG BUY SIGNALS (Highest Conviction)
-    # ═══════════════════════════════════════════════════════
+    # Warning: Extreme valuation
+    if pe > 100 and sg < 0.6:
+        red_flags += 1
+        trap_reason = "OVERVALUED"
     
-    # 💎 PERFECT STOCK: All criteria met
-    if (score >= 85 and fcf > 0 and ocf > 0 and de < 1 and 
-        promoter > 50 and roe > 15 and pat_ttm > 15):
-        return "💎 STRONG BUY", "strong-buy"
-    
-    # 🚀 BREAKOUT KING: Near 52W High with strong momentum
-    if (score >= 78 and dist_52wh > -5 and adx_w > 25 and 
-        rsi_w > 55 and rsi_w < 70 and (fii_chg_q > 0 or dii_chg_q > 0)):
-        return "🚀 BREAKOUT", "strong-buy"
-    
-    # 🏆 MARKET BEATER: Outperforming market + industry
-    if (score >= 75 and ret_vs_nifty > 10 and ret_vs_ind > 5 and
-        pat_ttm > 20 and fcf > 0):
-        return "🏆 OUTPERFORMER", "strong-buy"
+    # If 2+ red flags on a "good" score = TRAP
+    if red_flags >= 2 and score > 55:
+        return f"⚠️ RISKY ({trap_reason})", "trap"
     
     # ═══════════════════════════════════════════════════════
-    # 📈 BUY SIGNALS (High Conviction)
+    # STEP 2: STYLE-SPECIFIC SCORING
     # ═══════════════════════════════════════════════════════
     
-    # 📈 ACCUMULATION ZONE: Institutions heavily buying
-    if (score >= 75 and (fii_chg_q > 1 or dii_chg_q > 1) and
-        retail_chg_q < 0):  # Smart money in, retail out
-        return "📈 ACCUMULATE", "buy"
+    # Map factor names to their scores
+    factor_scores = {
+        'quality': sq, 'growth': sg, 'value': sv, 'safety': ss,
+        'momentum': sm, 'institutional': si, 'technical': st
+    }
     
-    # 💰 DEEP VALUE: Cheap with solid fundamentals
-    if (score >= 70 and pe < 15 and ps < 2 and fcf > 0 and 
-        roe > 12 and de < 1):
-        return "💰 VALUE BUY", "buy"
+    # Calculate style-specific strength and minimum requirements
+    if style == 'Value':
+        # Value stocks: Quality + Value + Safety matter most
+        style_strength = (sq * 0.3 + sv * 0.4 + ss * 0.3)
+        min_req = {'quality': 0.35, 'safety': 0.35, 'value': 0.4}
+        style_label = "VALUE"
+        
+    elif style == 'Growth':
+        # Growth stocks: Growth + Quality + Momentum matter most
+        style_strength = (sg * 0.4 + sq * 0.3 + sm * 0.3)
+        min_req = {'quality': 0.35, 'growth': 0.45}
+        style_label = "GROWTH"
+        
+    elif style == 'Momentum':
+        # Momentum stocks: Momentum + Technical + Institutional matter most
+        style_strength = (sm * 0.4 + st * 0.3 + si * 0.3)
+        min_req = {'momentum': 0.45, 'technical': 0.4}
+        style_label = "MOMENTUM"
+        
+    elif style == 'GARP':
+        # GARP: Balanced excellence across Growth + Value + Quality
+        style_strength = (sg * 0.33 + sv * 0.33 + sq * 0.34)
+        min_req = {'quality': 0.4, 'growth': 0.35, 'value': 0.35}
+        style_label = "GARP"
+        
+    else:  # Balanced
+        # Balanced: All factors equally
+        style_strength = (sq + sg + sv + ss + sm + si + st) / 7
+        min_req = {'quality': 0.3}
+        style_label = "BALANCED"
     
-    # 🌱 GROWTH CHAMPION: Exceptional growth
-    if (score >= 70 and pat_ttm > 30 and rev_ttm > 20 and 
-        eps_ttm > 25 and pat_qoq > pat_ttm):  # Accelerating
-        return "🌱 HIGH GROWTH", "buy"
-    
-    # ⚡ MOMENTUM PLAY: Strong technical setup
-    if (score >= 68 and adx_w > 30 and rsi_w > 55 and rsi_w < 70 and
-        ret_1m > 5 and ret_3m > 10):
-        return "⚡ MOMENTUM", "buy"
-    
-    # �️ QUALITY COMPOUNDER: High quality metrics
-    if (score >= 70 and roe > 20 and roce > 20 and npm > 15 and
-        de < 0.5 and promoter > 55):
-        return "🛡️ QUALITY", "buy"
-    
-    # 📊 TURNAROUND: Improving fundamentals
-    if (score >= 65 and pat_qoq > 20 and pat_qoq > pat_ttm and
-        fii_chg_q > 0 and dii_chg_q > 0):
-        return "📊 TURNAROUND", "buy"
-    
-    # ═══════════════════════════════════════════════════════
-    # 👀 WATCHLIST (Monitor Closely)
-    # ═══════════════════════════════════════════════════════
-    
-    if score >= 55:
-        # Good score but missing some criteria
-        if fii_chg_q > 0 or dii_chg_q > 0:
-            return "👀 INST. WATCH", "hold"
-        if dist_52wh > -15:
-            return "👀 NEAR BREAKOUT", "hold"
-        return "👀 WATCHLIST", "hold"
+    # Check if stock meets minimum requirements for its style
+    meets_minimums = all(factor_scores.get(k, 0.5) >= v for k, v in min_req.items())
     
     # ═══════════════════════════════════════════════════════
-    # ⏸️ HOLD / NEUTRAL
+    # STEP 3: CONVICTION SCORING (0-100)
     # ═══════════════════════════════════════════════════════
     
-    if score >= 40:
-        return "⏸️ HOLD", "hold"
+    # Base conviction from final score
+    conviction = score
+    
+    # Boost for strong style alignment
+    if style_strength > 0.7:
+        conviction += 5
+    elif style_strength < 0.4:
+        conviction -= 5
+    
+    # Penalty if doesn't meet minimum requirements for its style
+    if not meets_minimums:
+        conviction -= 8
+    
+    # Boost for institutional backing
+    if fii_chg > 0.5 and dii_chg > 0.5:
+        conviction += 3
+    elif fii_chg < -0.5 and dii_chg < -0.5:
+        conviction -= 3
+    
+    # Boost for technical strength (near 52WH with good trend)
+    # Note: dist_52wh is POSITIVE in data (e.g., 10 = 10% below 52WH)
+    # So dist_52wh < 10 means within 10% of 52WH (good)
+    if dist_52wh < 10 and sm > 0.6:
+        conviction += 2
+    
+    # Penalty for any red flags
+    conviction -= (red_flags * 3)
+    
+    # Clamp conviction
+    conviction = max(0, min(100, conviction))
     
     # ═══════════════════════════════════════════════════════
-    # ❌ AVOID SIGNALS
+    # STEP 4: FINAL VERDICT (Simple, Actionable)
     # ═══════════════════════════════════════════════════════
     
-    # Weak fundamentals
-    if roe < 5 and npm < 3 and fcf < 0:
-        return "❌ WEAK FUNDAMENTALS", "avoid"
+    # STRONG BUY: Top tier with strong style alignment, no red flags
+    if conviction >= 78 and style_strength > 0.6 and red_flags == 0:
+        return f"💎 STRONG BUY", "strong-buy"
     
-    # Bleeding cash
-    if fcf < 0 and ocf < 0 and ncf < 0:
-        return "❌ CASH BLEED", "avoid"
+    # BUY: Good conviction, acceptable style strength, minimal issues
+    if conviction >= 65 and style_strength > 0.5 and red_flags <= 1:
+        return f"📈 BUY ({style_label})", "buy"
     
-    # Everyone selling
-    if fii_chg_q < -1 and dii_chg_q < -1 and promoter_chg_q < -1:
-        return "❌ ALL SELLING", "avoid"
+    # HOLD: Decent but not compelling
+    if conviction >= 45 and red_flags <= 1:
+        return f"⏸️ HOLD", "hold"
     
-    if score < 35:
-        return "❌ AVOID", "avoid"
+    # RISKY: Moderate conviction but has concerns OR low conviction with some potential
+    if conviction >= 30 and conviction < 45:
+        return f"⚠️ RISKY", "trap"
     
-    return "⏸️ NEUTRAL", "hold"
+    # RISKY: Has red flags regardless of score
+    if red_flags >= 2:
+        return f"⚠️ RISKY", "trap"
+    
+    # AVOID: Low conviction, poor metrics
+    return f"❌ AVOID", "avoid"
 
 # =========================================================
 # 📊 MAIN DASHBOARD - CLEAN UI
@@ -1079,7 +1091,8 @@ def main():
         
         with col_filter2:
             verdict_options = df['Verdict'].unique().tolist()
-            buy_verdicts = [v for v in verdict_options if any(x in v for x in ['BUY', 'ACCUMULATE', 'BREAKOUT', 'GROWTH', 'MOMENTUM', 'VALUE', 'QUALITY', 'OUTPERFORMER', 'TURNAROUND'])]
+            # New simpler verdicts: STRONG BUY, BUY (with style), HOLD, RISKY, AVOID
+            buy_verdicts = [v for v in verdict_options if 'BUY' in v]
             verdict_filter = st.multiselect("Verdict", options=verdict_options, default=buy_verdicts if buy_verdicts else None)
         
         # Apply both filters
@@ -1122,13 +1135,13 @@ def main():
         
         st.dataframe(styled_df, height=600, use_container_width=True)
         
-        # Quick Stats with style breakdown
+        # Quick Stats - Simple counts
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("💎 Strong Buy", len(df[df['Verdict_Class'] == 'strong-buy']))
         col2.metric("📈 Buy", len(df[df['Verdict_Class'] == 'buy']))
-        col3.metric("🚨 Traps", len(df[df['Verdict_Class'] == 'trap']))
-        col4.metric("📊 GARP", len(df[df['Stock_Style'] == 'GARP']))
-        col5.metric("💰 Value", len(df[df['Stock_Style'] == 'Value']))
+        col3.metric("⚠️ Risky", len(df[df['Verdict_Class'] == 'trap']))
+        col4.metric("❌ Avoid", len(df[df['Verdict_Class'] == 'avoid']))
+        col5.metric("⏸️ Hold", len(df[df['Verdict_Class'] == 'hold']))
     
     with tab2:
         st.markdown("#### Custom Scanner")
