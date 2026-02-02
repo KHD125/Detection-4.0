@@ -184,15 +184,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# COLUMN MAPPING - Maps your CSV headers to internal names
+# COLUMN MAPPING - Only map if your CSVs use full names
 # =========================================================
+# NOTE: Your actual CSV files (from Screener.in) already use short names
+# like NPM, ROCE, ROE. This mapping is kept for compatibility with
+# other data sources that might use full names.
 COLUMN_MAP = {
-    # Quality Metrics (handles both short and full names)
+    # Only map if full names are present (backward compatibility)
     'ROE (Return on Equity)': 'ROE',
     'ROCE (Return on Capital Employed)': 'ROCE', 
     'NPM (Net Profit Margin)': 'NPM',
     'OPM (Operating Profit Margin)': 'OPM',
     'CWIP (Capital Work in Progress)': 'CWIP',
+    # Add PE variants
+    'Price To Earnings Ratio': 'Price To Earnings',
+    'P/E': 'Price To Earnings',
+    'P/E Ratio': 'Price To Earnings',
 }
 
 # =========================================================
@@ -884,8 +891,13 @@ def get_ultimate_verdict(row):
     roe = row.get('ROE', 10)
     npm = row.get('NPM', 5)
     
+    # Get additional data for improved trap detection
+    debt = row.get('Debt', 0)
+    total_liabilities = row.get('Total Liabilities', 0)
+    
     # ═══════════════════════════════════════════════════════
     # STEP 1: SAFETY NET - COMPREHENSIVE TRAP DETECTION
+    # Uses AVAILABLE columns only (no ghost columns!)
     # ═══════════════════════════════════════════════════════
     
     red_flags = []
@@ -896,15 +908,32 @@ def get_ultimate_verdict(row):
         red_flags.append("CASH_TRAP")
         trap_severity += 3  # Critical
     
-    # 🚨 DEBT BOMB: D/E > 2 AND weak interest coverage
-    icr = row.get('Interest Coverage Ratio', 10)
+    # 🚨 DEBT BOMB: High debt with weak cash flow coverage
+    # FIX: Interest Coverage Ratio not in data!
+    # PROXY: Use OCF-to-Debt ratio instead (can they service debt?)
+    # If D/E > 2 AND Operating Cash Flow < 10% of Debt = DEBT BOMB
     if de > 2:
-        if icr < 2:
-            red_flags.append("DEBT_BOMB")
-            trap_severity += 3  # Critical
+        # Calculate debt coverage proxy
+        debt_value = debt if debt > 0 else (total_liabilities * 0.5)  # Estimate if no Debt column
+        if debt_value > 0:
+            ocf_debt_ratio = ocf / debt_value if debt_value != 0 else 1
+            # If OCF can't cover even 10% of debt annually = BOMB
+            if ocf_debt_ratio < 0.10 and ocf < debt_value * 0.1:
+                red_flags.append("DEBT_BOMB")
+                trap_severity += 3  # Critical - can't service debt!
+            else:
+                red_flags.append("HIGH_DEBT")
+                trap_severity += 1  # Warning
         else:
+            # No debt data but D/E > 2, flag as high debt
             red_flags.append("HIGH_DEBT")
-            trap_severity += 1  # Warning
+            trap_severity += 1
+    
+    # Additional debt check: Negative OCF with any significant debt
+    if ocf < 0 and de > 1:
+        if "DEBT_BOMB" not in red_flags and "HIGH_DEBT" not in red_flags:
+            red_flags.append("DEBT_STRESS")
+            trap_severity += 2  # Can't generate cash to pay debt
     
     # 🚨 PROMOTER EXIT: Insiders dumping heavily (>3% in quarter)
     if prom_chg < -3:
@@ -1117,7 +1146,8 @@ def main():
         with st.expander("🛡️ Safety Net Traps", expanded=False):
             st.markdown("""
             - 🚨 **CASH TRAP**: -FCF + -OCF
-            - 🚨 **DEBT BOMB**: D/E>2 + ICR<2
+            - 🚨 **DEBT BOMB**: D/E>2 + OCF<10% of Debt
+            - 🚨 **DEBT STRESS**: -OCF + D/E>1
             - 🚨 **PROMOTER EXIT**: Selling >3%
             - 🚨 **FII EXITING**: Smart $ fleeing
             - 🚨 **LOW SKIN**: Promoter <25%
@@ -1174,6 +1204,9 @@ def main():
             
             **🚨 DEATH SPIRAL**
             - Cash burning + Heavy debt = Bankruptcy
+            
+            **🚨 DEBT BOMB** *(Fixed!)*
+            - D/E > 2 + OCF can't cover 10% of Debt
             
             **🚨 PUMP & DUMP**
             - Great momentum + Negative cash flow
