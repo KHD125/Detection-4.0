@@ -556,7 +556,7 @@ def run_ultimate_scoring(df, base_weights):
     # Profitability
     roe, has_roe = safe_get('ROE', 12)
     roce, has_roce = safe_get('ROCE', 12)
-    npm, has_npm = safe_get('NPM', 8)
+    # npm removed - correlation -0.013 = USELESS (dead code cleanup)
     opm, has_opm = safe_get('OPM', 12)
     
     # Growth
@@ -824,9 +824,9 @@ def run_ultimate_scoring(df, base_weights):
     # ═══════════════════════════════════════════════════════
     # DATA AVAILABILITY TRACKING (For transparency, not penalty)
     # ═══════════════════════════════════════════════════════
-    total_expected = 25  # Total columns we try to use
+    total_expected = 24  # Total columns we try to use (npm removed)
     data_available = sum([
-        has_roe, has_roce, has_npm, has_opm,
+        has_roe, has_roce, has_opm,  # npm removed - useless correlation
         has_pat_ttm, has_pat_yoy, has_rev_ttm, has_rev_yoy, has_eps_ttm,
         has_pe, has_ps,
         has_de, has_promoter, has_fcf, has_ocf, has_cash, has_debt,
@@ -889,7 +889,7 @@ def get_ultimate_verdict(row):
     
     # Profitability
     roe = row.get('ROE', 10)
-    npm = row.get('NPM', 5)
+    # npm removed - zero correlation (-0.013), not used anywhere
     
     # Get additional data for improved trap detection
     debt = row.get('Debt', 0)
