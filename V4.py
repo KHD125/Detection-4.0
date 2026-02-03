@@ -257,7 +257,7 @@ SECTOR_THRESHOLDS = {
     # normal_threshold = acceptable for this sector
     
     'default': {
-        'debt_to_equity': {'danger': 3.0, 'high': 2.0, 'normal': 1.0},
+        'debt_to_equity': {'danger': 1.0, 'high': 0.5, 'normal': 0.33},  # 33% debt limit as safe threshold
         'pe': {'danger': 100, 'high': 50, 'normal': 25},
         'roe': {'min_good': 12, 'min_acceptable': 8},
         'roce': {'min_good': 15, 'min_acceptable': 10},
