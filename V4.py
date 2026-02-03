@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 
 # =========================================================
-# 🚀 V4 ULTRA - PURE QUANT DATA-DRIVEN ANALYZER
+# 🚀 V4 ULTRA+ - ENHANCED QUANT DATA-DRIVEN ANALYZER
 # =========================================================
 # CORRELATION-BACKED ALGORITHM (Not Theory-Based!)
 # 
@@ -26,17 +26,20 @@ from datetime import datetime
 #   ✗ Debt/Equity     +0.068  ← DOESN'T MATTER
 #   ✗ DII Changes     NEGATIVE ← CONTRARIAN SIGNAL
 #
-# V4 ULTRA SIMPLIFICATION:
-#   ✓ 4 Factors only (Momentum 60%, Institutional 20%, Quality 10%, Safety 10%)
+# V4 ULTRA+ ENHANCEMENTS (Addressing Weaknesses):
+#   ✓ 4 Core Factors (Momentum 60%, Institutional 20%, Quality 10%, Safety 10%)
 #   ✓ Z-Score normalization (adaptive to any market)
-#   ✓ No style classification (data doesn't care!)
-#   ✓ Simple percentile verdicts (Top 20% = BUY)
-#   ✓ Trap detection kept (OCF/FCF/Debt)
+#   ✓ EARLY ENTRY DETECTION - Catch accumulation before breakout
+#   ✓ TURNAROUND DETECTION - Identify recovering stocks
+#   ✓ MOMENTUM VELOCITY - 2nd derivative catches breakouts early
+#   ✓ FII ACCUMULATION PHASE - Smart money entering quietly
+#   ✓ SEQUENTIAL IMPROVEMENT - QoQ trajectory matters
+#   ✓ Enhanced Trap detection (OCF/FCF/Debt)
 # =========================================================
 
 st.set_page_config(
-    page_title="Wave Detection | Pro Stock Analyzer",
-    page_icon="🌊",
+    page_title="V4 ULTRA+ | Advanced Stock Analyzer",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -130,6 +133,30 @@ st.markdown("""
     }
     .verdict-trap {
         background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    .verdict-early-entry {
+        background: linear-gradient(135deg, #ffc107, #ff9800);
+        color: #1a1a1a;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    .verdict-accumulation {
+        background: linear-gradient(135deg, #ff9800, #f57c00);
+        color: white;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+    .verdict-turnaround {
+        background: linear-gradient(135deg, #9c27b0, #7b1fa2);
         color: white;
         padding: 6px 14px;
         border-radius: 20px;
@@ -311,6 +338,11 @@ ALL_EXPECTED_COLUMNS = {
     'promoter_changes': [
         'Change In Promoter Holdings Latest Quarter', 'Change In Promoter Holdings 1 Year',
         'Change In Promoter Holdings 2 Years', 'Change In Promoter Holdings 3 Years'
+    ],
+    
+    # FII Multi-Period (for accumulation detection)
+    'fii_multiperiod': [
+        'Change In FII Holdings Latest Quarter', 'Change In FII Holdings 1 Year'
     ],
     
     # Growth Metrics
@@ -627,15 +659,31 @@ def run_ultimate_scoring(df, base_weights):
     # Technical
     dist_52wh, has_52wh = safe_get('52WH Distance', -15)
     ret_vs_nifty, has_vs_nifty = safe_get('Returns Vs Nifty 500 3M', 0)
+    
+    # Multi-period FII (for accumulation detection)
+    fii_chg_1y, has_fii_chg_1y = safe_get('Change In FII Holdings 1 Year', 0)
+    
+    # RSI Daily (for velocity calculation)
+    rsi_d, has_rsi_d = safe_get('RSI 14D', 50)
+    
+    # Additional Growth for Turnaround Detection
+    pat_qoq, has_pat_qoq = safe_get('PAT Growth QoQ', 0)
+    rev_qoq, has_rev_qoq = safe_get('Revenue Growth QoQ', 0)
+    
     # ═══════════════════════════════════════════════════════
-    # V4 ULTRA: PURE QUANT 4-FACTOR Z-SCORE ENGINE
+    # V4 ULTRA+: ENHANCED QUANT 4-FACTOR Z-SCORE ENGINE
     # ═══════════════════════════════════════════════════════
     # 
-    # 4 FACTORS ONLY (data-driven, no style classification):
+    # 4 CORE FACTORS (data-driven, no style classification):
     #   1. MOMENTUM (60%): RSI + Returns + 52WH Distance + Acceleration
     #   2. INSTITUTIONAL (20%): FII flows (smart money)
     #   3. QUALITY (10%): ROCE only (the one that matters)
     #   4. SAFETY (10%): Cash flow + Debt (trap avoidance)
+    #
+    # ENHANCED DETECTION (Addressing Weaknesses):
+    #   + EARLY ENTRY: FII accumulating + RSI building + low returns = catch before breakout
+    #   + TURNAROUND: Sequential QoQ improvement + margin expansion + debt reduction
+    #   + RSI VELOCITY: Rate of RSI change catches momentum building
     #
     # ═══════════════════════════════════════════════════════
     
@@ -686,6 +734,143 @@ def run_ultimate_scoring(df, base_weights):
     df['Momentum_Acceleration'] = momentum_acceleration
     
     # ─────────────────────────────────────────────────────────
+    # RSI VELOCITY (Rate of change - catches momentum BUILDING)
+    # Addresses "Late to Party" weakness
+    # ─────────────────────────────────────────────────────────
+    if has_rsi_w and has_rsi_d:
+        # RSI velocity: weekly vs daily divergence indicates momentum building
+        rsi_velocity = rsi_w - rsi_d  # Positive = weekly stronger = momentum building
+        has_rsi_velocity = True
+    else:
+        rsi_velocity = pd.Series([0.0] * n, index=df.index)
+        has_rsi_velocity = False
+    
+    df['RSI_Velocity'] = rsi_velocity
+    
+    # ─────────────────────────────────────────────────────────
+    # EARLY ENTRY SCORE (Catch accumulation before breakout)
+    # Addresses "Late to Party" weakness
+    # ─────────────────────────────────────────────────────────
+    def calculate_early_entry_score(idx):
+        """
+        Detect ACCUMULATION PHASE before price breakout.
+        High score = Smart money entering quietly.
+        """
+        score = 0
+        signals = []
+        
+        # Signal 1: FII accumulating (quarterly positive)
+        fii_q = fii_chg.iloc[idx] if hasattr(fii_chg, 'iloc') else fii_chg[idx]
+        if fii_q > 0.3:
+            score += 25
+            signals.append('FII_ACCUM')
+        elif fii_q > 0:
+            score += 10
+        
+        # Signal 2: FII consistently buying (1Y trend positive)
+        if has_fii_chg_1y:
+            fii_1y = fii_chg_1y.iloc[idx] if hasattr(fii_chg_1y, 'iloc') else fii_chg_1y[idx]
+            if fii_1y > 1 and fii_q > 0:
+                score += 20
+                signals.append('FII_TREND')
+        
+        # Signal 3: RSI not overbought but building (40-60 sweet spot)
+        rsi_val = rsi_w.iloc[idx] if hasattr(rsi_w, 'iloc') else rsi_w[idx]
+        if 40 <= rsi_val <= 60:
+            score += 20
+            signals.append('RSI_READY')
+        elif 35 <= rsi_val < 40 or 60 < rsi_val <= 65:
+            score += 10
+        
+        # Signal 4: Price hasn't run yet (Returns 3M < 15%)
+        ret_3m_val = ret_3m.iloc[idx] if hasattr(ret_3m, 'iloc') else ret_3m[idx]
+        if -5 <= ret_3m_val <= 15:
+            score += 20
+            signals.append('NOT_EXTENDED')
+        elif ret_3m_val < -5:
+            score += 5  # Oversold but not ideal
+        
+        # Signal 5: Momentum acceleration positive (building)
+        mom_acc = momentum_acceleration.iloc[idx] if hasattr(momentum_acceleration, 'iloc') else momentum_acceleration[idx]
+        if mom_acc > 0:
+            score += 15
+            signals.append('MOM_BUILDING')
+        
+        return score / 100, signals
+    
+    early_entry_results = [calculate_early_entry_score(i) for i in range(n)]
+    df['Early_Entry_Score'] = [r[0] for r in early_entry_results]
+    df['Early_Entry_Signals'] = [','.join(r[1]) if r[1] else '' for r in early_entry_results]
+    
+    # ─────────────────────────────────────────────────────────
+    # TURNAROUND SCORE (Identify recovering companies)
+    # Addresses "Dislikes Turnarounds" weakness
+    # ─────────────────────────────────────────────────────────
+    def calculate_turnaround_score(idx):
+        """
+        Detect RECOVERY trajectory in beaten-down stocks.
+        High score = Company improving even if past numbers look bad.
+        """
+        score = 0
+        signals = []
+        
+        # Get values
+        pat_qoq_val = pat_qoq.iloc[idx] if hasattr(pat_qoq, 'iloc') else pat_qoq[idx]
+        pat_yoy_val = pat_yoy.iloc[idx] if hasattr(pat_yoy, 'iloc') else pat_yoy[idx]
+        ret_3m_val = ret_3m.iloc[idx] if hasattr(ret_3m, 'iloc') else ret_3m[idx]
+        ret_1y_val = ret_1y.iloc[idx] if hasattr(ret_1y, 'iloc') else ret_1y[idx]
+        prom_chg_val = prom_chg.iloc[idx] if hasattr(prom_chg, 'iloc') else prom_chg[idx]
+        de_val = de.iloc[idx] if hasattr(de, 'iloc') else de[idx]
+        opm_val = opm.iloc[idx] if hasattr(opm, 'iloc') else opm[idx]
+        ocf_val = ocf.iloc[idx] if hasattr(ocf, 'iloc') else ocf[idx]
+        
+        # Only consider if stock has been weak (potential turnaround candidate)
+        is_beaten_down = ret_1y_val < 0 or ret_3m_val < -5
+        
+        if not is_beaten_down:
+            return 0, []  # Not a turnaround candidate
+        
+        # Signal 1: PAT improving QoQ (even if negative YoY)
+        if pat_qoq_val > pat_yoy_val and pat_qoq_val > 0:
+            score += 25
+            signals.append('PAT_ACCEL')
+        elif pat_qoq_val > 0:
+            score += 15
+            signals.append('PAT_POS_QOQ')
+        
+        # Signal 2: Margin expansion (OPM improving)
+        if opm_val > 8:  # Decent margins
+            score += 15
+            signals.append('MARGIN_OK')
+        elif opm_val > 5:
+            score += 8
+        
+        # Signal 3: Promoter BUYING during stress (strong conviction)
+        if prom_chg_val > 0.5 and ret_3m_val < 0:
+            score += 25
+            signals.append('INSIDER_BUY')
+        elif prom_chg_val > 0:
+            score += 10
+        
+        # Signal 4: Debt reduction (deleveraging)
+        if de_val < 1:
+            score += 15
+            signals.append('LOW_DEBT')
+        elif de_val < 1.5:
+            score += 8
+        
+        # Signal 5: Operating cash flow positive (real recovery)
+        if ocf_val > 0:
+            score += 20
+            signals.append('OCF_POS')
+        
+        return min(score / 100, 1.0), signals
+    
+    turnaround_results = [calculate_turnaround_score(i) for i in range(n)]
+    df['Turnaround_Score'] = [r[0] for r in turnaround_results]
+    df['Turnaround_Signals'] = [','.join(r[1]) if r[1] else '' for r in turnaround_results]
+    
+    # ─────────────────────────────────────────────────────────
     # QUALITY GATES (Binary trap filter - 0 to 1)
     # ─────────────────────────────────────────────────────────
     def calculate_quality_gate(idx):
@@ -733,10 +918,11 @@ def run_ultimate_scoring(df, base_weights):
     rsi_adjusted = np.where(rsi_w < 30, rsi_w * 0.8, rsi_adjusted)  # Oversold penalty
     
     momentum_components = [
-        (get_z_score(pd.Series(rsi_adjusted, index=df.index), available=has_rsi_w), 0.40, has_rsi_w),  # RSI = KING
-        (get_z_score(ret_3m, available=has_ret_3m), 0.30, has_ret_3m),  # Returns 3M
+        (get_z_score(pd.Series(rsi_adjusted, index=df.index), available=has_rsi_w), 0.35, has_rsi_w),  # RSI = KING
+        (get_z_score(ret_3m, available=has_ret_3m), 0.25, has_ret_3m),  # Returns 3M
         (get_z_score(dist_52wh, lower_better=True, available=has_52wh), 0.20, has_52wh),  # Near 52WH = good
-        (get_z_score(momentum_acceleration.clip(-30, 30), available=has_mom_accel), 0.10, has_mom_accel),  # Acceleration
+        (get_z_score(momentum_acceleration.clip(-30, 30), available=has_mom_accel), 0.12, has_mom_accel),  # Acceleration
+        (get_z_score(rsi_velocity.clip(-20, 20), available=has_rsi_velocity), 0.08, has_rsi_velocity),  # RSI Velocity (early signal)
     ]
     df['Score_Momentum'] = weighted_avg(momentum_components)
     
@@ -745,9 +931,17 @@ def run_ultimate_scoring(df, base_weights):
     # FII +0.499 (follow them), DII negative (contrarian)
     # ═══════════════════════════════════════════════════════
     
+    # FII Accumulation trend (1Y consistent buying is stronger signal)
+    if has_fii_chg and has_fii_chg_1y:
+        fii_accumulation = (fii_chg + fii_chg_1y * 0.5).clip(-5, 5)  # Recent + trend
+        has_fii_accum = True
+    else:
+        fii_accumulation = fii_chg
+        has_fii_accum = has_fii_chg
+    
     inst_components = [
-        (get_z_score(fii_chg, available=has_fii_chg), 0.70, has_fii_chg),  # FII changes = KEY
-        (get_z_score(prom_chg, available=has_prom_chg), 0.30, has_prom_chg),  # Promoter not selling
+        (get_z_score(fii_accumulation, available=has_fii_accum), 0.65, has_fii_accum),  # FII accumulation pattern
+        (get_z_score(prom_chg, available=has_prom_chg), 0.35, has_prom_chg),  # Promoter conviction
         # DII REMOVED - negative correlation! Retail piling in = bad
     ]
     df['Score_Institutional'] = weighted_avg(inst_components)
@@ -820,7 +1014,7 @@ def run_ultimate_scoring(df, base_weights):
     # ═══════════════════════════════════════════════════════
     # DATA AVAILABILITY TRACKING (For transparency)
     # ═══════════════════════════════════════════════════════
-    total_expected = 25  # 4 factor model simplified tracking
+    total_expected = 30  # Enhanced tracking with new signals
     data_available = sum([
         has_roe, has_roce, has_opm,
         has_pat_ttm, has_pat_yoy, has_rev_ttm, has_rev_yoy, has_eps_ttm,
@@ -829,7 +1023,10 @@ def run_ultimate_scoring(df, base_weights):
         has_rsi_w, has_adx_w, has_ret_1m, has_ret_3m, has_ret_6m, has_ret_1y,
         has_fii, has_dii, has_fii_chg, has_dii_chg, has_prom_chg,
         has_52wh, has_vs_nifty,
-        has_mom_accel  # Momentum acceleration
+        has_mom_accel,  # Momentum acceleration
+        has_rsi_velocity,  # RSI velocity (new)
+        has_fii_chg_1y,  # FII trend (new)
+        has_pat_qoq,  # PAT QoQ for turnaround (new)
     ])
     df['Data_Coverage'] = f"{data_available}/{total_expected}"
     
@@ -840,10 +1037,12 @@ def run_ultimate_scoring(df, base_weights):
 # =========================================================
 def get_ultimate_verdict(row):
     """
-    V4 ULTRA Simplified Verdict System:
+    V4 ULTRA+ Enhanced Verdict System:
     
     1. TRAP DETECTION (Safety Net)
-    2. PURE PERCENTILE VERDICT (no style complexity)
+    2. EARLY ENTRY DETECTION (Catch accumulation phase)
+    3. TURNAROUND DETECTION (Identify recovery plays)
+    4. PURE PERCENTILE VERDICT (no style complexity)
     
     Returns: (verdict_text, verdict_class, trap_probability)
     """
@@ -877,6 +1076,13 @@ def get_ultimate_verdict(row):
     
     # Momentum Acceleration
     mom_accel = row.get('Momentum_Acceleration', 0)
+    
+    # NEW: Early Entry & Turnaround Scores
+    early_entry_score = row.get('Early_Entry_Score', 0)
+    early_entry_signals = row.get('Early_Entry_Signals', '')
+    turnaround_score = row.get('Turnaround_Score', 0)
+    turnaround_signals = row.get('Turnaround_Signals', '')
+    rsi_velocity = row.get('RSI_Velocity', 0)
     
     # Debt data
     debt = row.get('Debt', 0)
@@ -973,15 +1179,51 @@ def get_ultimate_verdict(row):
         return f"⚠️ RISKY ({red_flags[0]})", "trap", trap_probability
     
     # ═══════════════════════════════════════════════════════
+    # EARLY ENTRY DETECTION (Catch Before Breakout)
+    # ═══════════════════════════════════════════════════════
+    
+    # Strong early entry: High accumulation score + no traps + decent fundamentals
+    if early_entry_score >= 0.6 and trap_probability < 25 and sq >= 0.4:
+        signal_count = len(early_entry_signals.split(',')) if early_entry_signals else 0
+        if signal_count >= 3:
+            return "🎯 EARLY ENTRY", "early-entry", trap_probability
+    
+    # Moderate early entry with FII accumulation
+    if early_entry_score >= 0.45 and 'FII_ACCUM' in early_entry_signals and trap_probability < 30:
+        return "🔍 ACCUMULATION", "accumulation", trap_probability
+    
+    # ═══════════════════════════════════════════════════════
+    # TURNAROUND DETECTION (Recovery Plays)
+    # ═══════════════════════════════════════════════════════
+    
+    # Strong turnaround: High recovery score + insider buying + improving
+    if turnaround_score >= 0.6 and trap_probability < 40:
+        if 'INSIDER_BUY' in turnaround_signals:
+            return "🔄 TURNAROUND", "turnaround", trap_probability
+        elif 'PAT_ACCEL' in turnaround_signals:
+            return "📊 RECOVERY", "turnaround", trap_probability
+    
+    # Moderate turnaround with improving trajectory
+    if turnaround_score >= 0.4 and 'OCF_POS' in turnaround_signals and trap_probability < 35:
+        return "🌱 IMPROVING", "turnaround", trap_probability
+    
+    # ═══════════════════════════════════════════════════════
     # PURE PERCENTILE VERDICT (Simple & Clean)
     # ═══════════════════════════════════════════════════════
     
     flag_indicator = f" ⚡{red_flags[0]}" if len(red_flags) == 1 else ""
     trap_indicator = f" ({trap_probability:.0f}%)" if trap_probability >= 20 else ""
     
+    # RSI Velocity bonus for strong buys (momentum building)
+    velocity_bonus = rsi_velocity > 5 and mom_accel > 0
+    
     # Top 5%: STRONG BUY
     if score >= 85 and trap_probability < 20 and len(red_flags) == 0:
         return "💎 STRONG BUY", "strong-buy", trap_probability
+    
+    # Score 80-85 with velocity bonus = Strong Buy
+    if score >= 80 and velocity_bonus and trap_probability < 20 and len(red_flags) == 0:
+        return "💎 STRONG BUY ↗", "strong-buy", trap_probability
     
     # Top 15%: BUY
     if score >= 70 and trap_probability < 40 and len(red_flags) <= 1:
@@ -1005,8 +1247,8 @@ def main():
     # Clean Header
     st.markdown("""
     <div style='text-align:center; padding:1rem 0 1.5rem 0;'>
-        <h1 style='margin:0; font-weight:700; color:#1a1a2e;'>V4 ULTRA</h1>
-        <p style='color:#666; margin:0.3rem 0 0 0; font-size:0.95rem;'>4-Factor Pure Quant • Momentum-Dominant • Data-Driven</p>
+        <h1 style='margin:0; font-weight:700; color:#1a1a2e;'>V4 ULTRA+</h1>
+        <p style='color:#666; margin:0.3rem 0 0 0; font-size:0.95rem;'>4-Factor Pure Quant • Early Entry Detection • Turnaround Finder</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1028,19 +1270,41 @@ def main():
         show_all_columns = st.checkbox("Show Factor Scores", value=False)
         top_n = st.slider("Display Top", 10, 100, 30, help="Number of stocks to show")
         
-        # V4 ULTRA 4-FACTOR MODEL
+        # V4 ULTRA+ ENHANCED MODEL
         st.markdown("---")
         st.markdown("### 🎯 4-Factor Model")
-        st.caption("Pure quant, no style complexity")
+        st.caption("Pure quant + Enhanced Detection")
         
         st.markdown("""
-        | Factor | Weight | Why |
-        |--------|--------|-----|
-        | **Momentum** | 60% | RSI +0.878, Ret3M +0.707 |
-        | **Institutional** | 20% | FII +0.499 |
-        | **Quality** | 10% | ROCE +0.413 |
-        | **Safety** | 10% | Trap avoidance |
+        | Factor | Weight | Components |
+        |--------|--------|------------|
+        | **Momentum** | 60% | RSI, Ret3M, 52WH, Velocity |
+        | **Institutional** | 20% | FII Trend, Promoter |
+        | **Quality** | 10% | ROCE |
+        | **Safety** | 10% | OCF, FCF, D/E |
         """)
+        
+        with st.expander("🎯 Early Entry Detection", expanded=False):
+            st.markdown("""
+            **Catches accumulation BEFORE breakout:**
+            - 🔍 FII quietly accumulating
+            - 📊 RSI building (40-60 sweet spot)
+            - 📈 Momentum acceleration positive
+            - 💰 Price hasn't run yet (<15%)
+            
+            *Addresses "Late to Party" weakness*
+            """)
+        
+        with st.expander("🔄 Turnaround Detection", expanded=False):
+            st.markdown("""
+            **Identifies recovery plays:**
+            - 📈 PAT improving QoQ
+            - 💪 Promoter buying during dip
+            - 📊 Margin expansion
+            - 💵 OCF turning positive
+            
+            *Addresses "Dislikes Turnarounds" weakness*
+            """)
         
         with st.expander("🛡️ Safety Net Traps", expanded=False):
             st.markdown("""
@@ -1078,38 +1342,40 @@ def main():
         
         with col1:
             st.markdown("""
-            ### 🎯 V4 ULTRA: Pure Quant
+            ### 🎯 V4 ULTRA+: Enhanced Quant
             
-            **4 Factors Only** (data-driven, no theory):
+            **4 Core Factors + Smart Detection:**
             
             | Factor | Weight | Components |
             |--------|--------|------------|
-            | **Momentum** | 60% | RSI, Ret3M, 52WH, Accel |
-            | **Institutional** | 20% | FII changes, Promoter |
-            | **Quality** | 10% | ROCE only |
+            | **Momentum** | 60% | RSI, Ret3M, 52WH, Velocity |
+            | **Institutional** | 20% | FII Trend, Promoter |
+            | **Quality** | 10% | ROCE |
             | **Safety** | 10% | OCF, FCF, D/E |
             
-            **Key Insight**: High PE = GOOD (+0.551 corr!)
+            **🆕 Early Entry**: Catch before breakout
+            
+            **🆕 Turnaround**: Identify recovery plays
             """)
         
         with col2:
             st.markdown("""
-            ### 🛡️ Safety Net Feature
+            ### 🛡️ Enhanced Verdicts
             
-            Catches **traps** that complex models miss:
+            **🆕 Opportunity Detection:**
+            - 🎯 **EARLY ENTRY**: Accumulation phase
+            - 🔍 **ACCUMULATION**: FII buying quietly
+            - 🔄 **TURNAROUND**: Recovery play
+            - 🌱 **IMPROVING**: Getting better
             
-            - 🚨 **DEATH SPIRAL**: Cash burn + Debt bomb
-            - 🚨 **PUMP & DUMP**: Momentum + No cash
-            - 🚨 **INSIDER EXIT**: Promoter dumping >3%
-            - 🚨 **SMART EXIT**: FII fleeing + Cash trap
-            - 🚨 **LOW SKIN**: Promoter <25%
+            **Standard Verdicts:**
+            - 💎 **STRONG BUY**: Top performers
+            - 📈 **BUY**: Good picks
+            - ⏸️ **HOLD**: Wait and watch
             
-            **Simple percentile verdicts**:
-            - � STRONG BUY: Top 5%
-            - 📈 BUY: Top 15%
-            - ⏸️ HOLD: Top 40%
-            - ⚠️ RISKY: Bottom 40%
-            - ❌ AVOID: Bottom
+            **⚠️ Trap Detection:**
+            - 🚨 DEATH SPIRAL, PUMP & DUMP
+            - 🚨 INSIDER EXIT, SMART EXIT
             """)
         
         # Expected columns in simple format
@@ -1192,15 +1458,16 @@ def main():
         if verdict_filter:
             filtered_df = filtered_df[filtered_df['Verdict'].isin(verdict_filter)]
         
-        # Display Columns - V4 ULTRA 4-Factor Model
+        # Display Columns - V4 ULTRA+ Enhanced Model
         base_cols = ['Rank', 'Name', 'Verdict', 'Final_Score', 'Trap_Probability']
         price_cols = ['Close Price', 'Price To Earnings']
         metric_cols = ['ROCE', 'Debt To Equity', 'Free Cash Flow']
-        score_cols = ['Score_Momentum', 'Score_Institutional', 'Score_Quality', 'Score_Safety']  # 4 factors only
-        advanced_cols = ['Quality_Gate', 'Momentum_Acceleration', 'Data_Confidence']
+        score_cols = ['Score_Momentum', 'Score_Institutional', 'Score_Quality', 'Score_Safety']  # 4 core factors
+        new_detection_cols = ['Early_Entry_Score', 'Turnaround_Score', 'RSI_Velocity']  # New detectors
+        advanced_cols = ['Quality_Gate', 'Momentum_Acceleration', 'Data_Confidence', 'Early_Entry_Signals', 'Turnaround_Signals']
         
         if show_all_columns:
-            display_cols = base_cols + score_cols + advanced_cols
+            display_cols = base_cols + score_cols + new_detection_cols + advanced_cols
         else:
             display_cols = base_cols + [c for c in price_cols + metric_cols if c in df.columns]
         
@@ -1212,6 +1479,9 @@ def main():
             colors = {
                 'strong-buy': 'background-color: rgba(0, 200, 83, 0.15)',
                 'buy': 'background-color: rgba(33, 150, 243, 0.12)',
+                'early-entry': 'background-color: rgba(255, 193, 7, 0.18)',  # Gold for early entry
+                'accumulation': 'background-color: rgba(255, 152, 0, 0.15)',  # Orange for accumulation
+                'turnaround': 'background-color: rgba(156, 39, 176, 0.15)',  # Purple for turnaround
                 'trap': 'background-color: rgba(244, 67, 54, 0.15)',
                 'avoid': 'background-color: rgba(244, 67, 54, 0.08)'
             }
@@ -1226,13 +1496,14 @@ def main():
         
         st.dataframe(styled_df, height=600, use_container_width=True)
         
-        # Quick Stats - Simple counts
-        col1, col2, col3, col4, col5 = st.columns(5)
+        # Quick Stats - Enhanced counts with new categories
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         col1.metric("💎 Strong Buy", len(df[df['Verdict_Class'] == 'strong-buy']))
         col2.metric("📈 Buy", len(df[df['Verdict_Class'] == 'buy']))
-        col3.metric("⚠️ Risky", len(df[df['Verdict_Class'] == 'trap']))
-        col4.metric("❌ Avoid", len(df[df['Verdict_Class'] == 'avoid']))
-        col5.metric("⏸️ Hold", len(df[df['Verdict_Class'] == 'hold']))
+        col3.metric("🎯 Early Entry", len(df[df['Verdict_Class'].isin(['early-entry', 'accumulation'])]))
+        col4.metric("🔄 Turnaround", len(df[df['Verdict_Class'] == 'turnaround']))
+        col5.metric("⚠️ Risky", len(df[df['Verdict_Class'] == 'trap']))
+        col6.metric("⏸️ Hold", len(df[df['Verdict_Class'] == 'hold']))
     
     with tab2:
         st.markdown("#### Custom Scanner")
@@ -1308,12 +1579,14 @@ def main():
             # Radar Chart for Top Stock - V4 ULTRA 4 FACTORS
             if len(df) > 0:
                 top_stock = df.iloc[0]
-                categories = ['Momentum (60%)', 'Institutional (20%)', 'Quality (10%)', 'Safety (10%)']
+                categories = ['Momentum', 'Institutional', 'Quality', 'Safety', 'Early Entry', 'Turnaround']
                 values = [
                     top_stock.get('Score_Momentum', 0.5),
                     top_stock.get('Score_Institutional', 0.5),
                     top_stock.get('Score_Quality', 0.5),
-                    top_stock.get('Score_Safety', 0.5)
+                    top_stock.get('Score_Safety', 0.5),
+                    top_stock.get('Early_Entry_Score', 0),
+                    top_stock.get('Turnaround_Score', 0)
                 ]
                 
                 fig = go.Figure()
@@ -1367,6 +1640,31 @@ def main():
                 "Buy Signals",
                 csv_buys,
                 f"V4_Buys_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        
+        # NEW: Early Entry & Turnaround Opportunities
+        col4, col5 = st.columns(2)
+        
+        early_df = df[df['Verdict_Class'].isin(['early-entry', 'accumulation'])]
+        if len(early_df) > 0:
+            csv_early = early_df.to_csv(index=False).encode('utf-8')
+            col4.download_button(
+                "🎯 Early Entry",
+                csv_early,
+                f"V4_EarlyEntry_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        
+        turnaround_df = df[df['Verdict_Class'] == 'turnaround']
+        if len(turnaround_df) > 0:
+            csv_turn = turnaround_df.to_csv(index=False).encode('utf-8')
+            col5.download_button(
+                "🔄 Turnarounds",
+                csv_turn,
+                f"V4_Turnarounds_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 "text/csv",
                 use_container_width=True
             )
