@@ -240,6 +240,403 @@ COLUMN_MAP = {
 }
 
 # =========================================================
+# 🎯 SECTOR-AWARE ADAPTIVE THRESHOLDS
+# =========================================================
+# Different sectors have VERY different "normal" ranges!
+# Banking: High D/E is normal (they borrow to lend)
+# IT: High PE is normal (growth premium)
+# Infra: Low ROE is normal (capital intensive)
+# FMCG: High PE, low D/E is normal
+#
+# This prevents "false positives" from hardcoded thresholds
+# =========================================================
+
+SECTOR_THRESHOLDS = {
+    # Format: 'sector_keyword': {'metric': (danger_threshold, normal_threshold), ...}
+    # danger_threshold = absolute red flag
+    # normal_threshold = acceptable for this sector
+    
+    'default': {
+        'debt_to_equity': {'danger': 3.0, 'high': 2.0, 'normal': 1.0},
+        'pe': {'danger': 100, 'high': 50, 'normal': 25},
+        'roe': {'min_good': 12, 'min_acceptable': 8},
+        'roce': {'min_good': 15, 'min_acceptable': 10},
+        'opm': {'min_good': 12, 'min_acceptable': 8},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 40, 'high': 60},
+        'promoter_min': 25,
+    },
+    
+    # BANKING & NBFC - High leverage is their business model
+    'bank': {
+        'debt_to_equity': {'danger': 15.0, 'high': 12.0, 'normal': 8.0},  # Banks borrow to lend!
+        'pe': {'danger': 50, 'high': 25, 'normal': 15},
+        'roe': {'min_good': 14, 'min_acceptable': 10},
+        'roce': {'min_good': 2, 'min_acceptable': 1},  # ROCE meaningless for banks
+        'opm': {'min_good': 20, 'min_acceptable': 15},  # NIM based
+        'fii_accum': {'strong': 0.3, 'moderate': 0.2, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 35, 'high': 55},  # Banks move slower
+        'promoter_min': 20,  # PSU banks have lower promoter
+    },
+    'nbfc': {
+        'debt_to_equity': {'danger': 10.0, 'high': 7.0, 'normal': 5.0},
+        'pe': {'danger': 60, 'high': 35, 'normal': 20},
+        'roe': {'min_good': 15, 'min_acceptable': 12},
+        'roce': {'min_good': 3, 'min_acceptable': 2},
+        'opm': {'min_good': 25, 'min_acceptable': 18},
+        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 38, 'high': 58},
+        'promoter_min': 25,
+    },
+    'finance': {  # Alias for banking
+        'debt_to_equity': {'danger': 12.0, 'high': 8.0, 'normal': 5.0},
+        'pe': {'danger': 50, 'high': 30, 'normal': 18},
+        'roe': {'min_good': 14, 'min_acceptable': 10},
+        'roce': {'min_good': 2, 'min_acceptable': 1},
+        'opm': {'min_good': 20, 'min_acceptable': 15},
+        'fii_accum': {'strong': 0.3, 'moderate': 0.2, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 35, 'high': 55},
+        'promoter_min': 20,
+    },
+    
+    # IT & TECH - High PE is growth premium, low debt
+    'it': {
+        'debt_to_equity': {'danger': 1.0, 'high': 0.5, 'normal': 0.2},  # Should be nearly debt-free
+        'pe': {'danger': 80, 'high': 50, 'normal': 30},  # High PE is normal
+        'roe': {'min_good': 20, 'min_acceptable': 15},
+        'roce': {'min_good': 25, 'min_acceptable': 18},
+        'opm': {'min_good': 20, 'min_acceptable': 15},
+        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 42, 'high': 62},
+        'promoter_min': 30,
+    },
+    'software': {  # Alias for IT
+        'debt_to_equity': {'danger': 1.0, 'high': 0.5, 'normal': 0.2},
+        'pe': {'danger': 80, 'high': 50, 'normal': 30},
+        'roe': {'min_good': 20, 'min_acceptable': 15},
+        'roce': {'min_good': 25, 'min_acceptable': 18},
+        'opm': {'min_good': 20, 'min_acceptable': 15},
+        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 42, 'high': 62},
+        'promoter_min': 30,
+    },
+    'technology': {  # Alias for IT
+        'debt_to_equity': {'danger': 1.0, 'high': 0.5, 'normal': 0.2},
+        'pe': {'danger': 80, 'high': 50, 'normal': 30},
+        'roe': {'min_good': 20, 'min_acceptable': 15},
+        'roce': {'min_good': 25, 'min_acceptable': 18},
+        'opm': {'min_good': 20, 'min_acceptable': 15},
+        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 42, 'high': 62},
+        'promoter_min': 30,
+    },
+    
+    # FMCG & CONSUMER - Stable, low debt, premium valuations
+    'fmcg': {
+        'debt_to_equity': {'danger': 1.5, 'high': 0.8, 'normal': 0.3},
+        'pe': {'danger': 100, 'high': 60, 'normal': 40},  # Pays for stability
+        'roe': {'min_good': 25, 'min_acceptable': 18},
+        'roce': {'min_good': 30, 'min_acceptable': 22},
+        'opm': {'min_good': 18, 'min_acceptable': 14},
+        'fii_accum': {'strong': 0.3, 'moderate': 0.2, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 45, 'high': 65},
+        'promoter_min': 40,
+    },
+    'consumer': {  # Alias
+        'debt_to_equity': {'danger': 1.5, 'high': 0.8, 'normal': 0.3},
+        'pe': {'danger': 100, 'high': 60, 'normal': 40},
+        'roe': {'min_good': 25, 'min_acceptable': 18},
+        'roce': {'min_good': 30, 'min_acceptable': 22},
+        'opm': {'min_good': 18, 'min_acceptable': 14},
+        'fii_accum': {'strong': 0.3, 'moderate': 0.2, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 45, 'high': 65},
+        'promoter_min': 40,
+    },
+    
+    # PHARMA - R&D intensive, moderate debt
+    'pharma': {
+        'debt_to_equity': {'danger': 2.0, 'high': 1.0, 'normal': 0.5},
+        'pe': {'danger': 80, 'high': 45, 'normal': 25},
+        'roe': {'min_good': 18, 'min_acceptable': 12},
+        'roce': {'min_good': 18, 'min_acceptable': 12},
+        'opm': {'min_good': 20, 'min_acceptable': 15},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 40, 'high': 60},
+        'promoter_min': 35,
+    },
+    'healthcare': {  # Alias
+        'debt_to_equity': {'danger': 2.0, 'high': 1.0, 'normal': 0.5},
+        'pe': {'danger': 80, 'high': 45, 'normal': 25},
+        'roe': {'min_good': 18, 'min_acceptable': 12},
+        'roce': {'min_good': 18, 'min_acceptable': 12},
+        'opm': {'min_good': 20, 'min_acceptable': 15},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 40, 'high': 60},
+        'promoter_min': 35,
+    },
+    
+    # INFRASTRUCTURE & CAPITAL GOODS - High debt, low margins normal
+    'infrastructure': {
+        'debt_to_equity': {'danger': 4.0, 'high': 2.5, 'normal': 1.5},  # Capital intensive
+        'pe': {'danger': 60, 'high': 35, 'normal': 20},
+        'roe': {'min_good': 12, 'min_acceptable': 8},  # Lower ROE normal
+        'roce': {'min_good': 12, 'min_acceptable': 8},
+        'opm': {'min_good': 12, 'min_acceptable': 8},  # Lower margins normal
+        'fii_accum': {'strong': 0.6, 'moderate': 0.35, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 38, 'high': 58},
+        'promoter_min': 30,
+    },
+    'capital goods': {
+        'debt_to_equity': {'danger': 3.5, 'high': 2.0, 'normal': 1.2},
+        'pe': {'danger': 70, 'high': 40, 'normal': 25},
+        'roe': {'min_good': 15, 'min_acceptable': 10},
+        'roce': {'min_good': 15, 'min_acceptable': 10},
+        'opm': {'min_good': 14, 'min_acceptable': 10},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 40, 'high': 60},
+        'promoter_min': 30,
+    },
+    'construction': {
+        'debt_to_equity': {'danger': 4.0, 'high': 2.5, 'normal': 1.5},
+        'pe': {'danger': 50, 'high': 30, 'normal': 18},
+        'roe': {'min_good': 14, 'min_acceptable': 10},
+        'roce': {'min_good': 12, 'min_acceptable': 8},
+        'opm': {'min_good': 10, 'min_acceptable': 7},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 38, 'high': 58},
+        'promoter_min': 35,
+    },
+    
+    # METALS & MINING - Cyclical, high debt during expansion
+    'metal': {
+        'debt_to_equity': {'danger': 3.5, 'high': 2.0, 'normal': 1.2},
+        'pe': {'danger': 30, 'high': 15, 'normal': 8},  # Cyclical = low PE
+        'roe': {'min_good': 15, 'min_acceptable': 10},
+        'roce': {'min_good': 15, 'min_acceptable': 10},
+        'opm': {'min_good': 20, 'min_acceptable': 12},
+        'fii_accum': {'strong': 0.6, 'moderate': 0.35, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 35, 'high': 55},  # More volatile
+        'promoter_min': 30,
+    },
+    'mining': {  # Alias
+        'debt_to_equity': {'danger': 3.5, 'high': 2.0, 'normal': 1.2},
+        'pe': {'danger': 30, 'high': 15, 'normal': 8},
+        'roe': {'min_good': 15, 'min_acceptable': 10},
+        'roce': {'min_good': 15, 'min_acceptable': 10},
+        'opm': {'min_good': 20, 'min_acceptable': 12},
+        'fii_accum': {'strong': 0.6, 'moderate': 0.35, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 35, 'high': 55},
+        'promoter_min': 30,
+    },
+    'steel': {  # Alias
+        'debt_to_equity': {'danger': 3.5, 'high': 2.0, 'normal': 1.2},
+        'pe': {'danger': 30, 'high': 15, 'normal': 8},
+        'roe': {'min_good': 15, 'min_acceptable': 10},
+        'roce': {'min_good': 15, 'min_acceptable': 10},
+        'opm': {'min_good': 20, 'min_acceptable': 12},
+        'fii_accum': {'strong': 0.6, 'moderate': 0.35, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 35, 'high': 55},
+        'promoter_min': 30,
+    },
+    
+    # POWER & UTILITIES - Regulated, high debt normal
+    'power': {
+        'debt_to_equity': {'danger': 5.0, 'high': 3.0, 'normal': 2.0},  # Capital intensive, regulated
+        'pe': {'danger': 40, 'high': 20, 'normal': 12},
+        'roe': {'min_good': 12, 'min_acceptable': 8},
+        'roce': {'min_good': 10, 'min_acceptable': 7},
+        'opm': {'min_good': 25, 'min_acceptable': 18},
+        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 40, 'high': 58},
+        'promoter_min': 40,  # Often PSU
+    },
+    'utilities': {  # Alias
+        'debt_to_equity': {'danger': 5.0, 'high': 3.0, 'normal': 2.0},
+        'pe': {'danger': 40, 'high': 20, 'normal': 12},
+        'roe': {'min_good': 12, 'min_acceptable': 8},
+        'roce': {'min_good': 10, 'min_acceptable': 7},
+        'opm': {'min_good': 25, 'min_acceptable': 18},
+        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
+        'rsi_sweet_spot': {'low': 40, 'high': 58},
+        'promoter_min': 40,
+    },
+    
+    # AUTO - Cyclical, moderate debt
+    'auto': {
+        'debt_to_equity': {'danger': 2.5, 'high': 1.5, 'normal': 0.8},
+        'pe': {'danger': 60, 'high': 35, 'normal': 20},
+        'roe': {'min_good': 18, 'min_acceptable': 12},
+        'roce': {'min_good': 18, 'min_acceptable': 12},
+        'opm': {'min_good': 14, 'min_acceptable': 10},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 40, 'high': 60},
+        'promoter_min': 35,
+    },
+    'automobile': {  # Alias
+        'debt_to_equity': {'danger': 2.5, 'high': 1.5, 'normal': 0.8},
+        'pe': {'danger': 60, 'high': 35, 'normal': 20},
+        'roe': {'min_good': 18, 'min_acceptable': 12},
+        'roce': {'min_good': 18, 'min_acceptable': 12},
+        'opm': {'min_good': 14, 'min_acceptable': 10},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 40, 'high': 60},
+        'promoter_min': 35,
+    },
+    
+    # REALTY - Very high debt normal, cyclical
+    'realty': {
+        'debt_to_equity': {'danger': 4.0, 'high': 2.5, 'normal': 1.5},
+        'pe': {'danger': 50, 'high': 30, 'normal': 15},
+        'roe': {'min_good': 12, 'min_acceptable': 8},
+        'roce': {'min_good': 10, 'min_acceptable': 6},
+        'opm': {'min_good': 25, 'min_acceptable': 18},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 35, 'high': 55},
+        'promoter_min': 40,
+    },
+    'real estate': {  # Alias
+        'debt_to_equity': {'danger': 4.0, 'high': 2.5, 'normal': 1.5},
+        'pe': {'danger': 50, 'high': 30, 'normal': 15},
+        'roe': {'min_good': 12, 'min_acceptable': 8},
+        'roce': {'min_good': 10, 'min_acceptable': 6},
+        'opm': {'min_good': 25, 'min_acceptable': 18},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 35, 'high': 55},
+        'promoter_min': 40,
+    },
+    
+    # CHEMICALS - Moderate debt, decent margins
+    'chemical': {
+        'debt_to_equity': {'danger': 2.5, 'high': 1.5, 'normal': 0.8},
+        'pe': {'danger': 60, 'high': 35, 'normal': 22},
+        'roe': {'min_good': 18, 'min_acceptable': 14},
+        'roce': {'min_good': 18, 'min_acceptable': 14},
+        'opm': {'min_good': 16, 'min_acceptable': 12},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 40, 'high': 60},
+        'promoter_min': 40,
+    },
+    
+    # TEXTILES - Low margins, moderate debt
+    'textile': {
+        'debt_to_equity': {'danger': 2.5, 'high': 1.5, 'normal': 1.0},
+        'pe': {'danger': 40, 'high': 25, 'normal': 15},
+        'roe': {'min_good': 14, 'min_acceptable': 10},
+        'roce': {'min_good': 14, 'min_acceptable': 10},
+        'opm': {'min_good': 12, 'min_acceptable': 8},
+        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
+        'rsi_sweet_spot': {'low': 38, 'high': 58},
+        'promoter_min': 35,
+    },
+}
+
+def get_sector_thresholds(industry):
+    """
+    Get sector-specific thresholds based on industry name.
+    Uses fuzzy matching to find the best sector fit.
+    """
+    if not industry or pd.isna(industry):
+        return SECTOR_THRESHOLDS['default']
+    
+    industry_lower = str(industry).lower().strip()
+    
+    # Direct match first
+    if industry_lower in SECTOR_THRESHOLDS:
+        return SECTOR_THRESHOLDS[industry_lower]
+    
+    # Fuzzy match - check if any keyword is in the industry name
+    for sector_key in SECTOR_THRESHOLDS.keys():
+        if sector_key != 'default' and sector_key in industry_lower:
+            return SECTOR_THRESHOLDS[sector_key]
+    
+    # Check for common patterns
+    if any(kw in industry_lower for kw in ['bank', 'lending', 'credit', 'loan']):
+        return SECTOR_THRESHOLDS['bank']
+    if any(kw in industry_lower for kw in ['software', 'tech', 'digital', 'internet', 'saas']):
+        return SECTOR_THRESHOLDS['it']
+    if any(kw in industry_lower for kw in ['pharma', 'drug', 'biotech', 'hospital', 'health']):
+        return SECTOR_THRESHOLDS['pharma']
+    if any(kw in industry_lower for kw in ['fmcg', 'consumer', 'food', 'beverage', 'personal']):
+        return SECTOR_THRESHOLDS['fmcg']
+    if any(kw in industry_lower for kw in ['infra', 'construct', 'engineering', 'capital']):
+        return SECTOR_THRESHOLDS['infrastructure']
+    if any(kw in industry_lower for kw in ['metal', 'steel', 'aluminium', 'copper', 'mining']):
+        return SECTOR_THRESHOLDS['metal']
+    if any(kw in industry_lower for kw in ['power', 'electric', 'energy', 'utility']):
+        return SECTOR_THRESHOLDS['power']
+    if any(kw in industry_lower for kw in ['auto', 'vehicle', 'motor', 'tyre']):
+        return SECTOR_THRESHOLDS['auto']
+    if any(kw in industry_lower for kw in ['real', 'property', 'housing']):
+        return SECTOR_THRESHOLDS['realty']
+    if any(kw in industry_lower for kw in ['chemical', 'petrochem', 'specialty']):
+        return SECTOR_THRESHOLDS['chemical']
+    if any(kw in industry_lower for kw in ['textile', 'apparel', 'garment', 'fabric']):
+        return SECTOR_THRESHOLDS['textile']
+    if any(kw in industry_lower for kw in ['nbfc', 'financial service', 'insurance']):
+        return SECTOR_THRESHOLDS['nbfc']
+    
+    return SECTOR_THRESHOLDS['default']
+
+# =========================================================
+# 🚨 ONE-OFF INCOME DETECTION
+# =========================================================
+# Catches "fake" turnarounds where profit jumped due to:
+#   - Asset sales (Other Income)
+#   - One-time gains
+#   - Accounting tricks
+#
+# Key insight: If PAT grows but Revenue doesn't, it's likely ONE-OFF!
+# =========================================================
+
+def detect_one_off_income(pat_growth, revenue_growth, opm_current, opm_expected=None):
+    """
+    Detect if profit growth is likely from one-off income rather than business.
+    
+    Returns: (is_suspicious, confidence, reason)
+    
+    Logic:
+    1. PAT growth >> Revenue growth = likely other income
+    2. PAT positive but Revenue negative = very suspicious
+    3. OPM collapse but PAT up = definitely other income
+    """
+    if pd.isna(pat_growth) or pd.isna(revenue_growth):
+        return False, 0, "INSUFFICIENT_DATA"
+    
+    is_suspicious = False
+    confidence = 0
+    reasons = []
+    
+    # Case 1: PAT growing much faster than Revenue (>2x difference)
+    if pat_growth > 20 and revenue_growth < pat_growth * 0.5:
+        is_suspicious = True
+        confidence += 40
+        reasons.append("PAT>>REV")
+    
+    # Case 2: PAT positive but Revenue negative = RED FLAG!
+    if pat_growth > 10 and revenue_growth < 0:
+        is_suspicious = True
+        confidence += 50
+        reasons.append("PAT+REV-")
+    
+    # Case 3: Huge PAT jump with flat revenue
+    if pat_growth > 50 and abs(revenue_growth) < 5:
+        is_suspicious = True
+        confidence += 35
+        reasons.append("PAT_SPIKE")
+    
+    # Case 4: OPM lower than expected but PAT up (other income propping up)
+    if opm_expected and opm_current:
+        if opm_current < opm_expected * 0.7 and pat_growth > 15:
+            is_suspicious = True
+            confidence += 30
+            reasons.append("OPM_WEAK")
+    
+    confidence = min(confidence, 100)
+    reason = ','.join(reasons) if reasons else "CLEAN"
+    
+    return is_suspicious, confidence, reason
+
+# =========================================================
 # 📋 COMPLETE DATA HEADERS REFERENCE
 # =========================================================
 # All unique columns from your 9 CSV files:
@@ -750,22 +1147,37 @@ def run_ultimate_scoring(df, base_weights):
     # ─────────────────────────────────────────────────────────
     # EARLY ENTRY SCORE (Catch accumulation before breakout)
     # Addresses "Late to Party" weakness
+    # NOW WITH SECTOR-AWARE THRESHOLDS!
     # ─────────────────────────────────────────────────────────
+    
+    # Get industry column for sector-aware thresholds
+    has_industry = 'Industry' in df.columns
+    
     def calculate_early_entry_score(idx):
         """
         Detect ACCUMULATION PHASE before price breakout.
         High score = Smart money entering quietly.
+        NOW USES SECTOR-SPECIFIC THRESHOLDS!
         """
         score = 0
         signals = []
         
-        # Signal 1: FII accumulating (quarterly positive)
+        # Get sector thresholds
+        industry_val = df['Industry'].iloc[idx] if has_industry else None
+        thresholds = get_sector_thresholds(industry_val)
+        fii_thresh = thresholds['fii_accum']
+        rsi_range = thresholds['rsi_sweet_spot']
+        
+        # Signal 1: FII accumulating (SECTOR-ADJUSTED threshold)
         fii_q = fii_chg.iloc[idx] if hasattr(fii_chg, 'iloc') else fii_chg[idx]
-        if fii_q > 0.3:
+        if fii_q > fii_thresh['strong']:
             score += 25
             signals.append('FII_ACCUM')
-        elif fii_q > 0:
-            score += 10
+        elif fii_q > fii_thresh['moderate']:
+            score += 15
+            signals.append('FII_MOD')
+        elif fii_q > fii_thresh['weak']:
+            score += 8
         
         # Signal 2: FII consistently buying (1Y trend positive)
         if has_fii_chg_1y:
@@ -774,12 +1186,14 @@ def run_ultimate_scoring(df, base_weights):
                 score += 20
                 signals.append('FII_TREND')
         
-        # Signal 3: RSI not overbought but building (40-60 sweet spot)
+        # Signal 3: RSI in SECTOR-ADJUSTED sweet spot
         rsi_val = rsi_w.iloc[idx] if hasattr(rsi_w, 'iloc') else rsi_w[idx]
-        if 40 <= rsi_val <= 60:
+        rsi_low = rsi_range['low']
+        rsi_high = rsi_range['high']
+        if rsi_low <= rsi_val <= rsi_high:
             score += 20
             signals.append('RSI_READY')
-        elif 35 <= rsi_val < 40 or 60 < rsi_val <= 65:
+        elif (rsi_low - 5) <= rsi_val < rsi_low or rsi_high < rsi_val <= (rsi_high + 5):
             score += 10
         
         # Signal 4: Price hasn't run yet (Returns 3M < 15%)
@@ -805,18 +1219,31 @@ def run_ultimate_scoring(df, base_weights):
     # ─────────────────────────────────────────────────────────
     # TURNAROUND SCORE (Identify recovering companies)
     # Addresses "Dislikes Turnarounds" weakness
+    # NOW WITH ONE-OFF INCOME DETECTION & SECTOR THRESHOLDS!
     # ─────────────────────────────────────────────────────────
     def calculate_turnaround_score(idx):
         """
         Detect RECOVERY trajectory in beaten-down stocks.
         High score = Company improving even if past numbers look bad.
+        
+        NOW INCLUDES:
+        - Sector-aware debt thresholds (banks can have high D/E)
+        - One-off income detection (catches fake turnarounds)
         """
         score = 0
         signals = []
+        warnings = []
+        
+        # Get sector thresholds
+        industry_val = df['Industry'].iloc[idx] if has_industry else None
+        thresholds = get_sector_thresholds(industry_val)
+        de_thresh = thresholds['debt_to_equity']
+        opm_thresh = thresholds['opm']
         
         # Get values
         pat_qoq_val = pat_qoq.iloc[idx] if hasattr(pat_qoq, 'iloc') else pat_qoq[idx]
         pat_yoy_val = pat_yoy.iloc[idx] if hasattr(pat_yoy, 'iloc') else pat_yoy[idx]
+        rev_qoq_val = rev_qoq.iloc[idx] if hasattr(rev_qoq, 'iloc') else rev_qoq[idx]
         ret_3m_val = ret_3m.iloc[idx] if hasattr(ret_3m, 'iloc') else ret_3m[idx]
         ret_1y_val = ret_1y.iloc[idx] if hasattr(ret_1y, 'iloc') else ret_1y[idx]
         prom_chg_val = prom_chg.iloc[idx] if hasattr(prom_chg, 'iloc') else prom_chg[idx]
@@ -828,68 +1255,114 @@ def run_ultimate_scoring(df, base_weights):
         is_beaten_down = ret_1y_val < 0 or ret_3m_val < -5
         
         if not is_beaten_down:
-            return 0, []  # Not a turnaround candidate
+            return 0, [], []  # Not a turnaround candidate
+        
+        # 🚨 ONE-OFF INCOME CHECK - Critical for avoiding "falling knife"
+        is_one_off, one_off_confidence, one_off_reason = detect_one_off_income(
+            pat_qoq_val, 
+            rev_qoq_val, 
+            opm_val,
+            opm_thresh['min_acceptable']
+        )
+        
+        if is_one_off and one_off_confidence >= 50:
+            # HIGH CONFIDENCE one-off income - heavily penalize
+            warnings.append(f'ONE_OFF({one_off_reason})')
+            score -= 30  # Penalty for likely fake turnaround
+        elif is_one_off and one_off_confidence >= 30:
+            # MODERATE confidence - add warning but don't kill score
+            warnings.append(f'CHECK_INCOME({one_off_reason})')
+            score -= 10
         
         # Signal 1: PAT improving QoQ (even if negative YoY)
+        # BUT only if backed by Revenue growth (not one-off)
         if pat_qoq_val > pat_yoy_val and pat_qoq_val > 0:
-            score += 25
-            signals.append('PAT_ACCEL')
+            if rev_qoq_val > 0:  # Revenue also growing = REAL turnaround
+                score += 30
+                signals.append('REAL_TURNAROUND')
+            elif not is_one_off:
+                score += 20
+                signals.append('PAT_ACCEL')
+            else:
+                score += 5  # Discounted due to one-off suspicion
         elif pat_qoq_val > 0:
-            score += 15
+            score += 10
             signals.append('PAT_POS_QOQ')
         
-        # Signal 2: Margin expansion (OPM improving)
-        if opm_val > 8:  # Decent margins
+        # Signal 2: REVENUE growing (more reliable than PAT)
+        if rev_qoq_val > 5:
+            score += 20
+            signals.append('REV_GROWING')
+        elif rev_qoq_val > 0:
+            score += 10
+        
+        # Signal 3: Margin expansion (OPM improving) - SECTOR ADJUSTED
+        if opm_val > opm_thresh['min_good']:
             score += 15
             signals.append('MARGIN_OK')
-        elif opm_val > 5:
+        elif opm_val > opm_thresh['min_acceptable']:
             score += 8
         
-        # Signal 3: Promoter BUYING during stress (strong conviction)
+        # Signal 4: Promoter BUYING during stress (strong conviction)
         if prom_chg_val > 0.5 and ret_3m_val < 0:
             score += 25
             signals.append('INSIDER_BUY')
         elif prom_chg_val > 0:
             score += 10
         
-        # Signal 4: Debt reduction (deleveraging)
-        if de_val < 1:
+        # Signal 5: Debt under control - SECTOR ADJUSTED!
+        # Banks can have D/E of 8-10, while IT should be near 0
+        if de_val < de_thresh['normal']:
             score += 15
             signals.append('LOW_DEBT')
-        elif de_val < 1.5:
+        elif de_val < de_thresh['high']:
             score += 8
+        elif de_val > de_thresh['danger']:
+            score -= 10
+            warnings.append('EXCESS_DEBT')
         
-        # Signal 5: Operating cash flow positive (real recovery)
+        # Signal 6: Operating cash flow positive (real recovery, not accounting)
         if ocf_val > 0:
             score += 20
             signals.append('OCF_POS')
         
-        return min(score / 100, 1.0), signals
+        # Ensure score is in valid range
+        final_score = max(0, min(score / 100, 1.0))
+        
+        return final_score, signals, warnings
     
     turnaround_results = [calculate_turnaround_score(i) for i in range(n)]
     df['Turnaround_Score'] = [r[0] for r in turnaround_results]
     df['Turnaround_Signals'] = [','.join(r[1]) if r[1] else '' for r in turnaround_results]
+    df['Turnaround_Warnings'] = [','.join(r[2]) if r[2] else '' for r in turnaround_results]
     
     # ─────────────────────────────────────────────────────────
     # QUALITY GATES (Binary trap filter - 0 to 1)
+    # NOW WITH SECTOR-AWARE THRESHOLDS!
     # ─────────────────────────────────────────────────────────
     def calculate_quality_gate(idx):
         gates_passed = 0
         total_gates = 5
+        
+        # Get sector thresholds
+        industry_val = df['Industry'].iloc[idx] if has_industry else None
+        thresholds = get_sector_thresholds(industry_val)
         
         # Gate 1: Positive Operating Cash Flow
         ocf_val = ocf.iloc[idx] if hasattr(ocf, 'iloc') else ocf[idx]
         if ocf_val > 0:
             gates_passed += 1
         
-        # Gate 2: ROE > Cost of Equity
+        # Gate 2: ROE > Cost of Equity (SECTOR ADJUSTED)
         roe_val = roe.iloc[idx] if hasattr(roe, 'iloc') else roe[idx]
-        if roe_val > 10:
+        roe_min = thresholds['roe']['min_acceptable']
+        if roe_val > roe_min:
             gates_passed += 1
         
-        # Gate 3: Debt not dangerous
+        # Gate 3: Debt not dangerous (SECTOR ADJUSTED!)
         de_val = de.iloc[idx] if hasattr(de, 'iloc') else de[idx]
-        if de_val < 2:
+        de_high = thresholds['debt_to_equity']['high']
+        if de_val < de_high:
             gates_passed += 1
         
         # Gate 4: Not hemorrhaging money
@@ -1082,14 +1555,23 @@ def get_ultimate_verdict(row):
     early_entry_signals = row.get('Early_Entry_Signals', '')
     turnaround_score = row.get('Turnaround_Score', 0)
     turnaround_signals = row.get('Turnaround_Signals', '')
+    turnaround_warnings = row.get('Turnaround_Warnings', '')  # NEW: One-off income warnings
     rsi_velocity = row.get('RSI_Velocity', 0)
+    
+    # Industry for sector-aware checks
+    industry = row.get('Industry', '')
     
     # Debt data
     debt = row.get('Debt', 0)
     total_liabilities = row.get('Total Liabilities', 0)
     
+    # Get sector-specific thresholds for this stock
+    sector_thresholds = get_sector_thresholds(industry)
+    de_thresh = sector_thresholds['debt_to_equity']
+    
     # ═══════════════════════════════════════════════════════
     # TRAP PROBABILITY CALCULATION (0-100%)
+    # NOW WITH SECTOR-AWARE DEBT THRESHOLDS!
     # ═══════════════════════════════════════════════════════
     
     trap_probability = 0
@@ -1102,22 +1584,31 @@ def get_ultimate_verdict(row):
     elif fcf < 0:
         trap_probability += 5
     
-    # 🚨 DEBT BOMB: Can't service debt
-    if de > 2:
+    # 🚨 DEBT BOMB: SECTOR-ADJUSTED thresholds!
+    # Banks can have D/E of 10+ (normal), while IT should be <0.5
+    if de > de_thresh['danger']:
         debt_value = debt if debt > 0 else (total_liabilities * 0.5)
         if debt_value > 0 and ocf < debt_value * 0.1:
             red_flags.append("DEBT_BOMB")
             trap_probability += 20
         else:
-            red_flags.append("HIGH_DEBT")
-            trap_probability += 8
-    elif de > 1.5:
-        trap_probability += 3
+            red_flags.append("EXCESS_DEBT")
+            trap_probability += 12
+    elif de > de_thresh['high']:
+        red_flags.append("HIGH_DEBT")
+        trap_probability += 5
     
-    # Negative OCF with debt
-    if ocf < 0 and de > 1 and "DEBT_BOMB" not in red_flags:
+    # Negative OCF with high debt (sector-adjusted)
+    if ocf < 0 and de > de_thresh['normal'] and "DEBT_BOMB" not in red_flags:
         red_flags.append("DEBT_STRESS")
+        trap_probability += 12
+    
+    # 🚨 ONE-OFF INCOME WARNING (from turnaround detection)
+    if 'ONE_OFF' in turnaround_warnings:
+        red_flags.append("ONE_OFF_INCOME")
         trap_probability += 15
+    elif 'CHECK_INCOME' in turnaround_warnings:
+        trap_probability += 5
     
     # 🚨 PROMOTER EXIT
     if prom_chg < -3:
@@ -1194,18 +1685,34 @@ def get_ultimate_verdict(row):
     
     # ═══════════════════════════════════════════════════════
     # TURNAROUND DETECTION (Recovery Plays)
+    # NOW WITH ONE-OFF INCOME PROTECTION!
     # ═══════════════════════════════════════════════════════
     
-    # Strong turnaround: High recovery score + insider buying + improving
-    if turnaround_score >= 0.6 and trap_probability < 40:
-        if 'INSIDER_BUY' in turnaround_signals:
+    # Check for one-off income warnings (falling knife protection)
+    has_one_off_warning = 'ONE_OFF' in turnaround_warnings or 'CHECK_INCOME' in turnaround_warnings
+    
+    # Strong turnaround: High recovery score + insider buying + NO ONE-OFF WARNING
+    if turnaround_score >= 0.6 and trap_probability < 40 and not has_one_off_warning:
+        if 'REAL_TURNAROUND' in turnaround_signals:  # Revenue + PAT both growing
+            return "🔄 TURNAROUND ✓", "turnaround", trap_probability
+        elif 'INSIDER_BUY' in turnaround_signals:
             return "🔄 TURNAROUND", "turnaround", trap_probability
-        elif 'PAT_ACCEL' in turnaround_signals:
+        elif 'PAT_ACCEL' in turnaround_signals and 'REV_GROWING' in turnaround_signals:
             return "📊 RECOVERY", "turnaround", trap_probability
     
-    # Moderate turnaround with improving trajectory
+    # Turnaround with warning - show but flag it
+    if turnaround_score >= 0.5 and has_one_off_warning and trap_probability < 50:
+        if 'INSIDER_BUY' in turnaround_signals:  # Insider buying overrides some concern
+            return "🔄 TURNAROUND ⚠️", "turnaround", trap_probability
+        else:
+            return "⚠️ CHECK INCOME", "hold", trap_probability
+    
+    # Moderate turnaround with improving trajectory (no one-off)
     if turnaround_score >= 0.4 and 'OCF_POS' in turnaround_signals and trap_probability < 35:
-        return "🌱 IMPROVING", "turnaround", trap_probability
+        if not has_one_off_warning:
+            return "🌱 IMPROVING", "turnaround", trap_probability
+        else:
+            return "🌱 IMPROVING ⚠️", "hold", trap_probability
     
     # ═══════════════════════════════════════════════════════
     # PURE PERCENTILE VERDICT (Simple & Clean)
@@ -1287,23 +1794,42 @@ def main():
         with st.expander("🎯 Early Entry Detection", expanded=False):
             st.markdown("""
             **Catches accumulation BEFORE breakout:**
-            - 🔍 FII quietly accumulating
-            - 📊 RSI building (40-60 sweet spot)
+            - 🔍 FII quietly accumulating (sector-adjusted)
+            - 📊 RSI building (sector-specific sweet spot)
             - 📈 Momentum acceleration positive
             - 💰 Price hasn't run yet (<15%)
             
-            *Addresses "Late to Party" weakness*
+            *Thresholds auto-adjust by sector!*
             """)
         
         with st.expander("🔄 Turnaround Detection", expanded=False):
             st.markdown("""
             **Identifies recovery plays:**
-            - 📈 PAT improving QoQ
+            - 📈 PAT + Revenue both growing = REAL turnaround
             - 💪 Promoter buying during dip
-            - 📊 Margin expansion
+            - 📊 Margin expansion (sector-adjusted)
             - 💵 OCF turning positive
             
-            *Addresses "Dislikes Turnarounds" weakness*
+            **🚨 One-Off Income Detection:**
+            - Flags PAT growth without Revenue growth
+            - Catches asset sales disguised as turnarounds
+            - Warns: "CHECK INCOME" if suspicious
+            """)
+        
+        with st.expander("🏭 Sector-Aware Thresholds", expanded=False):
+            st.markdown("""
+            **Auto-adjusts for industry norms:**
+            
+            | Sector | D/E Normal | D/E Danger |
+            |--------|------------|------------|
+            | **Banking** | 8.0 | 15.0 |
+            | **IT/Tech** | 0.2 | 1.0 |
+            | **Infra** | 1.5 | 4.0 |
+            | **FMCG** | 0.3 | 1.5 |
+            | **Power** | 2.0 | 5.0 |
+            | **Metals** | 1.2 | 3.5 |
+            
+            *No more false flags on banks for "high debt"!*
             """)
         
         with st.expander("🛡️ Safety Net Traps", expanded=False):
@@ -1311,8 +1837,8 @@ def main():
             - 🚨 **DEATH SPIRAL**: Cash burn + Debt
             - 🚨 **PUMP & DUMP**: Momentum + No cash
             - 🚨 **INSIDER EXIT**: Promoter selling >3%
-            - 🚨 **FII EXITING**: Smart money fleeing
-            - 🚨 **LOW SKIN**: Promoter <25%
+            - 🚨 **ONE_OFF_INCOME**: Fake profit (asset sale)
+            - 🚨 **EXCESS_DEBT**: Beyond sector norms
             """)
         
         with st.expander("❌ Dead Weight (Removed)", expanded=False):
@@ -1321,11 +1847,10 @@ def main():
             |--------|-------------|
             | NPM | -0.013 corr ❌ |
             | DII Changes | NEGATIVE ❌ |
-            | Low PE | +0.551 corr! ❌ |
-            | 7 Factor Soup | Overfit ❌ |
-            | Style Classification | No edge ❌ |
+            | Hardcoded D/E=2 | Sector-blind ❌ |
+            | Fixed RSI 40-60 | Sector-blind ❌ |
             
-            *Simpler = Better*
+            *Now uses adaptive thresholds!*
             """)
     
     if not uploaded_files:
@@ -1463,8 +1988,8 @@ def main():
         price_cols = ['Close Price', 'Price To Earnings']
         metric_cols = ['ROCE', 'Debt To Equity', 'Free Cash Flow']
         score_cols = ['Score_Momentum', 'Score_Institutional', 'Score_Quality', 'Score_Safety']  # 4 core factors
-        new_detection_cols = ['Early_Entry_Score', 'Turnaround_Score', 'RSI_Velocity']  # New detectors
-        advanced_cols = ['Quality_Gate', 'Momentum_Acceleration', 'Data_Confidence', 'Early_Entry_Signals', 'Turnaround_Signals']
+        new_detection_cols = ['Early_Entry_Score', 'Turnaround_Score', 'RSI_Velocity', 'Turnaround_Warnings']  # New detectors
+        advanced_cols = ['Quality_Gate', 'Momentum_Acceleration', 'Data_Confidence', 'Early_Entry_Signals', 'Turnaround_Signals', 'Industry']
         
         if show_all_columns:
             display_cols = base_cols + score_cols + new_detection_cols + advanced_cols
