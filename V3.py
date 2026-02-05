@@ -6,6 +6,7 @@ The Ultimate Fusion:
 1. Validated 7-Factor WMA Algorithm (Math/Physics based)
 2. Professional Streamlit Dashboard (Tier 1/Tier 2 Logic)
 3. Safety Filters (No Micro Caps, No Downtrends)
+4. Frontend Multi-File Upload
 
 Hit Rate Validation: ~48-55% on Top 20 picks.
 ================================================================================
@@ -17,7 +18,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-from pathlib import Path
+from io import StringIO
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -57,6 +58,12 @@ st.markdown("""
     .metric-label { font-size: 0.9rem; color: #9ca3af; }
     .stDataFrame { border-radius: 10px; overflow: hidden; }
     div[data-testid="stExpander"] { border: 1px solid #374151; border-radius: 8px; background: #111827; }
+    /* Upload area styling */
+    [data-testid="stFileUploader"] {
+        padding: 1rem;
+        border: 1px dashed #374151;
+        border-radius: 8px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,52 +72,63 @@ st.markdown("""
 # ============================================================
 
 class WaveMomentumEngine:
-    def __init__(self, csv_folder):
-        self.csv_folder = Path(csv_folder)
+    def __init__(self, uploaded_files):
+        self.uploaded_files = uploaded_files
         self.weekly_data = {}
         self.all_tickers = set()
-        self.load_data()
+        if uploaded_files:
+            self.load_data()
 
     def load_data(self):
-        """Robust data loading with date sorting"""
-        if not self.csv_folder.exists():
-            return
-            
-        files = list(self.csv_folder.glob("*.csv"))
-        # Exclude 'LATEST' or prediction files
-        files = [f for f in files if "LATEST" not in f.name.upper() and "PREDICT" not in f.name.upper()]
-        
+        """Robust data loading from uploaded files with date sorting"""
         data_map = {}
-        for f in files:
+        
+        for uploaded_file in self.uploaded_files:
             try:
-                # Parse Date from Filename
-                date_str = f.stem.replace('.csv', '').strip()
-                try:
-                    dt = datetime.strptime(date_str, "%d %b %Y")
-                except:
-                    try:
-                        dt = datetime.strptime(date_str, "%d %B %Y")
-                    except:
-                        continue # Skip files with bad dates
+                filename = uploaded_file.name
                 
-                df = pd.read_csv(f)
+                # Exclude 'LATEST' or prediction files based on name
+                if "LATEST" in filename.upper() or "PREDICT" in filename.upper():
+                    continue
+
+                # Parse Date from Filename (e.g., "1 FEB 2026.csv")
+                date_str = filename.replace('.csv', '').strip()
+                dt = None
+                
+                # Try multiple date formats
+                for fmt in ["%d %b %Y", "%d %B %Y", "%Y-%m-%d"]:
+                    try:
+                        dt = datetime.strptime(date_str, fmt)
+                        break
+                    except:
+                        continue
+                
+                if dt is None:
+                    continue # Skip files with unparseable dates
+                
+                # Read CSV from BytesIO
+                df = pd.read_csv(uploaded_file)
                 
                 # Standardize Columns
                 cols_map = {c: c.lower().strip() for c in df.columns}
                 df.rename(columns=cols_map, inplace=True)
                 
-                # Handle Ticker Column
+                # Handle Ticker Column normalization
                 if 'symbol' in df.columns: df.rename(columns={'symbol': 'ticker'}, inplace=True)
+                
                 if 'ticker' in df.columns:
                     df['ticker'] = df['ticker'].astype(str).str.strip().str.upper()
                     data_map[dt] = df
-            except:
-                pass
+            except Exception as e:
+                st.error(f"Error processing {uploaded_file.name}: {str(e)}")
         
-        # Sort by Date
+        # Sort by Date (Oldest to Newest)
         self.weekly_data = dict(sorted(data_map.items()))
+        
         if self.weekly_data:
-            self.all_tickers = set(self.weekly_data[list(self.weekly_data.keys())[-1]]['ticker'].unique())
+            # Get all unique tickers from the LATEST week
+            latest_date = list(self.weekly_data.keys())[-1]
+            self.all_tickers = set(self.weekly_data[latest_date]['ticker'].unique())
 
     def get_history(self, ticker):
         """Get chronological history for a ticker"""
@@ -131,39 +149,31 @@ class WaveMomentumEngine:
         
         ranks = []
         for h in history:
-            # Use ret_3m rank if available, else use file rank
             r = h.get('rank', 500)
             if pd.isna(r): r = 500
             ranks.append(r)
             
         if len(ranks) < 2: return 50
         
-        # Weighted velocity
         velocity = 0
         weight_sum = 0
         n = len(ranks)
         
         for i in range(1, n):
             change = ranks[i-1] - ranks[i] # Positive = Improved
-            w = np.exp(-0.15 * (n - 1 - i)) # Decay
+            w = np.exp(-0.15 * (n - 1 - i)) 
             velocity += change * w
             weight_sum += w
             
         final_vel = velocity / weight_sum if weight_sum > 0 else 0
-        # Normalize (-100 to 100) -> (0 to 100)
         return min(max((final_vel + 100) / 2, 0), 100)
 
     def _calc_rank_acceleration(self, history):
-        """Component 2: Rank Acceleration (2nd Derivative)"""
+        """Component 2: Rank Acceleration"""
         if len(history) < 4: return 50
-        
         ranks = [h.get('rank', 500) for h in history[-4:]]
-        v1 = ranks[1] - ranks[0] # Early velocity (delta)
-        v2 = ranks[3] - ranks[2] # Recent velocity (delta)
-        
-        # Acceleration: Is the drop getting bigger?
-        # v1 = -10 (improved 10), v2 = -30 (improved 30) -> Accel = -20 (Good)
-        # We invert logic for score: Positive Accel = Good
+        v1 = ranks[1] - ranks[0] 
+        v2 = ranks[3] - ranks[2] 
         accel = v1 - v2 
         return min(max((accel + 50), 0), 100)
 
@@ -174,8 +184,7 @@ class WaveMomentumEngine:
             p = str(h.get('patterns', '')).upper()
             if 'CAT LEADER' in p: streak += 1
             else: break
-            
-        # Score mapping
+        
         if streak >= 8: return 100
         if streak >= 5: return 90
         if streak >= 3: return 75
@@ -185,9 +194,8 @@ class WaveMomentumEngine:
     def _calc_score_momentum(self, history):
         """Component 4: Master Score Trend"""
         if len(history) < 2: return 50
-        scores = [h.get('master_score', 0) for h in history[-4:]] # Last 4 weeks
+        scores = [h.get('master_score', 0) for h in history[-4:]]
         if not scores or scores[0] == 0: return 50
-        
         pct = ((scores[-1] - scores[0]) / scores[0]) * 100
         return min(max(50 + pct, 0), 100)
 
@@ -195,8 +203,6 @@ class WaveMomentumEngine:
         """Component 5: Volume Surge Index"""
         if not history: return 50
         current_rvol = history[-1].get('rvol', 1.0)
-        
-        # Simple thresholding
         if current_rvol >= 3.0: return 100
         if current_rvol >= 2.0: return 85
         if current_rvol >= 1.5: return 70
@@ -207,11 +213,8 @@ class WaveMomentumEngine:
         if len(history) < 3: return 50
         pos = [h.get('position_score', 0) for h in history[-6:]]
         if not pos: return 50
-        
-        # Linear slope
         try:
             slope = np.polyfit(range(len(pos)), pos, 1)[0]
-            # Normalize slope (-2 to +2 -> 0 to 100)
             return min(max((slope * 20) + 50, 0), 100)
         except:
             return 50
@@ -234,14 +237,14 @@ class WaveMomentumEngine:
         # SAFETY FILTER 1: MICRO CAPS
         cat = str(latest.get('category', '')).upper()
         if 'MICRO' in cat or 'NANO' in cat:
-            return None # Skip Micro caps (High failure rate in validation)
+            return None 
 
         # SAFETY FILTER 2: DOWNTRENDS
         state = str(latest.get('market_state', '')).upper()
         if 'DOWNTREND' in state and 'STRONG' in state:
             return None 
 
-        # --- CALCULATE COMPONENTS ---
+        # CALCULATE COMPONENTS
         c1_rv = self._calc_rank_velocity(history)
         c2_ra = self._calc_rank_acceleration(history)
         c3_pp = self._calc_pattern_persistence(history)
@@ -250,43 +253,29 @@ class WaveMomentumEngine:
         c6_pt = self._calc_position_trend(history)
         c7_ms = self._calc_market_state(latest)
         
-        # --- WEIGHTED SCORE ---
-        # Weights derived from successful 48% hit rate test
+        # WEIGHTED SCORE (Based on Validation)
         raw_score = (
-            c1_rv * 0.25 +
-            c2_ra * 0.15 +
-            c3_pp * 0.20 +
-            c4_sm * 0.15 +
-            c5_vs * 0.10 +
-            c6_pt * 0.10 +
-            c7_ms * 0.05
+            c1_rv * 0.25 + c2_ra * 0.15 + c3_pp * 0.20 + c4_sm * 0.15 +
+            c5_vs * 0.10 + c6_pt * 0.10 + c7_ms * 0.05
         )
         
-        # --- BONUSES ---
+        # BONUSES
         bonus = 0
         reasons = []
-        
         pat = str(latest.get('patterns', '')).upper()
         if 'CAT LEADER' in pat: 
             bonus += 15
             reasons.append("CAT")
-        
         pos = latest.get('position_score', 0)
         if pos >= 80:
             bonus += 10
             reasons.append("POS>80")
-            
-        if 'UPTREND' in state:
-            bonus += 5
-            
-        if 'SMALL' in cat or 'MID' in cat:
-            bonus += 5 # Sweet spot for volatility
+        if 'UPTREND' in state: bonus += 5
+        if 'SMALL' in cat or 'MID' in cat: bonus += 5 
             
         final_score = raw_score + bonus
         
-        # --- TIER LOGIC ---
-        # Tier 1: Proven Winners (High Persistence)
-        # Tier 2: Fresh Breakouts (High Velocity)
+        # TIER LOGIC
         cat_streak = 0
         for h in reversed(history):
             if 'CAT' in str(h.get('patterns','')).upper(): cat_streak += 1
@@ -352,9 +341,13 @@ def main():
     
     # --- SIDEBAR ---
     with st.sidebar:
-        st.header("⚙️ Configuration")
-        folder = st.text_input("CSV Folder Path", "s:/Wave Detection/csv")
-        st.caption("Ensure folder contains weekly CSV files (e.g., '1 FEB 2026.csv')")
+        st.header("⚙️ Data Input")
+        uploaded_files = st.file_uploader(
+            "Upload Weekly CSVs", 
+            type=['csv'], 
+            accept_multiple_files=True,
+            help="Select multiple files like '1 FEB 2026.csv', '25 JAN 2026.csv' etc."
+        )
         
         run_btn = st.button("🚀 RUN ANALYSIS", type="primary", use_container_width=True)
         
@@ -364,17 +357,19 @@ def main():
         st.warning("**Tier 2:** Aggressive, New Breakouts (MTAR DNA)")
 
     # --- MAIN LOGIC ---
-    if run_btn:
-        engine = WaveMomentumEngine(folder)
+    if run_btn and uploaded_files:
+        with st.spinner("Initializing Wave Engine... Parsing Dates & History..."):
+            engine = WaveMomentumEngine(uploaded_files)
         
         if not engine.weekly_data:
-            st.error("No data found! Check folder path.")
+            st.error("No valid data loaded. Please check filenames (e.g. '1 FEB 2026.csv')")
             return
             
         data_date = list(engine.weekly_data.keys())[-1].strftime('%d %b %Y')
-        st.success(f"Loaded Data up to: **{data_date}**")
+        st.success(f"Analysis Date: **{data_date}** | History Depth: {len(engine.weekly_data)} Weeks")
         
-        predictions = engine.run_analysis()
+        with st.spinner("Running 7-Factor Physics Engine on all stocks..."):
+            predictions = engine.run_analysis()
         
         # Split Tiers
         tier1 = [p for p in predictions if p['tier'] == 1]
@@ -469,6 +464,8 @@ def main():
                     margin=dict(l=0, r=0, t=40, b=0)
                 )
                 st.plotly_chart(fig, use_container_width=True)
+    elif run_btn and not uploaded_files:
+        st.warning("⚠️ Please upload CSV files first!")
 
 if __name__ == "__main__":
     main()
