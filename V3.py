@@ -255,12 +255,26 @@ class UltimateStockPredictor:
                 date_str = filename.replace('.csv', '').strip()
                 dt = None
                 
-                for fmt in ["%d %b %Y", "%d %B %Y", "%d_%b_%Y", "%Y-%m-%d"]:
-                    try:
-                        dt = datetime.strptime(date_str, fmt)
-                        break
-                    except:
-                        continue
+                # Handle Stocks_Weekly_2025-11-02_Nov_2025 format
+                if 'Stocks_Weekly_' in filename:
+                    # Extract the ISO date part (2025-11-02)
+                    parts = filename.split('_')
+                    for part in parts:
+                        if '-' in part and len(part) == 10:  # YYYY-MM-DD format
+                            try:
+                                dt = datetime.strptime(part, "%Y-%m-%d")
+                                break
+                            except:
+                                continue
+                
+                # Try standard formats if not already parsed
+                if dt is None:
+                    for fmt in ["%d %b %Y", "%d %B %Y", "%d_%b_%Y", "%Y-%m-%d"]:
+                        try:
+                            dt = datetime.strptime(date_str, fmt)
+                            break
+                        except:
+                            continue
                 
                 if dt is None:
                     continue
@@ -280,7 +294,7 @@ class UltimateStockPredictor:
                     data_map[dt] = df
                     
             except Exception as e:
-                st.sidebar.error(f"Error: {uploaded_file.name}")
+                st.sidebar.warning(f"⚠️ Skipped: {uploaded_file.name[:30]}...")
         
         # Sort chronologically
         self.weekly_data = dict(sorted(data_map.items()))
@@ -288,6 +302,14 @@ class UltimateStockPredictor:
         if self.weekly_data:
             latest_date = list(self.weekly_data.keys())[-1]
             self.all_tickers = set(self.weekly_data[latest_date]['ticker'].unique())
+            
+            # Show loaded files in sidebar
+            st.sidebar.success(f"✅ Loaded {len(self.weekly_data)} weekly files")
+            
+            with st.sidebar.expander("📅 Loaded Files", expanded=False):
+                for dt in sorted(self.weekly_data.keys()):
+                    stocks_count = len(self.weekly_data[dt])
+                    st.caption(f"• {dt.strftime('%d %b %Y')} ({stocks_count} stocks)")
     
     def _get_history(self, ticker):
         """Get chronological history for a ticker"""
@@ -881,7 +903,13 @@ def main():
             "Upload Weekly CSV Files",
             type=['csv'],
             accept_multiple_files=True,
-            help="Upload files like: 1_FEB_2026.csv, 25_JAN_2026.csv, etc."
+            help="""
+            Supported formats:
+            • 1_FEB_2026.csv
+            • 25_JAN_2026.csv
+            • Stocks_Weekly_2025-11-02_Nov_2025.csv
+            • 2025-11-02.csv
+            """
         )
         
         st.markdown("---")
@@ -1381,7 +1409,11 @@ def main():
         1. **Upload Weekly CSV Files**
            - Use sidebar file uploader
            - Upload 4-15 weeks of data
-           - Format: `1_FEB_2026.csv`, `25_JAN_2026.csv`, etc.
+           - Supported formats:
+             - `1_FEB_2026.csv`
+             - `25_JAN_2026.csv`
+             - `Stocks_Weekly_2025-11-02_Nov_2025.csv`
+             - `2025-11-02.csv`
         
         2. **Click 'RUN ANALYSIS'**
            - System processes all stocks
