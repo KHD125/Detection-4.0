@@ -1,21 +1,9 @@
-"""
-WAVE Analyzer — System Intelligence Engine
-═══════════════════════════════════════════
-Companion to WAVE DETECTION 3.0.
-Takes weekly CSV snapshots → adds the TIME dimension your scoring system lacks.
-
-Answers: "Does my scoring system predict future gains? Which signals work?
-          What should I buy THIS week? How should I size and exit?"
-
-pip install streamlit pandas numpy plotly scipy
-streamlit run wave_analyzer.py
-"""
-
-# ═══════════════════════════════════════════
-#  IMPORTS
-# ═══════════════════════════════════════════
-import os
-os.environ['STREAMLIT_SERVER_FILE_WATCHER_TYPE'] = 'none'
+# ═══════════════════════════════════════════════════════════════════════════
+#  WAVE GAINER SCANNER
+#  Finds the next big winners by studying what past gainers looked like
+#  BEFORE they gained. Data-driven. No guessing.
+#  Companion to WAVE Detection 3.0
+# ═══════════════════════════════════════════════════════════════════════════
 
 import streamlit as st
 import pandas as pd
@@ -24,1555 +12,1288 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy import stats
-from collections import defaultdict
 import re
+from datetime import datetime, timedelta
 import warnings
-from datetime import datetime
-
 warnings.filterwarnings('ignore')
-np.seterr(all='ignore')
 
-# ═══════════════════════════════════════════
-#  PAGE CONFIG & STYLING
-# ═══════════════════════════════════════════
 st.set_page_config(
-    page_title="WAVE Analyzer",
-    page_icon="🌊",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="WAVE Gainer Scanner", page_icon="🎯",
+    layout="wide", initial_sidebar_state="expanded"
 )
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  STYLING
+# ═══════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-* { font-family: 'Inter', sans-serif; }
-.block-container { padding-top: 0.8rem; max-width: 1400px; }
-
-/* Header */
-.wave-header {
-    text-align: center; padding: 0.4rem 0 0.2rem 0;
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-    border-radius: 12px; margin-bottom: 0.8rem;
-    border: 1px solid #334155;
-}
-.wave-header h1 {
-    font-size: 1.8rem !important; font-weight: 800;
-    background: linear-gradient(90deg, #38bdf8, #818cf8, #c084fc);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    margin: 0; padding: 0;
-}
-.wave-header p { color: #94a3b8; font-size: 0.78rem; margin: 0; }
-
-/* Metrics */
-.verdict-box {
-    padding: 1rem 1.5rem; border-radius: 10px; margin: 0.8rem 0;
-    font-size: 0.95rem; font-weight: 600;
-}
-.verdict-good { background: #052e16; border: 1px solid #16a34a; color: #4ade80; }
-.verdict-mid  { background: #422006; border: 1px solid #d97706; color: #fbbf24; }
-.verdict-bad  { background: #450a0a; border: 1px solid #dc2626; color: #f87171; }
-
-.big { font-size: 2.2rem; font-weight: 800; line-height: 1; }
-.green { color: #4ade80; }
-.red { color: #f87171; }
-.amber { color: #fbbf24; }
-.blue { color: #38bdf8; }
-.muted { color: #64748b; font-size: 0.78rem; }
-.signal-stack { font-size: 0.82rem; line-height: 1.6; }
-
-/* Cards */
-.stock-card {
-    background: #0f172a; border: 1px solid #1e293b; border-radius: 10px;
-    padding: 0.8rem 1rem; margin-bottom: 0.5rem;
-}
-.stock-card:hover { border-color: #38bdf8; }
-.fresh-badge {
-    display: inline-block; padding: 2px 8px; border-radius: 6px;
-    font-size: 0.72rem; font-weight: 700;
-}
-.fresh-new { background: #065f46; color: #6ee7b7; }
-.fresh-est { background: #1e3a5f; color: #93c5fd; }
-.fresh-aging { background: #713f12; color: #fcd34d; }
-
-/* Nav */
-div[data-testid="stHorizontalBlock"] > div[data-testid="column"] { padding: 0 0.3rem; }
+    [data-testid="stAppViewContainer"] { background: #0a0e1a; color: #e2e8f0; }
+    [data-testid="stSidebar"] { background: #111827; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] {
+        background: #1e293b; border-radius: 8px; color: #94a3b8;
+        padding: 8px 20px; font-weight: 600;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #059669, #0d9488) !important;
+        color: white !important;
+    }
+    .hero {
+        background: linear-gradient(135deg, #059669 0%, #0d9488 50%, #0ea5e9 100%);
+        padding: 24px 32px; border-radius: 16px; margin-bottom: 24px; text-align: center;
+    }
+    .hero h1 { margin: 0; font-size: 2.2rem; color: white; letter-spacing: -0.5px; }
+    .hero p { margin: 6px 0 0; color: rgba(255,255,255,0.85); font-size: 0.95rem; }
+    .scard {
+        background: #1e293b; border-radius: 12px; padding: 18px;
+        margin: 10px 0; border-left: 5px solid #059669;
+    }
+    .scard.high { border-left-color: #22c55e; }
+    .scard.med { border-left-color: #f59e0b; }
+    .scard.low { border-left-color: #64748b; }
+    .scard.conf { border-left-color: #38bdf8; background: #172033; }
+    .big { font-size: 2.2rem; font-weight: 800; line-height: 1.1; }
+    .big.green { color: #22c55e; }
+    .big.amber { color: #f59e0b; }
+    .big.gray { color: #94a3b8; }
+    .big.blue { color: #38bdf8; }
+    .muted { color: #64748b; font-size: 0.82rem; }
+    .badge {
+        display: inline-block; padding: 2px 10px; border-radius: 6px;
+        font-size: 0.75rem; font-weight: 700; margin-right: 4px;
+    }
+    .badge-new { background: #059669; color: white; }
+    .badge-confirmed { background: #0ea5e9; color: white; }
+    .badge-loser { background: #dc2626; color: white; }
+    div[data-testid="stMetric"] { background: #1e293b; border-radius: 10px; padding: 12px; }
+    div[data-testid="stMetric"] label { color: #94a3b8 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ═══════════════════════════════════════════════════════════
-#  DATA ENGINE
-# ═══════════════════════════════════════════════════════════
-
-NUMERIC_COLS = [
-    'rank','master_score','position_score','volume_score','momentum_score',
-    'acceleration_score','breakout_score','rvol_score','trend_quality',
-    'price','pe','eps_current','eps_change_pct','from_low_pct','from_high_pct',
-    'ret_1d','ret_7d','ret_30d','ret_3m','ret_6m','ret_1y',
-    'rvol','vmi','money_flow_mm','position_tension','momentum_harmony',
-    'overall_market_strength'
+# ═══════════════════════════════════════════════════════════════════════════
+#  CONSTANTS
+# ═══════════════════════════════════════════════════════════════════════════
+SCORE_COLS = [
+    'position_score', 'volume_score', 'momentum_score', 'breakout_score',
+    'acceleration_score', 'rvol_score', 'trend_quality'
 ]
 
-SCORE_COLS = ['master_score','position_score','volume_score','momentum_score',
-              'acceleration_score','breakout_score','rvol_score','trend_quality']
+ANALYSIS_FEATURES = [
+    'rank', 'master_score', 'position_score', 'volume_score', 'momentum_score',
+    'breakout_score', 'acceleration_score', 'rvol_score', 'trend_quality',
+    'rvol', 'momentum_harmony', 'from_low_pct', 'from_high_pct',
+    'ret_7d', 'ret_30d', 'overall_market_strength',
+]
 
-WAVE_WEIGHTS = {
-    'position_score': 0.27, 'volume_score': 0.23, 'momentum_score': 0.22,
-    'breakout_score': 0.18, 'rvol_score': 0.10, 'acceleration_score': 0.0
+PATTERN_CHECKS = {
+    'p_stealth': 'stealth',
+    'p_institutional': 'institutional',
+    'p_cat_leader': 'cat leader',
+    'p_market_leader': 'market leader',
+    'p_vol_explosion': 'vol explosion',
+    'p_velocity': 'velocity',
+    'p_premium_mom': 'premium momentum',
+    'p_golden_cross': 'golden cross',
+    'p_mom_wave': 'momentum wave',
+    'p_acceleration': 'acceleration',
+    'p_garp': 'garp',
+    'p_value_mom': 'value momentum',
+    'p_liquid_leader': 'liquid leader',
+    'p_inst_tsunami': 'tsunami',
+    'p_capitulation': 'capitulation',
+    'p_distribution': 'distribution',
+    'p_rotation': 'rotation',
+    'p_52w_high': '52w high',
+    'p_52w_low': '52w low',
+    'p_high_pe': 'high pe',
+    'p_low_pe': 'low pe',
+    'p_mom_diverge': 'diverge',
 }
 
-PATTERN_TAGS = [
-    ('CAT LEADER','cat_leader'), ('VOL EXPLOSION','vol_explosion'),
-    ('MARKET LEADER','market_leader'), ('MOMENTUM WAVE','momentum_wave'),
-    ('PREMIUM MOMENTUM','premium_momentum'), ('VELOCITY BREAKOUT','velocity_breakout'),
-    ('INSTITUTIONAL TSUNAMI','institutional_tsunami'), ('INSTITUTIONAL','institutional'),
-    ('GOLDEN CROSS','golden_cross'), ('STEALTH','stealth'),
-    ('DISTRIBUTION','distribution'), ('CAPITULATION','capitulation'),
-    ('HIGH PE','high_pe'), ('PHOENIX RISING','phoenix_rising'),
-    ('PULLBACK SUPPORT','pullback_support'), ('RANGE COMPRESS','range_compress'),
-    ('ACCELERATION','acceleration'), ('ROTATION LEADER','rotation_leader'),
-    ('GARP LEADER','garp_leader'), ('VALUE MOMENTUM','value_momentum'),
-    ('EARNINGS','earnings'), ('LIQUID LEADER','liquid_leader'),
-    ('VELOCITY SQUEEZE','velocity_squeeze'), ('RUNAWAY GAP','runaway_gap'),
-    ('PYRAMID','pyramid'), ('MOMENTUM DIVERGE','momentum_diverge'),
-    ('VACUUM','vacuum'), ('PERFECT STORM','perfect_storm'),
-    ('EXHAUSTION','exhaustion'), ('ENTROPY','entropy'),
-    ('ATOMIC DECAY','atomic_decay'), ('INFORMATION DECAY','info_decay'),
-]
-
-RANK_BUCKETS = [(1, 20, 'Top 20'), (21, 50, 'Top 21-50'), (51, 100, 'Top 51-100'),
-                (101, 200, '101-200'), (201, 500, '201-500'),
-                (501, 1000, '501-1000'), (1001, 9999, '1000+')]
-
-MARKET_STATES = ['STRONG_UPTREND','UPTREND','PULLBACK','ROTATION',
-                 'SIDEWAYS','BOUNCE','DOWNTREND','STRONG_DOWNTREND']
+FEAT_DISPLAY = {
+    'rank': 'Rank', 'master_score': 'Master Score', 'position_score': 'Position',
+    'volume_score': 'Volume', 'momentum_score': 'Momentum', 'breakout_score': 'Breakout',
+    'acceleration_score': 'Acceleration', 'rvol_score': 'RVOL Score',
+    'trend_quality': 'Trend Quality', 'rvol': 'Relative Volume',
+    'momentum_harmony': 'Harmony', 'from_low_pct': 'From 52W Low %',
+    'from_high_pct': 'From 52W High %', 'ret_7d': '7D Return',
+    'ret_30d': '30D Return', 'overall_market_strength': 'Market Strength',
+    'rank_velocity': 'Rank Velocity', 'score_velocity': 'Score Velocity',
+}
 
 
-@st.cache_data(show_spinner=False)
-def load_weekly_csvs(uploaded_files):
-    """Parse all uploaded weekly CSVs into a unified panel."""
+# ═══════════════════════════════════════════════════════════════════════════
+#  DATA LOADING
+# ═══════════════════════════════════════════════════════════════════════════
+@st.cache_data
+def load_weekly_csvs(file_contents):
+    """Load and combine weekly CSV files with date parsing."""
     frames = []
-    file_info = []
-    for f in uploaded_files:
+    for name, data in file_contents:
         try:
-            df = pd.read_csv(f)
-            m = re.search(r'(\d{4}-\d{2}-\d{2})', f.name)
-            if not m:
+            from io import BytesIO
+            df = pd.read_csv(BytesIO(data))
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', name)
+            if not date_match:
                 continue
-            week = pd.to_datetime(m.group(1))
-            df['week'] = week
-            for c in NUMERIC_COLS:
-                if c in df.columns:
-                    df[c] = pd.to_numeric(df[c], errors='coerce')
+            df['week'] = pd.to_datetime(date_match.group(1))
+            df['ticker'] = df['ticker'].astype(str).str.strip().str.upper()
+            df['ticker'] = df['ticker'].str.replace(r'\.0$', '', regex=True)
             frames.append(df)
-            file_info.append({'file': f.name, 'date': week, 'stocks': len(df)})
-        except Exception as e:
-            st.warning(f"Skipped {f.name}: {e}")
-
+        except Exception:
+            continue
     if not frames:
-        return None, None, []
-
+        return pd.DataFrame()
     panel = pd.concat(frames, ignore_index=True)
     panel = panel.sort_values(['ticker', 'week']).reset_index(drop=True)
-    weeks = sorted(panel['week'].unique())
-    return panel, weeks, file_info
+    return panel
 
 
-@st.cache_data(show_spinner=False)
-def build_enriched_panel(_panel, _weeks):
-    """Add forward returns, rank deltas, entry freshness, pattern flags."""
-    panel = _panel.copy()
-    weeks = list(_weeks)
-    n_weeks = len(weeks)
-    week_idx = {w: i for i, w in enumerate(weeks)}
+def parse_outcome_file(uploaded):
+    """Parse gainer/loser CSV → DataFrame with symbol and return_pct."""
+    df = pd.read_csv(uploaded)
+    cols = df.columns.tolist()
+    sym_col = cols[0]
+    company_col = cols[1] if len(cols) > 1 else cols[0]
+    ret_col = cols[-1]
 
-    # ── Fast lookup tables ──
-    price_map = {}
-    rank_map = {}
-    score_map = {}
-    for _, r in panel[['ticker','week','price','rank','master_score']].iterrows():
-        key = (r['ticker'], r['week'])
-        price_map[key] = r['price']
-        rank_map[key] = r['rank']
-        score_map[key] = r['master_score']
-
-    # ── Compute per-row enrichments ──
-    fwd_cols = {1: [], 2: [], 4: [], 8: [], 12: []}
-    fwd_rank_cols = {1: [], 4: []}
-    rank_delta_1w = []
-    score_delta_1w = []
-    rank_delta_2w = []
-
-    for _, row in panel.iterrows():
-        t, w, p, rk, sc = row['ticker'], row['week'], row['price'], row['rank'], row['master_score']
-        wi = week_idx.get(w, -1)
-
-        # Forward returns
-        for fwd_n, col_list in fwd_cols.items():
-            fwd_wi = wi + fwd_n
-            if fwd_wi < n_weeks and p and p > 0:
-                fp = price_map.get((t, weeks[fwd_wi]))
-                col_list.append(((fp - p) / p * 100) if fp and fp > 0 else np.nan)
-            else:
-                col_list.append(np.nan)
-
-        # Forward rank change
-        for fwd_n, col_list in fwd_rank_cols.items():
-            fwd_wi = wi + fwd_n
-            if fwd_wi < n_weeks:
-                fr = rank_map.get((t, weeks[fwd_wi]))
-                col_list.append(rk - fr if fr else np.nan)  # +ve = rank improved
-            else:
-                col_list.append(np.nan)
-
-        # Backward deltas (vs previous weeks)
-        prev_rank = rank_map.get((t, weeks[wi - 1])) if wi > 0 else None
-        prev_score = score_map.get((t, weeks[wi - 1])) if wi > 0 else None
-        prev2_rank = rank_map.get((t, weeks[wi - 2])) if wi > 1 else None
-
-        rank_delta_1w.append((prev_rank - rk) if prev_rank is not None else 0)
-        score_delta_1w.append((sc - prev_score) if prev_score is not None else 0)
-        rank_delta_2w.append((prev2_rank - rk) if prev2_rank is not None else 0)
-
-    panel['fwd_1w'] = fwd_cols[1]
-    panel['fwd_2w'] = fwd_cols[2]
-    panel['fwd_4w'] = fwd_cols[4]
-    panel['fwd_8w'] = fwd_cols[8]
-    panel['fwd_12w'] = fwd_cols[12]
-    panel['fwd_rank_1w'] = fwd_rank_cols[1]
-    panel['fwd_rank_4w'] = fwd_rank_cols[4]
-    panel['rank_delta_1w'] = rank_delta_1w
-    panel['score_delta_1w'] = score_delta_1w
-    panel['rank_delta_2w'] = rank_delta_2w
-
-    # ── Pattern flags ──
-    for tag, key in PATTERN_TAGS:
-        panel[f'p_{key}'] = panel['patterns'].fillna('').str.contains(tag, case=False).astype(int)
-    panel['n_patterns'] = panel['patterns'].fillna('').apply(
-        lambda x: x.count('|') + 1 if x.strip() else 0
+    df['symbol'] = df[sym_col].astype(str).str.strip().str.upper()
+    df['symbol'] = df['symbol'].str.replace(r'\.0$', '', regex=True)
+    df['company'] = df[company_col].astype(str).str.strip()
+    df['return_pct'] = (
+        df[ret_col].astype(str)
+        .str.replace('%', '', regex=False)
+        .str.replace('+', '', regex=False)
+        .str.strip()
     )
+    df['return_pct'] = pd.to_numeric(df['return_pct'], errors='coerce')
+    return df[['symbol', 'company', 'return_pct']].dropna(subset=['return_pct'])
 
-    # ── Market state flags ──
-    ms = panel['market_state'].fillna('')
-    panel['is_uptrend'] = ms.isin(['UPTREND', 'STRONG_UPTREND']).astype(int)
-    panel['is_downtrend'] = ms.isin(['DOWNTREND', 'STRONG_DOWNTREND']).astype(int)
 
-    # ── Entry freshness ──
-    panel['rank_bucket'] = pd.cut(
-        panel['rank'], bins=[0, 20, 50, 100, 200, 500, 1000, 99999],
-        labels=['Top20','21-50','51-100','101-200','201-500','501-1000','1000+']
+def parse_outcome_filename(filename):
+    """Extract date and period from gainer/loser filename."""
+    date_match = re.search(
+        r'(\d+)\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+(\d{4})',
+        filename, re.IGNORECASE
     )
+    period_match = re.search(r'\((\d+)\s+months?\)', filename, re.IGNORECASE)
+    months_map = {
+        'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+        'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+    }
+    if date_match and period_match:
+        day = int(date_match.group(1))
+        month = months_map[date_match.group(2).upper()]
+        year = int(date_match.group(3))
+        return datetime(year, month, day), int(period_match.group(1))
+    return None, None
 
-    # Compute weeks_in_top100 per stock
-    weeks_in_top = []
-    prev_top100 = {}  # ticker -> consecutive count
-    for w in weeks:
-        week_tickers = set(panel[(panel['week'] == w) & (panel['rank'] <= 100)]['ticker'])
-        for t in panel[panel['week'] == w]['ticker'].unique():
-            if t in week_tickers:
-                prev_top100[t] = prev_top100.get(t, 0) + 1
-            else:
-                prev_top100[t] = 0
 
-    # Map back
-    wit_map = {}
-    for w in weeks:
-        wk_data = panel[panel['week'] == w]
-        temp_top100 = {}
-        for _, r in wk_data.iterrows():
-            t = r['ticker']
-            if t not in temp_top100:
-                # Count consecutive weeks in top 100 up to this week
-                count = 0
-                wi = week_idx[w]
-                for back in range(wi, -1, -1):
-                    rk = rank_map.get((t, weeks[back]))
-                    if rk is not None and rk <= 100:
-                        count += 1
-                    else:
-                        break
-                temp_top100[t] = count
-            wit_map[(t, w)] = temp_top100[t]
+def match_outcomes_to_weekly(outcome_df, panel):
+    """Match gainer/loser symbols to weekly CSV tickers.
+    Returns dict {ticker: return_pct} and list of unmatched."""
+    weekly_tickers = set(panel['ticker'].unique())
 
-    panel['weeks_in_top100'] = panel.apply(lambda r: wit_map.get((r['ticker'], r['week']), 0), axis=1)
-    panel['is_fresh_entry'] = ((panel['weeks_in_top100'] <= 2) & (panel['weeks_in_top100'] > 0)).astype(int)
+    # Build company name lookup
+    company_lookup = {}
+    for _, row in panel.drop_duplicates('ticker').iterrows():
+        name = str(row.get('company_name', '')).lower().strip()
+        name_clean = re.sub(r'\b(ltd|limited|pvt|private|inc|corp|co)\b', '', name).strip()
+        if name_clean:
+            company_lookup[name_clean] = row['ticker']
+
+    matched = {}
+    unmatched = []
+
+    for _, row in outcome_df.iterrows():
+        sym = str(row['symbol']).strip().upper()
+        company = str(row['company']).strip()
+        ret = row['return_pct']
+
+        # Direct ticker match
+        if sym in weekly_tickers:
+            matched[sym] = ret
+            continue
+
+        # Company name fuzzy match
+        comp_clean = re.sub(
+            r'\b(ltd|limited|pvt|private|inc|corp|co)\b',
+            '', company.lower()
+        ).strip()
+
+        found = False
+        # Substring match on significant words
+        comp_words = [w for w in comp_clean.split() if len(w) > 2]
+        if len(comp_words) >= 2:
+            for name, ticker in company_lookup.items():
+                if comp_words[0] in name and comp_words[1] in name:
+                    matched[ticker] = ret
+                    found = True
+                    break
+        elif len(comp_words) == 1 and len(comp_words[0]) > 4:
+            for name, ticker in company_lookup.items():
+                if comp_words[0] in name:
+                    matched[ticker] = ret
+                    found = True
+                    break
+
+        if not found:
+            unmatched.append((sym, company))
+
+    return matched, unmatched
+
+
+def add_pattern_flags(panel):
+    """Add binary pattern columns from the patterns string."""
+    pat_str = panel['patterns'].fillna('').astype(str).str.lower()
+    for col, keyword in PATTERN_CHECKS.items():
+        panel[col] = pat_str.str.contains(keyword, regex=False).astype(int)
+    return panel
+
+
+def add_trajectory_features(panel):
+    """Add rank/score velocity and freshness features."""
+    panel = panel.sort_values(['ticker', 'week'])
+
+    panel['rank_prev1'] = panel.groupby('ticker')['rank'].shift(1)
+    panel['rank_prev4'] = panel.groupby('ticker')['rank'].shift(4)
+    panel['score_prev1'] = panel.groupby('ticker')['master_score'].shift(1)
+    panel['score_prev4'] = panel.groupby('ticker')['master_score'].shift(4)
+
+    panel['rank_delta_1w'] = panel['rank_prev1'] - panel['rank']   # positive = improving
+    panel['rank_delta_4w'] = panel['rank_prev4'] - panel['rank']
+    panel['score_delta_1w'] = panel['master_score'] - panel['score_prev1']
+    panel['score_delta_4w'] = panel['master_score'] - panel['score_prev4']
+
+    panel['rank_velocity'] = (panel['rank_delta_4w'] / 4).fillna(panel['rank_delta_1w'])
+    panel['score_velocity'] = (panel['score_delta_4w'] / 4).fillna(panel['score_delta_1w'])
+
+    panel['in_top100'] = (panel['rank'] <= 100).astype(int)
+    panel['weeks_in_top100'] = panel.groupby('ticker')['in_top100'].cumsum()
+    panel['is_fresh_top100'] = (
+        (panel['weeks_in_top100'] == 1) & (panel['in_top100'] == 1)
+    ).astype(int)
+    panel['n_weeks_seen'] = panel.groupby('ticker').cumcount() + 1
+
+    for col in ['rank_prev1', 'rank_prev4', 'score_prev1', 'score_prev4']:
+        panel.drop(col, axis=1, inplace=True, errors='ignore')
 
     return panel
 
 
-# ═══════════════════════════════════════════════════════════
-#  ANALYTICS ENGINE
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+#  GAINER FINGERPRINT ENGINE
+# ═══════════════════════════════════════════════════════════════════════════
+class GainerFingerprint:
+    """Learns what gainers looked like BEFORE they gained,
+    then scores current stocks on similarity."""
 
-def compute_weekly_ic(panel, feature, fwd_col='fwd_4w'):
-    """Spearman rank IC between a feature and forward returns, per week."""
-    results = []
-    for w in sorted(panel['week'].unique()):
-        wk = panel[panel['week'] == w].dropna(subset=[feature, fwd_col])
-        if len(wk) < 50:
-            continue
-        ic, pval = stats.spearmanr(wk[feature], wk[fwd_col])
-        results.append({'week': w, 'IC': ic, 'p_value': pval, 'n': len(wk)})
-    return pd.DataFrame(results)
+    def __init__(self, panel, gainer_tickers, loser_tickers, pre_gain_weeks):
+        self.features = [
+            f for f in ANALYSIS_FEATURES + ['rank_velocity', 'score_velocity']
+            if f in panel.columns
+        ]
+        self.pattern_cols = [c for c in PATTERN_CHECKS if c in panel.columns]
+        self.profile = {}
+        self.pattern_lifts = {}
+        self.state_probs = {}
+        self.feature_weights = {}
+        self.gainer_tickers = set(gainer_tickers)
+        self.loser_tickers = set(loser_tickers) if loser_tickers else set()
+        self.n_gainers_found = 0
+        self.n_pre_weeks = 0
+        self.important_features = []
+        self._build(panel, pre_gain_weeks)
+
+    @staticmethod
+    def _cohens_d(g1, g2):
+        n1, n2 = len(g1), len(g2)
+        if n1 < 3 or n2 < 3:
+            return 0.0
+        v1, v2 = g1.var(), g2.var()
+        pooled = np.sqrt(((n1 - 1) * v1 + (n2 - 1) * v2) / (n1 + n2 - 2))
+        return 0.0 if pooled < 1e-9 else (g1.mean() - g2.mean()) / pooled
+
+    def _build(self, panel, pre_gain_weeks):
+        if len(pre_gain_weeks) == 0:
+            return
+        early = panel[panel['week'].isin(pre_gain_weeks)]
+        self.n_pre_weeks = len(pre_gain_weeks)
+
+        g_data = early[early['ticker'].isin(self.gainer_tickers)]
+        o_data = early[~early['ticker'].isin(self.gainer_tickers)]
+        self.n_gainers_found = g_data['ticker'].nunique()
+        if len(g_data) < 10:
+            return
+
+        # ── Numerical features ──
+        for feat in self.features:
+            if feat not in early.columns:
+                continue
+            g = g_data[feat].dropna()
+            o = o_data[feat].dropna()
+            if len(g) < 5 or len(o) < 5:
+                continue
+            d = self._cohens_d(g, o)
+            self.profile[feat] = {
+                'g_mean': g.mean(), 'g_std': max(g.std(), 1e-9),
+                'g_q25': g.quantile(0.25), 'g_q75': g.quantile(0.75),
+                'o_mean': o.mean(), 'o_std': max(o.std(), 1e-9),
+                'effect_size': d,
+                'direction': 'higher' if g.mean() > o.mean() else 'lower',
+                'discriminative': abs(d) > 0.15,
+            }
+
+        abs_eff = {f: abs(p['effect_size']) for f, p in self.profile.items()
+                   if p['discriminative']}
+        if not abs_eff:
+            # fallback: use all features
+            abs_eff = {f: max(abs(p['effect_size']), 0.01)
+                       for f, p in self.profile.items()}
+            for f in self.profile:
+                self.profile[f]['discriminative'] = True
+
+        total = sum(abs_eff.values()) + 1e-9
+        self.feature_weights = {f: v / total for f, v in abs_eff.items()}
+        self.important_features = sorted(abs_eff, key=lambda x: -abs_eff[x])
+
+        # ── Pattern lifts ──
+        for col in self.pattern_cols:
+            if col not in early.columns:
+                continue
+            g_rate = g_data[col].mean()
+            o_rate = o_data[col].mean()
+            if o_rate > 0.005:
+                lift = g_rate / o_rate
+            elif g_rate > 0.005:
+                lift = 5.0
+            else:
+                lift = 1.0
+            self.pattern_lifts[col] = {
+                'gainer_pct': g_rate * 100,
+                'other_pct': o_rate * 100,
+                'lift': lift,
+            }
+
+        # ── Market state analysis ──
+        if 'market_state' in early.columns:
+            for state in early['market_state'].dropna().unique():
+                g_pct = (g_data['market_state'] == state).mean()
+                o_pct = (o_data['market_state'] == state).mean()
+                self.state_probs[state] = {
+                    'gainer_pct': g_pct * 100,
+                    'other_pct': o_pct * 100,
+                    'lift': g_pct / (o_pct + 1e-9),
+                }
+
+    # ── Vectorised batch scoring ──
+    def score_batch(self, df):
+        """Score all stocks in a DataFrame at once (0-100)."""
+        n = len(df)
+        if not self.profile or n == 0:
+            return np.zeros(n)
+
+        scores = np.zeros(n)
+        total_w = 0.0
+
+        for feat, prof in self.profile.items():
+            if not prof['discriminative'] or feat not in df.columns:
+                continue
+            w = self.feature_weights.get(feat, 0.01)
+            vals = df[feat].values.astype(float)
+            g_z = np.abs(vals - prof['g_mean']) / prof['g_std']
+            o_z = np.abs(vals - prof['o_mean']) / prof['o_std']
+            raw = o_z / (g_z + o_z + 0.5)
+
+            # IQR bonus
+            if prof['direction'] == 'higher':
+                mask = vals >= prof['g_q25']
+            else:
+                mask = vals <= prof['g_q75']
+            raw = np.where(mask, np.minimum(raw * 1.2, 1.0), raw)
+            raw = np.clip(raw, 0, 1)
+            raw = np.where(np.isnan(raw), 0.5, raw)
+
+            scores += raw * w
+            total_w += w
+
+        if total_w > 0:
+            scores = (scores / total_w) * 70
+
+        # Pattern bonus (capped 15)
+        pat_bonus = np.zeros(n)
+        for col, info in self.pattern_lifts.items():
+            if col in df.columns and info['lift'] > 1.5:
+                pat_bonus += np.minimum(info['lift'] * 1.5, 5) * df[col].values
+        scores += np.minimum(pat_bonus, 15)
+
+        # Market state bonus (capped 10)
+        if 'market_state' in df.columns:
+            for state, info in self.state_probs.items():
+                if info.get('lift', 1) > 1.2:
+                    mask = df['market_state'].values == state
+                    scores[mask] += min((info['lift'] - 1) * 10, 10)
+
+        # Rank velocity bonus (capped 5)
+        if 'rank_velocity' in df.columns:
+            rv = df['rank_velocity'].fillna(0).values
+            scores += np.minimum(np.maximum(rv, 0) / 10, 5)
+
+        return np.clip(np.round(scores, 1), 0, 100)
+
+    # ── Single-stock explain ──
+    def explain(self, row):
+        """Return list of (class, reason) tuples for a single stock."""
+        reasons = []
+        for feat in self.important_features[:8]:
+            prof = self.profile[feat]
+            val = row.get(feat, np.nan) if isinstance(row, dict) else row[feat] if feat in row.index else np.nan
+            if pd.isna(val):
+                continue
+            g_z = abs(val - prof['g_mean']) / prof['g_std']
+            o_z = abs(val - prof['o_mean']) / prof['o_std']
+            raw = o_z / (g_z + o_z + 0.5)
+            name = FEAT_DISPLAY.get(feat, feat.replace('_', ' ').title())
+            if raw > 0.55:
+                reasons.append(
+                    ('ok', f"✅ {name}: {val:.0f} — gainers averaged {prof['g_mean']:.0f} pre-gain")
+                )
+            elif raw < 0.4:
+                reasons.append(
+                    ('bad', f"⚠️ {name}: {val:.0f} — "
+                     f"{'below' if prof['direction'] == 'higher' else 'above'} "
+                     f"gainer avg {prof['g_mean']:.0f}")
+                )
+
+        for col, info in sorted(self.pattern_lifts.items(), key=lambda x: -x[1]['lift']):
+            v = row.get(col, 0) if isinstance(row, dict) else (row[col] if col in row.index else 0)
+            if v == 1 and info['lift'] > 1.5:
+                pat_name = col.replace('p_', '').replace('_', ' ').upper()
+                reasons.append(
+                    ('ok', f"🏷️ {pat_name} — {info['lift']:.1f}x more common in pre-gain stocks")
+                )
+
+        state_val = row.get('market_state', '') if isinstance(row, dict) else (row['market_state'] if 'market_state' in row.index else '')
+        si = self.state_probs.get(state_val, {})
+        if si.get('lift', 1) > 1.3:
+            reasons.append(('ok', f"🌐 {state_val} — {si['lift']:.1f}x more common for gainers"))
+        elif si.get('lift', 1) < 0.7 and state_val:
+            reasons.append(('bad', f"🌐 {state_val} — less common for gainers ({si['lift']:.1f}x)"))
+
+        rv = row.get('rank_velocity', 0) if isinstance(row, dict) else (row['rank_velocity'] if 'rank_velocity' in row.index else 0)
+        if pd.notna(rv):
+            if rv > 30:
+                reasons.append(('ok', f"🚀 Rank improving fast (+{rv:.0f}/week)"))
+            elif rv < -30:
+                reasons.append(('bad', f"📉 Rank declining ({rv:.0f}/week)"))
+
+        return reasons
+
+    # ── Historical validation ──
+    def validate_hit_rate(self, panel, weeks, top_ns=(20, 50, 100)):
+        """For each historical week, check what % of gainers fall in top-N by match score."""
+        results = []
+        for week in weeks:
+            wd = panel[panel['week'] == week].copy()
+            if len(wd) < 100:
+                continue
+            wd['_ms'] = self.score_batch(wd)
+            for n in top_ns:
+                top_set = set(wd.nlargest(n, '_ms')['ticker'])
+                g_present = set(wd['ticker']) & self.gainer_tickers
+                g_caught = top_set & self.gainer_tickers
+                rate = len(g_caught) / max(len(g_present), 1) * 100
+                results.append({
+                    'week': week, 'top_n': n,
+                    'gainers_caught': len(g_caught),
+                    'gainers_present': len(g_present),
+                    'hit_rate': rate,
+                })
+        return pd.DataFrame(results) if results else pd.DataFrame()
 
 
-def compute_quintile_analysis(panel, feature, fwd_col='fwd_4w'):
-    """Split into quintiles by feature per week, measure avg forward return."""
-    valid = panel.dropna(subset=[feature, fwd_col]).copy()
-    if len(valid) < 200:
-        return None, 0
+# ═══════════════════════════════════════════════════════════════════════════
+#  DISPLAY HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
+def render_stock_card(row, fp, gainer_returns, card_class):
+    """Render one stock card as HTML."""
+    score = row['match_score']
+    sc = 'green' if score >= 70 else 'amber' if score >= 50 else 'gray'
 
-    # Ascending = True for rank (lower=better), False for scores (higher=better)
-    ascending = (feature == 'rank')
-    valid['quintile'] = valid.groupby('week')[feature].transform(
-        lambda x: pd.qcut(x.rank(method='first'), 5,
-                          labels=[5,4,3,2,1] if ascending else [1,2,3,4,5])
-    )
-    valid['quintile'] = pd.to_numeric(valid['quintile'])
+    ticker = row['ticker']
+    company = str(row.get('company_name', ''))[:45]
+    rank_val = row.get('rank', 0)
+    price_val = row.get('price', 0)
+    sector = str(row.get('sector', ''))[:25]
+    ms = row.get('master_score', 0)
+    bs = row.get('breakout_score', 0)
+    rd = row.get('rank_delta_1w', 0)
+    state = row.get('market_state', '')
+    ret7 = row.get('ret_7d', 0)
+    ret30 = row.get('ret_30d', 0)
+    patterns = str(row.get('patterns', ''))
 
-    qtable = valid.groupby('quintile').agg(
-        count=(fwd_col, 'count'),
-        mean_return=(fwd_col, 'mean'),
-        median_return=(fwd_col, 'median'),
-        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
-        big_win=(fwd_col, lambda x: (x > 10).mean() * 100),
-        big_loss=(fwd_col, lambda x: (x < -10).mean() * 100),
-    ).reset_index()
-
-    returns = qtable['mean_return'].values
-    mono = np.corrcoef(range(len(returns)), returns)[0, 1] if len(returns) >= 3 else 0
-    return qtable, mono
-
-
-def compute_pattern_edges(panel, fwd_col='fwd_4w'):
-    """For each pattern, compute edge vs baseline with t-test."""
-    valid = panel.dropna(subset=[fwd_col])
-    if len(valid) < 100:
-        return pd.DataFrame()
-
-    baseline_ret = valid[fwd_col].mean()
-    baseline_wr = (valid[fwd_col] > 0).mean() * 100
-
-    results = []
-    for tag, key in PATTERN_TAGS:
-        col = f'p_{key}'
-        if col not in valid.columns:
-            continue
-        with_p = valid[valid[col] == 1]
-        without_p = valid[valid[col] == 0]
-        if len(with_p) < 10:
-            continue
-
-        avg = with_p[fwd_col].mean()
-        wr = (with_p[fwd_col] > 0).mean() * 100
-        edge = avg - baseline_ret
-
-        if len(with_p) >= 10 and len(without_p) >= 10:
-            t, pval = stats.ttest_ind(with_p[fwd_col].dropna(), without_p[fwd_col].dropna(), equal_var=False)
-        else:
-            pval = 1.0
-
-        results.append({
-            'Pattern': tag, 'key': key, 'Count': len(with_p),
-            'Avg Return %': round(avg, 2), 'Edge %': round(edge, 2),
-            'Win Rate %': round(wr, 1), 'WR Edge': round(wr - baseline_wr, 1),
-            'Big Win >10%': round((with_p[fwd_col] > 10).mean() * 100, 1),
-            'Big Loss <-10%': round((with_p[fwd_col] < -10).mean() * 100, 1),
-            'p-value': round(pval, 4),
-            'Sig': '✅' if pval < 0.10 else '❌',
-        })
-
-    return pd.DataFrame(results).sort_values('Edge %', ascending=False)
-
-
-def compute_transition_matrix(panel, horizon_weeks=4):
-    """P(stock in rank bucket A → rank bucket B after N weeks)."""
-    fwd_rank_col = f'fwd_rank_{"1w" if horizon_weeks == 1 else "4w"}'
-
-    bucket_labels = [b[2] for b in RANK_BUCKETS]
-
-    def get_bucket(rank):
-        for lo, hi, label in RANK_BUCKETS:
-            if lo <= rank <= hi:
-                return label
-        return '1000+'
-
-    valid = panel.dropna(subset=['rank']).copy()
-    weeks = sorted(valid['week'].unique())
-
-    transitions = defaultdict(lambda: defaultdict(int))
-    totals = defaultdict(int)
-
-    for _, row in valid.iterrows():
-        t, w, rk = row['ticker'], row['week'], row['rank']
-        wi = list(sorted(valid['week'].unique())).index(w) if w in weeks else -1
-
-        fwd_wi = wi + horizon_weeks
-        if fwd_wi >= len(weeks):
-            continue
-
-        # Get future rank
-        fwd_w = weeks[fwd_wi]
-        fwd_rows = valid[(valid['ticker'] == t) & (valid['week'] == fwd_w)]
-        if len(fwd_rows) == 0:
-            continue
-        fwd_rk = fwd_rows.iloc[0]['rank']
-
-        src = get_bucket(rk)
-        dst = get_bucket(fwd_rk)
-        transitions[src][dst] += 1
-        totals[src] += 1
-
-    # Build matrix
-    matrix = pd.DataFrame(0.0, index=bucket_labels, columns=bucket_labels)
-    for src in bucket_labels:
-        if totals[src] > 0:
-            for dst in bucket_labels:
-                matrix.loc[src, dst] = transitions[src][dst] / totals[src] * 100
-
-    counts = pd.Series({src: totals[src] for src in bucket_labels})
-    return matrix, counts
-
-
-def compute_survival_curve(panel, entry_threshold=50):
-    """Of stocks entering top N for the first time, what % remain after 1,2,...,K weeks?"""
-    weeks = sorted(panel['week'].unique())
-    week_idx = {w: i for i, w in enumerate(weeks)}
-
-    # Find first entry week for each stock
-    first_entry = {}
-    for w in weeks:
-        wk = panel[(panel['week'] == w) & (panel['rank'] <= entry_threshold)]
-        for t in wk['ticker'].unique():
-            if t not in first_entry:
-                first_entry[t] = w
-
-    # For each entry, check how many subsequent weeks it stays in top N
-    survival_data = defaultdict(list)
-    rank_map = panel.set_index(['ticker', 'week'])['rank'].to_dict()
-
-    for t, entry_week in first_entry.items():
-        wi = week_idx[entry_week]
-        for offset in range(0, min(16, len(weeks) - wi)):
-            future_week = weeks[wi + offset]
-            rk = rank_map.get((t, future_week))
-            survived = 1 if rk is not None and rk <= entry_threshold else 0
-            survival_data[offset].append(survived)
-
-    curve = {}
-    for offset, vals in sorted(survival_data.items()):
-        if len(vals) >= 5:
-            curve[offset] = np.mean(vals) * 100
-
-    return pd.DataFrame({'weeks_after_entry': list(curve.keys()), 'survival_%': list(curve.values())})
-
-
-def compute_market_state_edge(panel, fwd_col='fwd_4w'):
-    """Average forward return by market_state."""
-    valid = panel.dropna(subset=[fwd_col, 'market_state'])
-    if len(valid) < 100:
-        return pd.DataFrame()
-
-    results = valid.groupby('market_state').agg(
-        count=(fwd_col, 'count'),
-        avg_return=(fwd_col, 'mean'),
-        median_return=(fwd_col, 'median'),
-        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
-    ).reset_index().sort_values('avg_return', ascending=False)
-    return results
-
-
-def compute_harmony_edge(panel, fwd_col='fwd_4w'):
-    """Forward return by momentum_harmony level (0-4)."""
-    valid = panel.dropna(subset=[fwd_col, 'momentum_harmony'])
-    valid['mh'] = valid['momentum_harmony'].astype(int)
-    if len(valid) < 100:
-        return pd.DataFrame()
-
-    return valid.groupby('mh').agg(
-        count=(fwd_col, 'count'),
-        avg_return=(fwd_col, 'mean'),
-        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
-    ).reset_index().rename(columns={'mh': 'Harmony Level'})
-
-
-def compute_entry_freshness_edge(panel, fwd_col='fwd_4w'):
-    """Do fresh entries outperform established stocks?"""
-    valid = panel[(panel['rank'] <= 100)].dropna(subset=[fwd_col]).copy()
-    if len(valid) < 50:
-        return pd.DataFrame()
-
-    valid['freshness'] = valid['weeks_in_top100'].apply(
-        lambda x: '🆕 Fresh (1-2 wks)' if x <= 2 else
-                  '📊 Established (3-6 wks)' if x <= 6 else
-                  '⏳ Aging (7+ wks)')
-
-    return valid.groupby('freshness').agg(
-        count=(fwd_col, 'count'),
-        avg_return=(fwd_col, 'mean'),
-        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
-    ).reset_index().sort_values('avg_return', ascending=False)
-
-
-def compute_composite_entry_score(panel, weeks, pattern_edge_df, ic_data, fwd_col='fwd_4w'):
-    """
-    Data-driven composite score for latest week.
-    Weights derived from IC analysis, pattern bonuses from actual edges.
-    """
-    latest_week = max(weeks)
-    latest = panel[panel['week'] == latest_week].copy()
-    if len(latest) == 0:
-        return latest
-
-    # ── Factor weights from IC ──
-    factor_ics = {}
-    for feat in SCORE_COLS:
-        ic_df = ic_data.get(feat)
-        if ic_df is not None and len(ic_df) > 0:
-            factor_ics[feat] = max(0, ic_df['IC'].median())  # Only positive IC
-        else:
-            factor_ics[feat] = 0
-
-    total_ic = sum(factor_ics.values())
-    if total_ic > 0:
-        ic_weights = {k: v / total_ic for k, v in factor_ics.items()}
+    # Badge
+    if row.get('is_known_gainer', 0) == 1:
+        rp = gainer_returns.get(ticker, 0)
+        badge = f'<span class="badge badge-confirmed">CONFIRMED GAINER +{rp:.0f}%</span>'
+    elif score >= 70:
+        badge = '<span class="badge badge-new">🆕 NEW CANDIDATE</span>'
     else:
-        # Fallback to WAVE DETECTION weights
-        ic_weights = {k: WAVE_WEIGHTS.get(k, 0.05) for k in SCORE_COLS}
-        tot = sum(ic_weights.values())
-        ic_weights = {k: v / tot for k, v in ic_weights.items()}
+        badge = ''
 
-    # Weighted score (0-100)
-    latest['composite'] = sum(
-        latest[feat].fillna(0) * w for feat, w in ic_weights.items()
-    )
-
-    # ── Pattern bonus (from actual edges) ──
-    if len(pattern_edge_df) > 0:
-        sig_patterns = pattern_edge_df[pattern_edge_df['p-value'] < 0.15]
-        bonus = pd.Series(0.0, index=latest.index)
-        for _, pr in sig_patterns.iterrows():
-            col = f"p_{pr['key']}"
-            if col in latest.columns:
-                edge_bonus = np.clip(pr['Edge %'] * 0.5, -3, 3)
-                bonus += latest[col] * edge_bonus
-        latest['composite'] += np.clip(bonus, -10, 10)
-
-    # ── Entry freshness bonus ──
-    latest['composite'] += latest['is_fresh_entry'] * 3
-    latest.loc[latest['weeks_in_top100'] > 8, 'composite'] -= 2
-
-    # ── Rank velocity bonus ──
-    rv = latest['rank_delta_1w'].fillna(0)
-    latest['composite'] += np.clip(rv / 100, -3, 5)
-
-    # ── Uptrend bonus ──
-    latest['composite'] += latest['is_uptrend'] * 2
-    latest['composite'] -= latest['is_downtrend'] * 3
-
-    # Normalize to 0-100
-    cmin, cmax = latest['composite'].min(), latest['composite'].max()
-    if cmax > cmin:
-        latest['composite'] = ((latest['composite'] - cmin) / (cmax - cmin) * 100).round(1)
+    # Rank delta arrow
+    if pd.notna(rd) and rd != 0:
+        rd_html = (f'<span style="color:#4ade80">▲{rd:.0f}</span>' if rd > 0
+                   else f'<span style="color:#f87171">▼{abs(rd):.0f}</span>')
     else:
-        latest['composite'] = 50.0
+        rd_html = ''
 
-    # Percentile rank
-    latest['composite_pctile'] = latest['composite'].rank(pct=True) * 100
+    # Reasons
+    reasons = fp.explain(row)
+    reasons_html = ''
+    for cls, reason in reasons[:5]:
+        color = '#4ade80' if cls == 'ok' else '#f87171'
+        reasons_html += f'<div style="color:{color};font-size:0.85rem;margin:2px 0">{reason}</div>'
 
-    # Confidence tier
-    latest['confidence'] = latest.apply(lambda r: (
-        '🟢 HIGH' if r['composite_pctile'] >= 90 and r.get('is_uptrend', 0) == 1 else
-        '🟢 HIGH' if r['composite_pctile'] >= 95 else
-        '🟡 MEDIUM' if r['composite_pctile'] >= 75 else
-        '🟠 LOW' if r['composite_pctile'] >= 50 else
-        '🔴 AVOID'
-    ), axis=1)
+    # Patterns (shortened)
+    pat_html = ''
+    if patterns and patterns != 'nan' and len(patterns) > 3:
+        pat_html = f'<div class="muted" style="margin-top:6px">{patterns[:120]}</div>'
 
-    # Freshness label
-    latest['freshness_label'] = latest['weeks_in_top100'].apply(
-        lambda x: '🆕 NEW' if 0 < x <= 2 else '📊 ESTAB' if x <= 6 else '⏳ AGING' if x > 6 else '—'
-    )
-
-    return latest.sort_values('composite', ascending=False)
-
-
-def walk_forward_backtest(panel, weeks, top_n=20, rebalance=1, min_score=0, fwd_col='fwd_4w'):
-    """Walk-forward: each period picks top-N using ONLY past + current data."""
-    results = []
-    fwd_weeks = int(fwd_col.replace('fwd_', '').replace('w', ''))
-
-    for i in range(0, len(weeks) - fwd_weeks):
-        w = weeks[i]
-        wk = panel[panel['week'] == w].copy()
-        if min_score > 0:
-            wk = wk[wk['master_score'] >= min_score]
-
-        wk_valid = wk.dropna(subset=[fwd_col])
-        if len(wk_valid) < top_n * 2:
-            continue
-
-        top = wk_valid.nsmallest(top_n, 'rank')
-        bottom = wk_valid.nlargest(top_n, 'rank')
-        universe = wk_valid
-
-        results.append({
-            'week': w,
-            'top_avg': top[fwd_col].mean(),
-            'top_median': top[fwd_col].median(),
-            'top_wr': (top[fwd_col] > 0).mean() * 100,
-            'bottom_avg': bottom[fwd_col].mean(),
-            'bottom_wr': (bottom[fwd_col] > 0).mean() * 100,
-            'universe_avg': universe[fwd_col].mean(),
-            'spread': top[fwd_col].mean() - bottom[fwd_col].mean(),
-            'top_tickers': ', '.join(top['ticker'].head(5).tolist()),
-        })
-
-    return pd.DataFrame(results)
+    return f"""
+    <div class="scard {card_class}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div style="flex:1">
+                <div>{badge}</div>
+                <div style="font-size:1.3rem;font-weight:800;color:#f1f5f9;margin:4px 0">{ticker}</div>
+                <div class="muted">{company}</div>
+                <div style="margin-top:8px">
+                    Rank <b>#{rank_val:.0f}</b> {rd_html} · Score <b>{ms:.0f}</b> · Breakout <b>{bs:.0f}</b> · ₹{price_val:,.0f}
+                </div>
+                <div class="muted">{state} · {sector} · 7d:{ret7:+.1f}% · 30d:{ret30:+.1f}%</div>
+                {pat_html}
+            </div>
+            <div style="text-align:right;min-width:85px">
+                <div class="big {sc}">{score:.0f}%</div>
+                <div class="muted">match</div>
+            </div>
+        </div>
+        <div style="margin-top:10px;border-top:1px solid #334155;padding-top:8px">
+            {reasons_html}
+        </div>
+    </div>
+    """
 
 
-def get_sector_rotation(panel, weeks, top_n=100):
-    """% of top-N stocks from each sector, per week."""
-    records = []
-    for w in weeks:
-        wk = panel[(panel['week'] == w) & (panel['rank'] <= top_n)]
-        total = len(wk)
-        if total == 0:
-            continue
-        for sector, count in wk['sector'].value_counts().items():
-            records.append({'week': w, 'sector': sector, 'pct': count / total * 100, 'count': count})
-    return pd.DataFrame(records)
+def display_stock_cards(df, fp, gainer_returns, card_class):
+    """Display a batch of stock cards."""
+    for _, row in df.iterrows():
+        st.markdown(render_stock_card(row, fp, gainer_returns, card_class),
+                    unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════
-#  SIDEBAR & NAVIGATION
-# ═══════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+#  SIDEBAR
+# ═══════════════════════════════════════════════════════════════════════════
+st.sidebar.markdown("## 📁 Upload Data")
+weekly_files = st.sidebar.file_uploader(
+    "Weekly CSV Files (from WAVE Detection)",
+    type=['csv'], accept_multiple_files=True,
+    help="Upload all your weekly stock screening CSV files",
+)
 
-with st.sidebar:
-    st.markdown("# 🌊 WAVE Analyzer")
-    st.caption("System Intelligence Engine")
-    st.markdown("---")
+gainer_file = st.sidebar.file_uploader(
+    "Gainer File (3m or 6m)",
+    type=['csv'],
+    help="e.g., LATEST GAINER 6 FEB 2026 (3 months).csv",
+)
 
-    uploaded_files = st.file_uploader(
-        "📁 Upload Weekly CSVs",
-        type=['csv'], accept_multiple_files=True,
-        help="Upload your Stocks_Weekly_*.csv files (5+ recommended)"
-    )
+loser_file = st.sidebar.file_uploader(
+    "Loser File (optional)",
+    type=['csv'],
+    help="Optional: e.g., LATEST LOSERS 6 FEB 2026 (3 months).csv",
+)
 
-    if uploaded_files:
-        st.success(f"✅ {len(uploaded_files)} files")
+st.sidebar.markdown("---")
+st.sidebar.markdown("## ⚙️ Settings")
+min_match = st.sidebar.slider("Minimum Match %", 0, 80, 30, 5)
+max_stocks = st.sidebar.slider("Max Stocks to Show", 10, 200, 50, 10)
 
-        st.markdown("---")
-        st.markdown("### ⚙️ Settings")
+# ═══════════════════════════════════════════════════════════════════════════
+#  HEADER
+# ═══════════════════════════════════════════════════════════════════════════
+st.markdown("""<div class="hero">
+    <h1>🎯 WAVE GAINER SCANNER</h1>
+    <p>Finds the next big winners by studying what past gainers looked like BEFORE they gained</p>
+</div>""", unsafe_allow_html=True)
 
-        horizon = st.radio("⏱️ Forward Horizon", ['1 Week','2 Weeks','4 Weeks','8 Weeks','12 Weeks'],
-                           index=2, horizontal=True)
-        fwd_col = {'1 Week':'fwd_1w','2 Weeks':'fwd_2w','4 Weeks':'fwd_4w',
-                    '8 Weeks':'fwd_8w','12 Weeks':'fwd_12w'}[horizon]
-
-        top_n = st.slider("Top N for strategies", 5, 50, 20)
-
-        st.markdown("---")
-        st.markdown("### 🔍 Filters")
-        min_score_filter = st.slider("Min Master Score", 0, 80, 0, 5)
-        max_rank_filter = st.slider("Max Rank", 50, 2200, 2200, 50)
-
-        cat_filter = st.multiselect("Category", ['Mega Cap','Large Cap','Mid Cap','Small Cap','Micro Cap'])
-        sector_input = st.text_input("Sector contains", "")
-
-
-# ═══════════════════════════════════════════════════════════
-#  MAIN APP
-# ═══════════════════════════════════════════════════════════
-
-# Header
-st.markdown("""
-<div class="wave-header">
-    <h1>🌊 WAVE Analyzer</h1>
-    <p>System Intelligence Engine — Does your scoring system predict future gains?</p>
-</div>
-""", unsafe_allow_html=True)
-
-
-if not uploaded_files:
-    st.markdown("---")
+# ═══════════════════════════════════════════════════════════════════════════
+#  GATE: require uploads
+# ═══════════════════════════════════════════════════════════════════════════
+if not weekly_files or not gainer_file:
+    st.info("👈 Upload your **Weekly CSV files** and **Gainer file** in the sidebar to begin.")
     st.markdown("""
-    ## How to Use
+### How it works
+1. **Upload Weekly CSVs** — your WAVE Detection weekly snapshots (more weeks = better)
+2. **Upload Gainer File** — the LATEST GAINER CSV (tells the system who actually gained)
+3. **Get Predictions** — the system studies what gainers looked like *before* they gained, then finds current stocks with the same DNA
 
-    **1.** Upload your `Stocks_Weekly_*.csv` files (sidebar)
-    **2.** Explore 6 pages of temporal intelligence
-
-    | Page | Purpose |
-    |------|---------|
-    | **📊 System Health** | Does your master_score ACTUALLY predict gains? IC analysis proves it. |
-    | **⚡ Signal Lab** | Which patterns/states have real statistical edge? |
-    | **🎯 This Week's Picks** | Data-driven stock picks with confidence tiers |
-    | **🔄 Rank Dynamics** | Transition matrix — where do top stocks end up? |
-    | **🔬 Stock X-Ray** | Any stock's full weekly journey |
-    | **🧪 Backtest Lab** | Walk-forward proof — would this have worked? |
-
-    ---
-
-    **Why this exists:** Your WAVE DETECTION system scores 2100+ stocks brilliantly at each point in time.
-    But it has **zero temporal memory** — it doesn't know if a stock just entered the top ranks (strong signal)
-    or has been there for 12 weeks (potentially exhausted). This app adds the **time dimension**.
-
-    **Minimum:** 3 weekly CSVs &nbsp;|&nbsp; **Recommended:** 10+ &nbsp;|&nbsp; **Best:** 23+ weeks
-
-    ```
-    pip install streamlit pandas numpy plotly scipy
-    streamlit run wave_analyzer.py
-    ```
+### What makes this different
+- **Not guessing** — purely data-driven, learns from YOUR data
+- **Shows NEW candidates** — stocks not yet in your gainer list that match the gainer DNA
+- **Explains WHY** — each pick comes with clear reasons backed by data
+- **Self-validating** — shows how many known gainers it would have caught
     """)
     st.stop()
 
-if len(uploaded_files) < 3:
-    st.warning("Upload at least 3 weekly CSV files for meaningful analysis.")
+# ═══════════════════════════════════════════════════════════════════════════
+#  DATA LOADING & PROCESSING
+# ═══════════════════════════════════════════════════════════════════════════
+# Read file contents once (for caching stability)
+weekly_contents = [(f.name, f.read()) for f in weekly_files]
+for f in weekly_files:
+    f.seek(0)
+
+with st.spinner("Loading weekly data…"):
+    panel = load_weekly_csvs(weekly_contents)
+
+if len(panel) == 0:
+    st.error("❌ No valid weekly CSV files found. Ensure filenames contain dates like Stocks_Weekly_2025-08-30.")
     st.stop()
 
-
-# ── Load & Process ──
-with st.spinner("Loading weekly snapshots..."):
-    panel, weeks, file_info = load_weekly_csvs(uploaded_files)
-
-if panel is None:
-    st.error("Could not parse any CSV files. Check file format.")
-    st.stop()
-
-with st.spinner("Computing forward returns & enrichments..."):
-    panel = build_enriched_panel(panel, weeks)
-
-latest_week = max(weeks)
+weeks = sorted(panel['week'].unique())
 n_weeks = len(weeks)
+latest_week = weeks[-1]
+n_stocks = panel['ticker'].nunique()
 
-# ── Pre-compute analytics (cached internally) ──
-with st.spinner("Running analytics..."):
-    # IC for all score columns
-    ic_data = {}
-    for feat in SCORE_COLS:
-        ic_data[feat] = compute_weekly_ic(panel, feat, fwd_col)
+# ── Parse gainer file ──
+gainer_df = parse_outcome_file(gainer_file)
+gainer_filename = gainer_file.name if hasattr(gainer_file, 'name') else 'unknown'
+outcome_date, gain_months = parse_outcome_filename(gainer_filename)
 
-    # Pattern edges
-    pattern_edges = compute_pattern_edges(panel, fwd_col)
+# ── Parse loser file ──
+loser_tickers = set()
+loser_matched_returns = {}
+if loser_file:
+    loser_df = parse_outcome_file(loser_file)
+    loser_matched_returns, _ = match_outcomes_to_weekly(loser_df, panel)
+    loser_tickers = set(loser_matched_returns.keys())
 
-    # Composite entry score for latest week
-    latest_scored = compute_composite_entry_score(panel, weeks, pattern_edges, ic_data, fwd_col)
+# ── Match gainers ──
+with st.spinner("Matching gainers to weekly data…"):
+    gainer_matched, gainer_unmatched = match_outcomes_to_weekly(gainer_df, panel)
+    gainer_tickers = set(gainer_matched.keys())
 
+# ── Pre-gain window ──
+if outcome_date and gain_months:
+    cutoff = outcome_date - timedelta(days=gain_months * 30)
+    pre_gain_weeks = sorted([w for w in weeks if w < pd.Timestamp(cutoff)])
+else:
+    mid = max(n_weeks // 2, 3)
+    pre_gain_weeks = sorted(weeks[:mid])
+    cutoff = pre_gain_weeks[-1]
 
-# ═══════════════════════════════════════════════════════════
-#  NAVIGATION
-# ═══════════════════════════════════════════════════════════
+if len(pre_gain_weeks) < 3:
+    pre_gain_weeks = sorted(weeks[:max(3, n_weeks // 3)])
+    cutoff = pre_gain_weeks[-1]
 
-page = st.radio(
-    "nav", ["📊 System Health", "⚡ Signal Lab", "🎯 This Week's Picks",
-            "🔄 Rank Dynamics", "🔬 Stock X-Ray", "🧪 Backtest Lab"],
-    horizontal=True, label_visibility="collapsed"
+# ── Enrich ──
+with st.spinner("Building features…"):
+    panel = add_pattern_flags(panel)
+    panel = add_trajectory_features(panel)
+
+# ── Build fingerprint ──
+with st.spinner("🧬 Learning gainer DNA…"):
+    fp = GainerFingerprint(panel, gainer_tickers, loser_tickers, pre_gain_weeks)
+
+# ── Score latest week ──
+with st.spinner("🎯 Scoring all stocks…"):
+    latest = panel[panel['week'] == latest_week].copy()
+    latest['match_score'] = fp.score_batch(latest)
+    latest = latest.sort_values('match_score', ascending=False)
+    latest['is_known_gainer'] = latest['ticker'].isin(gainer_tickers).astype(int)
+    latest['is_known_loser'] = latest['ticker'].isin(loser_tickers).astype(int)
+
+# ── Sidebar summary ──
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 Data Loaded")
+st.sidebar.markdown(
+    f"- **{n_weeks}** weeks ({weeks[0].strftime('%b %d, %Y')} → {latest_week.strftime('%b %d, %Y')})"
 )
+st.sidebar.markdown(f"- **{n_stocks:,}** unique stocks")
+st.sidebar.markdown(f"- **{len(gainer_tickers)}/{len(gainer_df)}** gainers matched")
+if gainer_unmatched:
+    st.sidebar.caption(f"⚠️ {len(gainer_unmatched)} gainers not found in weekly data")
+st.sidebar.markdown(f"- **{len(pre_gain_weeks)}** pre-gain weeks used")
+if loser_tickers:
+    st.sidebar.markdown(f"- **{len(loser_tickers)}** losers matched")
+st.sidebar.markdown(f"- **{len(fp.important_features)}** discriminative features")
 
-# Quick stats bar
-c1, c2, c3, c4, c5 = st.columns(5)
-with c1:
-    st.metric("Weeks", n_weeks)
-with c2:
-    n_stocks = panel[panel['week'] == latest_week]['ticker'].nunique()
-    st.metric("Stocks", f"{n_stocks:,}")
-with c3:
-    st.metric("Range", f"{weeks[0].strftime('%b %d')} → {weeks[-1].strftime('%b %d, %Y')}")
-with c4:
-    avg_mkt = panel[panel['week'] == latest_week]['overall_market_strength'].mean()
-    st.metric("Mkt Strength", f"{avg_mkt:.1f}")
-with c5:
-    st.metric("Horizon", horizon)
+# ═══════════════════════════════════════════════════════════════════════════
+#  TABS
+# ═══════════════════════════════════════════════════════════════════════════
+tab1, tab2, tab3 = st.tabs(["🎯 Future Gainers", "🧬 Gainer DNA", "🔬 Stock X-Ray"])
 
-st.markdown("---")
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 1: SYSTEM HEALTH
-# ═══════════════════════════════════════════════════════════
-if page == "📊 System Health":
-    st.markdown(f"## 📊 System Health — Does Your Scoring Predict {horizon} Gains?")
-
-    # ── Master Score IC ──
-    ms_ic = ic_data.get('master_score', pd.DataFrame())
-
-    if len(ms_ic) > 0:
-        median_ic = ms_ic['IC'].median()
-        pct_positive = (ms_ic['IC'] > 0).mean() * 100
-        t_stat, t_pval = stats.ttest_1samp(ms_ic['IC'].dropna(), 0)
-
-        # Verdict
-        if median_ic > 0.05 and pct_positive > 60:
-            verdict_class = 'verdict-good'
-            verdict_text = f"✅ SYSTEM WORKS — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks (p={t_pval:.4f}). Your master_score reliably predicts {horizon} forward returns."
-        elif median_ic > 0.02 and pct_positive > 50:
-            verdict_class = 'verdict-mid'
-            verdict_text = f"⚠️ MODERATE SIGNAL — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks. Signal exists but is noisy. More data will clarify."
-        else:
-            verdict_class = 'verdict-bad'
-            verdict_text = f"❌ WEAK/NO SIGNAL — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks. master_score doesn't reliably predict {horizon} returns at this data volume."
-
-        st.markdown(f'<div class="verdict-box {verdict_class}">{verdict_text}</div>', unsafe_allow_html=True)
-
-        # IC chart
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            fig = go.Figure()
-            colors = ['#4ade80' if x > 0 else '#f87171' for x in ms_ic['IC']]
-            fig.add_trace(go.Bar(x=ms_ic['week'], y=ms_ic['IC'], marker_color=colors, name='Weekly IC'))
-            fig.add_hline(y=median_ic, line_dash="dash", line_color="#38bdf8",
-                         annotation_text=f"Median: {median_ic:.4f}")
-            fig.add_hline(y=0, line_color="#475569")
-            fig.update_layout(title=f'master_score IC vs {horizon} Forward Return (per week)',
-                             height=350, template='plotly_dark', yaxis_title='Information Coefficient',
-                             margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            st.markdown("### IC Summary")
-            st.metric("Median IC", f"{median_ic:.4f}")
-            st.metric("Mean IC", f"{ms_ic['IC'].mean():.4f}")
-            st.metric("% Weeks Positive", f"{pct_positive:.0f}%")
-            st.metric("t-statistic", f"{t_stat:.2f}")
-            st.metric("p-value", f"{t_pval:.4f}")
-            st.caption("IC > 0.03 = signal exists")
-            st.caption("IC > 0.05 = strong signal")
-            st.caption("p-value < 0.05 = statistically significant")
-
-    st.markdown("---")
-
-    # ── Factor Decomposition ──
-    st.markdown("### 🔍 Factor IC Decomposition — Which Sub-Scores Carry the Edge?")
-    st.caption("Compares each of your 7 component scores. WAVE DETECTION weights: Position 27%, Volume 23%, Momentum 22%, Breakout 18%, RVOL 10%")
-
-    factor_summary = []
-    for feat in SCORE_COLS:
-        ic_df = ic_data.get(feat, pd.DataFrame())
-        if len(ic_df) > 0:
-            med_ic = ic_df['IC'].median()
-            wave_w = WAVE_WEIGHTS.get(feat, 0)
-            factor_summary.append({
-                'Factor': feat.replace('_score','').replace('_',' ').title(),
-                'Median IC': round(med_ic, 4),
-                'Mean IC': round(ic_df['IC'].mean(), 4),
-                '% Positive': round((ic_df['IC'] > 0).mean() * 100, 0),
-                'Current Weight': f"{wave_w:.0%}",
-                'IC Suggests': '⬆️ Increase' if med_ic > 0.04 and wave_w < 0.25 else
-                               '⬇️ Decrease' if med_ic < 0.01 and wave_w > 0.10 else
-                               '✅ OK',
-            })
-
-    if factor_summary:
-        fsum = pd.DataFrame(factor_summary).sort_values('Median IC', ascending=False)
-
-        fig = px.bar(fsum, x='Factor', y='Median IC', color='Median IC',
-                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                     title='Median IC by Factor (higher = more predictive)',
-                     hover_data=['% Positive','Current Weight'])
-        fig.add_hline(y=0, line_color="#475569")
-        fig.update_layout(height=350, template='plotly_dark', xaxis_tickangle=-30,
-                         margin=dict(t=40, b=30))
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.dataframe(fsum.reset_index(drop=True), use_container_width=True, hide_index=True)
-
-        # Optimal weights suggestion
-        positive_factors = {row['Factor']: max(0, row['Median IC']) for _, row in fsum.iterrows()}
-        total_pos = sum(positive_factors.values())
-        if total_pos > 0:
-            suggested = {k: round(v / total_pos * 100) for k, v in positive_factors.items()}
-            st.markdown("#### 💡 Suggested Optimal Weights (based on IC)")
-            cols = st.columns(len(suggested))
-            for i, (k, v) in enumerate(sorted(suggested.items(), key=lambda x: -x[1])):
-                with cols[i]:
-                    st.metric(k, f"{v}%")
-
-    st.markdown("---")
-
-    # ── Quintile Spread ──
-    st.markdown("### 📊 Quintile Analysis — Top vs Bottom")
-    st.caption("All stocks split into 5 equal groups by master_score each week. Q5 = highest scores, Q1 = lowest.")
-
-    qt, mono = compute_quintile_analysis(panel, 'master_score', fwd_col)
-    if qt is not None:
-        col1, col2 = st.columns(2)
-        with col1:
-            fig = px.bar(qt, x='quintile', y='mean_return', color='mean_return',
-                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                         title=f'Average {horizon} Forward Return by Score Quintile',
-                         labels={'quintile': 'Quintile (1=worst, 5=best)', 'mean_return': 'Avg Return %'})
-            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            fig = px.bar(qt, x='quintile', y='win_rate', color='win_rate',
-                         color_continuous_scale='RdYlGn', color_continuous_midpoint=50,
-                         title='Win Rate by Quintile',
-                         labels={'quintile': 'Quintile', 'win_rate': 'Win Rate %'})
-            fig.add_hline(y=50, line_dash="dash", line_color="#94a3b8")
-            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.metric("Monotonicity Score", f"{mono:.3f}",
-                  help="1.0 = quintiles perfectly predict returns. >0.7 strong, >0.4 moderate")
-        st.dataframe(qt.round(2), use_container_width=True, hide_index=True)
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 2: SIGNAL LAB
-# ═══════════════════════════════════════════════════════════
-elif page == "⚡ Signal Lab":
-    st.markdown(f"## ⚡ Signal Lab — What Actually Works? ({horizon})")
-
-    # ── Pattern Edges ──
-    st.markdown("### 🏷️ Pattern Edge Analysis")
-    st.caption("Each pattern tested: does it predict gains beyond baseline? p-value < 0.10 = statistically significant.")
-
-    if len(pattern_edges) > 0:
-        valid = panel.dropna(subset=[fwd_col])
-        base_ret = valid[fwd_col].mean()
-        base_wr = (valid[fwd_col] > 0).mean() * 100
-        n_sig = (pattern_edges['p-value'] < 0.10).sum()
-
-        c1, c2, c3 = st.columns(3)
-        with c1: st.metric("Baseline Avg Return", f"{base_ret:.2f}%")
-        with c2: st.metric("Baseline Win Rate", f"{base_wr:.1f}%")
-        with c3: st.metric("Significant Patterns", f"{n_sig}/{len(pattern_edges)}")
-
-        fig = px.bar(pattern_edges, x='Pattern', y='Edge %', color='Edge %',
-                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                     title=f'Pattern Edge: Extra Return vs Baseline ({horizon})',
-                     hover_data=['Count','Win Rate %','p-value','Sig'], text='Sig')
-        fig.add_hline(y=0, line_color="#475569")
-        fig.update_layout(height=450, template='plotly_dark', xaxis_tickangle=-50,
-                         margin=dict(t=40, b=80))
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Win rate chart
-        fig2 = px.bar(pattern_edges, x='Pattern', y='Win Rate %', color='WR Edge',
-                      color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                      title='Win Rate by Pattern', hover_data=['Count','Edge %'])
-        fig2.add_hline(y=base_wr, line_dash="dash", annotation_text=f"Baseline: {base_wr:.0f}%")
-        fig2.update_layout(height=400, template='plotly_dark', xaxis_tickangle=-50,
-                          margin=dict(t=40, b=80))
-        st.plotly_chart(fig2, use_container_width=True)
-
-        with st.expander("📋 Full Pattern Statistics Table"):
-            st.dataframe(pattern_edges.drop(columns=['key']).reset_index(drop=True),
-                        use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── Pattern Combinations ──
-    st.markdown("### 🔗 Pattern Combinations")
-    combos = [
-        ('p_stealth','p_institutional','STEALTH + INSTITUTIONAL'),
-        ('p_cat_leader','p_market_leader','CAT LEADER + MARKET LEADER'),
-        ('p_velocity_breakout','p_premium_momentum','VELOCITY BREAK + PREMIUM MOM'),
-        ('p_golden_cross','p_momentum_wave','GOLDEN CROSS + MOMENTUM WAVE'),
-        ('p_cat_leader','p_vol_explosion','CAT LEADER + VOL EXPLOSION'),
-        ('p_institutional','p_golden_cross','INSTITUTIONAL + GOLDEN CROSS'),
-        ('p_stealth','p_acceleration','STEALTH + ACCELERATION'),
-        ('p_garp_leader','p_value_momentum','GARP + VALUE MOMENTUM'),
-        ('p_liquid_leader','p_market_leader','LIQUID LEADER + MARKET LEADER'),
-        ('p_institutional_tsunami','p_liquid_leader','INST TSUNAMI + LIQUID LEADER'),
+# ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+#  TAB 1 — FUTURE GAINERS
+# ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+with tab1:
+    new_cands = latest[
+        (latest['is_known_gainer'] == 0)
+        & (latest['is_known_loser'] == 0)
+        & (latest['match_score'] >= min_match)
+    ]
+    confirmed = latest[
+        (latest['is_known_gainer'] == 1) & (latest['match_score'] >= min_match)
     ]
 
-    valid = panel.dropna(subset=[fwd_col])
-    combo_results = []
-    for c1_col, c2_col, label in combos:
-        if c1_col in valid.columns and c2_col in valid.columns:
-            combo = valid[(valid[c1_col] == 1) & (valid[c2_col] == 1)]
-            if len(combo) >= 5:
-                base = valid[fwd_col].mean()
-                combo_results.append({
-                    'Combination': label, 'Count': len(combo),
-                    'Avg Return %': round(combo[fwd_col].mean(), 2),
-                    'Edge %': round(combo[fwd_col].mean() - base, 2),
-                    'Win Rate %': round((combo[fwd_col] > 0).mean() * 100, 1),
-                })
+    n_high = int((new_cands['match_score'] >= 70).sum())
+    n_med = int(((new_cands['match_score'] >= 50) & (new_cands['match_score'] < 70)).sum())
+    n_watch = int(((new_cands['match_score'] >= min_match) & (new_cands['match_score'] < 50)).sum())
 
-    if combo_results:
-        combo_df = pd.DataFrame(combo_results).sort_values('Edge %', ascending=False)
-        st.dataframe(combo_df.reset_index(drop=True), use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── Market State Edge ──
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### 🌐 Market State Edge")
-        ms_edge = compute_market_state_edge(panel, fwd_col)
-        if len(ms_edge) > 0:
-            fig = px.bar(ms_edge, x='market_state', y='avg_return', color='avg_return',
-                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                         title=f'{horizon} Return by Market State',
-                         hover_data=['count','win_rate'])
-            fig.add_hline(y=0, line_color="#475569")
-            fig.update_layout(height=350, template='plotly_dark', xaxis_tickangle=-30,
-                             margin=dict(t=40, b=50))
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(ms_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
-
-    with col2:
-        st.markdown("### 🎵 Momentum Harmony Edge")
-        mh_edge = compute_harmony_edge(panel, fwd_col)
-        if len(mh_edge) > 0:
-            fig = px.bar(mh_edge, x='Harmony Level', y='avg_return', color='avg_return',
-                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                         title=f'{horizon} Return by Harmony Level (0-4)',
-                         hover_data=['count','win_rate'])
-            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(mh_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── Entry Freshness Edge ──
-    st.markdown("### 🆕 Entry Freshness Edge")
-    st.caption("Do stocks that JUST entered Top 100 outperform those sitting there for weeks?")
-
-    fr_edge = compute_entry_freshness_edge(panel, fwd_col)
-    if len(fr_edge) > 0:
-        fig = px.bar(fr_edge, x='freshness', y='avg_return', color='avg_return',
-                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                     title=f'Fresh vs Established vs Aging — {horizon} Avg Return',
-                     hover_data=['count','win_rate'])
-        fig.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(fr_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
-
-    # ── Score Threshold Analysis ──
-    st.markdown("---")
-    st.markdown("### 📈 Score Threshold Analysis")
-    st.caption("What's the minimum master_score that matters?")
-
-    valid = panel.dropna(subset=[fwd_col])
-    thresholds = [0, 20, 30, 40, 50, 60, 70, 80]
-    thresh_results = []
-    for th in thresholds:
-        subset = valid[valid['master_score'] >= th]
-        if len(subset) >= 20:
-            thresh_results.append({
-                'Min Score': th, 'Stocks': len(subset),
-                'Avg Return %': round(subset[fwd_col].mean(), 2),
-                'Win Rate %': round((subset[fwd_col] > 0).mean() * 100, 1),
-            })
-
-    if thresh_results:
-        th_df = pd.DataFrame(thresh_results)
-        fig = px.line(th_df, x='Min Score', y='Avg Return %', markers=True,
-                      title=f'Average {horizon} Return at Different Score Cutoffs')
-        fig.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(th_df.reset_index(drop=True), use_container_width=True, hide_index=True)
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 3: THIS WEEK'S PICKS
-# ═══════════════════════════════════════════════════════════
-elif page == "🎯 This Week's Picks":
-    st.markdown(f"## 🎯 This Week's Picks — {latest_week.strftime('%B %d, %Y')}")
-    st.caption("Composite score = data-driven weights (from IC analysis) + pattern bonuses (from tested edges) + entry freshness + rank velocity")
-
-    picks = latest_scored.copy()
-
-    # Apply sidebar filters
-    if min_score_filter > 0:
-        picks = picks[picks['master_score'] >= min_score_filter]
-    if max_rank_filter < 2200:
-        picks = picks[picks['rank'] <= max_rank_filter]
-    if cat_filter:
-        picks = picks[picks['category'].isin(cat_filter)]
-    if sector_input:
-        picks = picks[picks['sector'].str.contains(sector_input, case=False, na=False)]
-
-    # Market overview
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        up_pct = picks['is_uptrend'].mean() * 100
-        st.metric("% Uptrend", f"{up_pct:.0f}%")
+        st.metric("🟢 High Match (>70%)", n_high)
     with c2:
-        n_fresh = picks['is_fresh_entry'].sum()
-        st.metric("Fresh Top-100 Entries", int(n_fresh))
+        st.metric("🟡 Medium (50-70%)", n_med)
     with c3:
-        high_conf = (picks['confidence'] == '🟢 HIGH').sum()
-        st.metric("High Confidence Picks", int(high_conf))
+        st.metric("👀 Watch (<50%)", n_watch)
     with c4:
-        avg_comp = picks.head(top_n)['composite'].mean()
-        st.metric(f"Avg Composite (Top {top_n})", f"{avg_comp:.1f}")
+        st.metric("✅ Gainers Detected", f"{len(confirmed)}/{len(gainer_tickers)}")
+    with c5:
+        if fp.important_features:
+            top_f = FEAT_DISPLAY.get(fp.important_features[0], fp.important_features[0])
+            st.metric("Top Signal", top_f)
 
     st.markdown("---")
 
-    # ── Rank Velocity Radar ──
-    st.markdown("### 🚀 Rank Velocity — Fastest Movers This Week")
-    st.caption("Stocks with biggest rank improvement — freshest buy signals")
-
-    movers = picks.nlargest(10, 'rank_delta_1w')
-    mover_cols = st.columns(5)
-    for i, (_, r) in enumerate(movers.head(10).iterrows()):
-        with mover_cols[i % 5]:
-            delta = r['rank_delta_1w']
-            st.markdown(f"""
-            <div class="stock-card">
-                <b>{r['ticker']}</b><br>
-                <span class="big green">+{delta:.0f}</span><br>
-                <span class="muted">Rank #{r['rank']:.0f} | ₹{r['price']:.0f}</span><br>
-                <span class="muted">{r.get('sector','')[:20]}</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── Top Picks Table ──
-    st.markdown(f"### 🏆 Top {top_n} Picks by Composite Score")
-
-    top_picks = picks.head(top_n)
-
-    for i, (_, row) in enumerate(top_picks.iterrows()):
-        comp = row.get('composite', 0)
-        conf = row.get('confidence', '🟠 LOW')
-        fresh = row.get('freshness_label', '—')
-
-        fresh_class = 'fresh-new' if '🆕' in fresh else 'fresh-aging' if '⏳' in fresh else 'fresh-est'
-
-        cols = st.columns([0.4, 2.2, 1, 1, 1, 1, 1.5])
-
-        with cols[0]:
-            st.markdown(f"**#{i+1}**")
-        with cols[1]:
-            st.markdown(f"**{row['ticker']}**")
-            st.caption(f"{str(row.get('company_name',''))[:35]} · {row.get('sector','')}")
-        with cols[2]:
-            color = 'green' if comp > 70 else 'amber' if comp > 50 else 'red'
-            st.markdown(f"<span class='big {color}'>{comp:.0f}</span><br><span class='muted'>Composite</span>", unsafe_allow_html=True)
-        with cols[3]:
-            rdelta = row.get('rank_delta_1w', 0)
-            st.metric("Rank", f"#{row['rank']:.0f}", f"{rdelta:+.0f}")
-        with cols[4]:
-            sdelta = row.get('score_delta_1w', 0)
-            st.metric("Score", f"{row['master_score']:.0f}", f"{sdelta:+.1f}")
-        with cols[5]:
-            st.metric("Price", f"₹{row['price']:.0f}", f"{row.get('ret_7d',0):+.1f}% 7d")
-        with cols[6]:
-            st.markdown(f"**{conf}**")
-            st.markdown(f"<span class='fresh-badge {fresh_class}'>{fresh}</span> · {row.get('market_state','')}", unsafe_allow_html=True)
-
-        # Pattern stack
-        patterns = str(row.get('patterns', ''))
-        if patterns and patterns != 'nan' and len(patterns) > 3:
-            # Annotate patterns with their edge values
-            annotated = []
-            for tag, key in PATTERN_TAGS:
-                if tag in patterns and len(pattern_edges) > 0:
-                    edge_row = pattern_edges[pattern_edges['key'] == key]
-                    if len(edge_row) > 0:
-                        e = edge_row.iloc[0]['Edge %']
-                        sig = edge_row.iloc[0]['Sig']
-                        color = 'green' if e > 0 else 'red'
-                        annotated.append(f"<span class='{color}'>{tag} ({e:+.1f}% {sig})</span>")
-                elif tag in patterns:
-                    annotated.append(tag)
-
-            if annotated:
-                st.markdown(f"<div class='signal-stack'>{'  ·  '.join(annotated)}</div>", unsafe_allow_html=True)
-
-        st.markdown("---")
-
-    # ── Sector Allocation ──
-    st.markdown("### 🗺️ Sector Allocation of Top Picks")
-    sector_counts = top_picks['sector'].value_counts().reset_index()
-    sector_counts.columns = ['sector', 'count']
-    fig = px.treemap(sector_counts, path=['sector'], values='count',
-                     title=f'Top {top_n} Picks by Sector',
-                     color='count', color_continuous_scale='Blues')
-    fig.update_layout(height=350, margin=dict(t=40, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-
-    # ── Risk Flags ──
-    st.markdown("### 🚨 Risk Flags in Top Picks")
-    risk_stocks = top_picks[
-        (top_picks.get('p_capitulation', 0) == 1) |
-        (top_picks.get('p_distribution', 0) == 1) |
-        (top_picks['is_downtrend'] == 1) |
-        (top_picks['rank_delta_1w'] < -200)
-    ]
-    if len(risk_stocks) > 0:
-        st.warning(f"⚠️ {len(risk_stocks)} stocks in Top {top_n} have risk flags:")
-        for _, r in risk_stocks.iterrows():
-            flags = []
-            if r.get('p_capitulation', 0) == 1: flags.append("💣 CAPITULATION")
-            if r.get('p_distribution', 0) == 1: flags.append("📊 DISTRIBUTION")
-            if r['is_downtrend'] == 1: flags.append("📉 DOWNTREND")
-            if r['rank_delta_1w'] < -200: flags.append(f"💀 Rank crashed {r['rank_delta_1w']:.0f}")
-            st.markdown(f"- **{r['ticker']}** — {' | '.join(flags)}")
+    # ═══ HIGH CONFIDENCE ═══
+    if n_high > 0:
+        st.markdown(f"### 🟢 HIGH CONFIDENCE — {n_high} New Candidates Match Gainer DNA")
+        st.caption("NOT in your gainer list but closely match what gainers looked like before they gained")
+        high_df = new_cands[new_cands['match_score'] >= 70].head(max_stocks)
+        display_stock_cards(high_df, fp, gainer_matched, 'high')
     else:
-        st.success("✅ No major risk flags in top picks")
+        st.info("No stocks above 70% match currently. Try lowering the threshold or adding more weekly data.")
 
-    # ── Download ──
+    # ═══ MEDIUM CONFIDENCE ═══
+    if n_med > 0:
+        st.markdown(f"### 🟡 MEDIUM CONFIDENCE — {n_med} Possible Future Gainers")
+        with st.expander(f"Show {n_med} medium-confidence candidates"):
+            med_df = new_cands[
+                (new_cands['match_score'] >= 50) & (new_cands['match_score'] < 70)
+            ].head(max_stocks)
+            display_stock_cards(med_df, fp, gainer_matched, 'med')
+
+    # ═══ WATCH LIST ═══
+    if n_watch > 0:
+        with st.expander(f"👀 {n_watch} stocks on watchlist ({min_match}-50% match)"):
+            watch_df = new_cands[
+                (new_cands['match_score'] >= min_match) & (new_cands['match_score'] < 50)
+            ].head(max_stocks)
+            display_stock_cards(watch_df, fp, gainer_matched, 'low')
+
     st.markdown("---")
-    dl_cols = ['ticker','company_name','composite','confidence','freshness_label',
-               'rank','rank_delta_1w','master_score','score_delta_1w',
-               'price','ret_7d','ret_30d','ret_3m','market_state','patterns',
-               'sector','category','weeks_in_top100']
-    dl_available = [c for c in dl_cols if c in picks.columns]
-    csv_data = picks[dl_available].to_csv(index=False)
-    st.download_button("📥 Download Full Picks CSV", csv_data, "wave_picks.csv", "text/csv")
 
+    # ═══ CONFIRMED GAINERS (validation) ═══
+    st.markdown(f"### ✅ System Validation — {len(confirmed)} Known Gainers Detected")
+    st.caption("Stocks from your gainer file that score high → proves the DNA fingerprint works")
+    if len(confirmed) > 0:
+        with st.expander(f"Show {len(confirmed)} confirmed gainers"):
+            display_stock_cards(confirmed.head(50), fp, gainer_matched, 'conf')
+    else:
+        st.warning("No known gainers scored above the threshold. The pre-gain data window may be too short.")
 
-# ═══════════════════════════════════════════════════════════
-#  PAGE 4: RANK DYNAMICS
-# ═══════════════════════════════════════════════════════════
-elif page == "🔄 Rank Dynamics":
-    st.markdown("## 🔄 Rank Dynamics — Where Do Top Stocks End Up?")
+    # ═══ SECTOR CONCENTRATION ═══
+    st.markdown("---")
+    st.markdown("### 🗺️ Sector Concentration of Top Picks")
+    top_for_sector = new_cands[new_cands['match_score'] >= 50]
+    if len(top_for_sector) > 0 and 'sector' in top_for_sector.columns:
+        sec = top_for_sector['sector'].value_counts().reset_index()
+        sec.columns = ['Sector', 'Count']
+        fig = px.bar(sec.head(15), x='Sector', y='Count', color='Count',
+                     color_continuous_scale='Greens',
+                     title='Top Gainer Candidates by Sector')
+        fig.update_layout(height=350, template='plotly_dark', xaxis_tickangle=-35,
+                          margin=dict(t=40, b=80))
+        st.plotly_chart(fig, use_container_width=True)
 
-    # ── Transition Matrix ──
-    st.markdown("### 🔢 Rank Transition Matrix")
-
-    tm_horizon = st.radio("Transition horizon", ['1 week', '4 weeks'], horizontal=True)
-    h = 1 if '1' in tm_horizon else 4
-
-    with st.spinner("Computing transition matrix..."):
-        matrix, counts = compute_transition_matrix(panel, h)
-
-    st.caption(f"Each cell = P(stock in row bucket this week → column bucket after {tm_horizon}). Diagonal = stocks that STAYED in same bucket.")
-
-    fig = px.imshow(
-        matrix.values.round(1), x=matrix.columns, y=matrix.index,
-        color_continuous_scale='YlOrRd', text_auto='.0f',
-        labels={'x': f'After {tm_horizon}', 'y': 'Current Bucket', 'color': 'Probability %'},
-        title=f'Rank Transition Probabilities ({tm_horizon})'
+    # ═══ DOWNLOAD ═══
+    st.markdown("---")
+    dl_cols = [
+        'ticker', 'company_name', 'match_score', 'is_known_gainer', 'rank',
+        'rank_delta_1w', 'master_score', 'breakout_score', 'momentum_score',
+        'price', 'ret_7d', 'ret_30d', 'market_state', 'patterns',
+        'sector', 'category',
+    ]
+    avail = [c for c in dl_cols if c in latest.columns]
+    csv_out = latest[latest['match_score'] >= min_match][avail].to_csv(index=False)
+    st.download_button(
+        "📥 Download All Candidates CSV", csv_out,
+        "wave_gainer_candidates.csv", "text/csv",
     )
-    fig.update_layout(height=450, template='plotly_dark', margin=dict(t=40, b=30))
-    st.plotly_chart(fig, use_container_width=True)
 
-    # Key insights
-    diag = [matrix.iloc[i, i] for i in range(min(len(matrix), len(matrix.columns)))]
-    st.markdown("#### 💡 Key Insights")
-    bucket_labels = [b[2] for b in RANK_BUCKETS]
-    for i, label in enumerate(bucket_labels[:len(diag)]):
-        stability = diag[i]
-        emoji = '🟢' if stability > 50 else '🟡' if stability > 30 else '🔴'
-        st.markdown(f"- {emoji} **{label}**: {stability:.0f}% stay in same bucket after {tm_horizon}")
+# ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+#  TAB 2 — GAINER DNA
+# ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+with tab2:
+    st.markdown("### 🧬 What Makes a Gainer? — Pre-Gain DNA Analysis")
+    st.caption(
+        f"Based on **{fp.n_gainers_found}** gainers tracked across "
+        f"**{len(pre_gain_weeks)}** pre-gain weeks "
+        f"({pre_gain_weeks[0].strftime('%b %d')} → {pre_gain_weeks[-1].strftime('%b %d, %Y')})"
+    )
+
+    if not fp.profile:
+        st.warning("Not enough data to build fingerprint. Upload more weekly CSVs or check matching.")
+        st.stop()
+
+    # ── Feature Importance ──
+    st.markdown("#### 📊 Feature Importance — What Distinguishes Gainers?")
+    st.caption("Cohen's d: how different gainers are from non-gainers. Higher = more discriminative.")
+
+    feat_rows = []
+    for feat, prof in fp.profile.items():
+        feat_rows.append({
+            'Feature': FEAT_DISPLAY.get(feat, feat),
+            'Effect Size': round(abs(prof['effect_size']), 3),
+            'Direction': '↑ Higher in gainers' if prof['direction'] == 'higher' else '↓ Lower in gainers',
+            'Gainer Avg': round(prof['g_mean'], 1),
+            'Others Avg': round(prof['o_mean'], 1),
+            'Weight': f"{fp.feature_weights.get(feat, 0):.0%}",
+        })
+
+    feat_df = pd.DataFrame(feat_rows).sort_values('Effect Size', ascending=False)
+
+    fig = px.bar(
+        feat_df, x='Feature', y='Effect Size', color='Effect Size',
+        color_continuous_scale='YlGn',
+        title="Feature Importance (Cohen's d — higher = more predictive)",
+        hover_data=['Direction', 'Gainer Avg', 'Others Avg', 'Weight'],
+    )
+    fig.add_hline(y=0.2, line_dash='dash', line_color='#94a3b8',
+                  annotation_text='Significance threshold')
+    fig.update_layout(height=400, template='plotly_dark', xaxis_tickangle=-35,
+                      margin=dict(t=40, b=80))
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(feat_df.reset_index(drop=True), use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
-    # ── Survival Curves ──
-    st.markdown("### 📉 Survival Curve — How Long Do Top Stocks Stay?")
-    st.caption("Of stocks entering top N for the FIRST time, what % remain after K weeks?")
+    # ── Distribution Comparison ──
+    st.markdown("#### 📈 Gainer vs Others Distribution — Top Features")
+    st.caption("The more separated the distributions, the more useful the feature.")
 
-    surv_threshold = st.slider("Top N threshold", 20, 200, 50, 10)
-    survival = compute_survival_curve(panel, surv_threshold)
+    top_feats = [f for f in fp.important_features[:6] if f in panel.columns]
+    if top_feats:
+        early = panel[panel['week'].isin(pre_gain_weeks)]
+        g_early = early[early['ticker'].isin(gainer_tickers)]
+        o_early = early[~early['ticker'].isin(gainer_tickers)]
 
-    if len(survival) > 0:
+        cols = st.columns(3)
+        for i, feat in enumerate(top_feats):
+            with cols[i % 3]:
+                name = FEAT_DISPLAY.get(feat, feat)
+                g_vals = g_early[feat].dropna()
+                o_vals_raw = o_early[feat].dropna()
+                o_vals = (o_vals_raw.sample(min(len(o_vals_raw), 500), random_state=42)
+                          if len(o_vals_raw) > 500 else o_vals_raw)
+
+                fig = go.Figure()
+                fig.add_trace(go.Histogram(
+                    x=o_vals, name='Others', marker_color='#475569', opacity=0.6, nbinsx=30,
+                ))
+                fig.add_trace(go.Histogram(
+                    x=g_vals, name='Gainers', marker_color='#22c55e', opacity=0.8, nbinsx=30,
+                ))
+                fig.add_vline(
+                    x=g_vals.mean(), line_color='#22c55e', line_dash='dash',
+                    annotation_text=f'Gainer: {g_vals.mean():.0f}',
+                )
+                fig.update_layout(
+                    title=name, height=260, template='plotly_dark',
+                    barmode='overlay', showlegend=(i == 0),
+                    margin=dict(t=35, b=20, l=30, r=10),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Pattern Analysis ──
+    st.markdown("#### 🏷️ Pattern Power — Which Patterns Signal Future Gains?")
+    st.caption("Lift > 1.5 = pattern is 1.5× more common in gainers. Higher = stronger signal.")
+
+    pat_rows = []
+    for col, info in fp.pattern_lifts.items():
+        if info['gainer_pct'] > 0.5 or info['other_pct'] > 0.5:
+            pat_rows.append({
+                'Pattern': col.replace('p_', '').replace('_', ' ').upper(),
+                'Gainer %': round(info['gainer_pct'], 1),
+                'Others %': round(info['other_pct'], 1),
+                'Lift': round(info['lift'], 2),
+                'Signal': ('🟢 STRONG' if info['lift'] > 2
+                           else '🟡 MODERATE' if info['lift'] > 1.5
+                           else '🔴 ANTI' if info['lift'] < 0.7
+                           else '⚪ NEUTRAL'),
+            })
+
+    if pat_rows:
+        pat_df = pd.DataFrame(pat_rows).sort_values('Lift', ascending=False)
+        fig = px.bar(
+            pat_df, x='Pattern', y='Lift', color='Lift',
+            color_continuous_scale='RdYlGn', color_continuous_midpoint=1,
+            title='Pattern Lift (>1 = gainer-favoring, <1 = anti-gainer)',
+            hover_data=['Gainer %', 'Others %'],
+        )
+        fig.add_hline(y=1, line_dash='dash', line_color='#94a3b8', annotation_text='Baseline')
+        fig.update_layout(height=400, template='plotly_dark', xaxis_tickangle=-40,
+                          margin=dict(t=40, b=80))
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(pat_df.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ── Market State Analysis ──
+    st.markdown("#### 🌐 Market State — Where Were Gainers Before They Gained?")
+    state_rows = []
+    for state, info in fp.state_probs.items():
+        state_rows.append({
+            'State': state,
+            'Gainer %': round(info['gainer_pct'], 1),
+            'Others %': round(info['other_pct'], 1),
+            'Lift': round(info['lift'], 2),
+        })
+    if state_rows:
+        state_df = pd.DataFrame(state_rows).sort_values('Lift', ascending=False)
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=survival['weeks_after_entry'], y=survival['survival_%'],
-            mode='lines+markers', line=dict(color='#38bdf8', width=3),
-            fill='tozeroy', fillcolor='rgba(56,189,248,0.1)'
-        ))
-        fig.add_hline(y=50, line_dash="dash", line_color="#64748b", annotation_text="50% threshold")
+        fig.add_trace(go.Bar(x=state_df['State'], y=state_df['Gainer %'],
+                             name='Gainers', marker_color='#22c55e', opacity=0.8))
+        fig.add_trace(go.Bar(x=state_df['State'], y=state_df['Others %'],
+                             name='Others', marker_color='#475569', opacity=0.6))
         fig.update_layout(
-            title=f'Survival: % of stocks remaining in Top {surv_threshold} after entry',
-            xaxis_title='Weeks After First Entry', yaxis_title='% Still in Top N',
-            height=350, template='plotly_dark', yaxis=dict(range=[0, 105]),
-            margin=dict(t=40, b=30)
+            title='Market State Distribution: Gainers vs Others (Pre-Gain Period)',
+            height=350, template='plotly_dark', barmode='group',
+            margin=dict(t=40, b=30),
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # Half-life
-        half_life = survival[survival['survival_%'] < 50]
-        if len(half_life) > 0:
-            hl_week = half_life.iloc[0]['weeks_after_entry']
-            st.info(f"📊 **Half-life: {hl_week:.0f} weeks** — 50% of stocks that enter Top {surv_threshold} drop out within {hl_week:.0f} weeks. {'This suggests you should rebalance more frequently.' if hl_week < 6 else 'Your system has good staying power.'}")
+    st.markdown("---")
+
+    # ── Ideal Gainer Profile ──
+    st.markdown("#### 🏆 The Ideal Gainer Profile")
+    st.caption("A stock matching ALL these criteria is the ideal pre-gainer:")
+
+    for feat in fp.important_features[:8]:
+        p = fp.profile[feat]
+        name = FEAT_DISPLAY.get(feat, feat)
+        if p['direction'] == 'higher':
+            st.markdown(
+                f"• **{name}** ≥ {p['g_q25']:.0f}  "
+                f"(gainer avg **{p['g_mean']:.0f}**, range {p['g_q25']:.0f}–{p['g_q75']:.0f})"
+            )
         else:
-            st.success(f"💪 Most stocks that enter Top {surv_threshold} stay there throughout the data period. Strong system stickiness.")
+            st.markdown(
+                f"• **{name}** ≤ {p['g_q75']:.0f}  "
+                f"(gainer avg **{p['g_mean']:.0f}**, range {p['g_q25']:.0f}–{p['g_q75']:.0f})"
+            )
+
+    strong_pats = [
+        col.replace('p_', '').replace('_', ' ').upper()
+        for col, info in sorted(fp.pattern_lifts.items(), key=lambda x: -x[1]['lift'])
+        if info['lift'] > 1.5
+    ][:5]
+    if strong_pats:
+        st.markdown(f"• **Key Patterns**: {', '.join(strong_pats)}")
+
+    gainer_states = [
+        s for s, info in sorted(fp.state_probs.items(), key=lambda x: -x[1]['lift'])
+        if info['lift'] > 1.2
+    ][:3]
+    if gainer_states:
+        st.markdown(f"• **Favored States**: {', '.join(gainer_states)}")
 
     st.markdown("---")
 
-    # ── Biggest Movers ──
-    st.markdown("### 🔄 Biggest Rank Movers This Week")
+    # ── Gainer Journey: Average Rank Over Time ──
+    st.markdown("#### 📉 Average Gainer Rank Trajectory Over Time")
+    st.caption("How did gainers' rank evolve week-by-week? Falling line = improving rank.")
 
-    latest = panel[panel['week'] == latest_week].copy()
+    g_panel = panel[panel['ticker'].isin(gainer_tickers)]
+    if len(g_panel) > 0:
+        g_weekly = g_panel.groupby('week').agg(
+            avg_rank=('rank', 'mean'),
+            avg_score=('master_score', 'mean'),
+            count=('ticker', 'nunique'),
+        ).reset_index().sort_values('week')
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("#### 🚀 Top 20 Rank Improvers")
-        improvers = latest.nlargest(20, 'rank_delta_1w')
-        for i, (_, r) in enumerate(improvers.iterrows()):
-            st.markdown(
-                f"**{i+1}. {r['ticker']}** | #{r['rank']:.0f} "
-                f"(+{r['rank_delta_1w']:.0f}) | Score {r['master_score']:.0f} "
-                f"| ₹{r['price']:.0f} | {r.get('market_state','')}"
-            )
+        o_panel = panel[~panel['ticker'].isin(gainer_tickers)]
+        o_weekly = o_panel.groupby('week').agg(
+            avg_rank=('rank', 'mean'),
+        ).reset_index().sort_values('week')
 
-    with col2:
-        st.markdown("#### 💀 Top 20 Rank Crashers")
-        crashers = latest.nsmallest(20, 'rank_delta_1w')
-        for i, (_, r) in enumerate(crashers.iterrows()):
-            st.markdown(
-                f"**{i+1}. {r['ticker']}** | #{r['rank']:.0f} "
-                f"({r['rank_delta_1w']:.0f}) | Score {r['master_score']:.0f} "
-                f"| ₹{r['price']:.0f} | {r.get('market_state','')}"
-            )
-
-    st.markdown("---")
-
-    # ── Sector Rotation ──
-    st.markdown("### 🔄 Sector Rotation Over Time")
-    st.caption("Which sectors dominated Top 100 each week?")
-
-    rotation = get_sector_rotation(panel, weeks, 100)
-    if len(rotation) > 0:
-        top_sectors = rotation.groupby('sector')['pct'].mean().nlargest(8).index.tolist()
-        rot_filtered = rotation[rotation['sector'].isin(top_sectors)]
-
-        fig = px.area(rot_filtered, x='week', y='pct', color='sector',
-                      title='Sector Share of Top 100 Over Time',
-                      labels={'pct': '% of Top 100', 'week': 'Week'})
-        fig.update_layout(height=400, template='plotly_dark', margin=dict(t=40, b=30))
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=g_weekly['week'], y=g_weekly['avg_rank'],
+            name='Gainers Avg Rank', mode='lines+markers',
+            line=dict(color='#22c55e', width=3),
+        ))
+        fig.add_trace(go.Scatter(
+            x=o_weekly['week'], y=o_weekly['avg_rank'],
+            name='Others Avg Rank', mode='lines',
+            line=dict(color='#475569', width=2, dash='dot'),
+        ))
+        fig.update_yaxes(autorange='reversed')
+        fig.update_layout(
+            title='Average Rank Over Time (↓ = better)',
+            height=350, template='plotly_dark', margin=dict(t=40, b=30),
+        )
         st.plotly_chart(fig, use_container_width=True)
 
+    # ── Historical Validation ──
+    st.markdown("---")
+    st.markdown("#### 🔍 Historical Validation")
+    st.caption("If you'd used this system at each past week, what % of actual gainers would you have caught?")
 
-# ═══════════════════════════════════════════════════════════
-#  PAGE 5: STOCK X-RAY
-# ═══════════════════════════════════════════════════════════
-elif page == "🔬 Stock X-Ray":
-    st.markdown("## 🔬 Stock X-Ray — Full Weekly Journey")
+    if st.button("🚀 Run Validation", type="primary"):
+        with st.spinner("Running validation across all pre-gain weeks…"):
+            val = fp.validate_hit_rate(panel, pre_gain_weeks, top_ns=(20, 50, 100))
+
+        if len(val) > 0:
+            v_cols = st.columns(3)
+            for i, n in enumerate((20, 50, 100)):
+                sub = val[val['top_n'] == n]
+                if len(sub) > 0:
+                    with v_cols[i]:
+                        st.metric(
+                            f"Top {n} Avg Hit Rate",
+                            f"{sub['hit_rate'].mean():.1f}%",
+                            help=f"Avg {sub['gainers_caught'].mean():.0f} gainers caught per week",
+                        )
+
+            v50 = val[val['top_n'] == 50]
+            if len(v50) > 0:
+                fig = px.bar(
+                    v50, x='week', y='hit_rate', color='hit_rate',
+                    color_continuous_scale='YlGn',
+                    title='Gainer Hit Rate per Week (Top 50 picks)',
+                )
+                fig.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Not enough data for validation.")
+
+
+# ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+#  TAB 3 — STOCK X-RAY
+# ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+with tab3:
+    st.markdown("### 🔬 Stock X-Ray — Full Journey + Gainer Match")
 
     all_tickers = sorted(panel['ticker'].unique())
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        ticker = st.selectbox("Select Stock", all_tickers)
-    with col2:
-        search = st.text_input("Search ticker", "")
-        if search:
-            matches = [t for t in all_tickers if search.upper() in str(t).upper()]
+    col_sel, col_search = st.columns([3, 1])
+    with col_sel:
+        default_ticker = all_tickers[0] if all_tickers else ''
+        ticker_sel = st.selectbox("Select Stock", all_tickers,
+                                  index=0 if all_tickers else 0)
+    with col_search:
+        search_q = st.text_input("Quick search", "")
+        if search_q:
+            matches = [t for t in all_tickers if search_q.upper() in t]
             if matches:
-                ticker = st.selectbox("Matches", matches, key="search_results")
+                ticker_sel = st.selectbox("Matches", matches, key='xr_search')
 
-    stock = panel[panel['ticker'] == ticker].sort_values('week')
+    stock = panel[panel['ticker'] == ticker_sel].sort_values('week')
 
-    if len(stock) > 0:
-        last = stock.iloc[-1]
-        first = stock.iloc[0]
+    if len(stock) == 0:
+        st.warning(f"No data for {ticker_sel}")
+    else:
+        last_row = stock.iloc[-1]
+        first_row = stock.iloc[0]
 
-        # Header
-        st.markdown(f"### {ticker} — {last.get('company_name','')}")
+        # Compute match score for this stock
+        match_val = latest.loc[latest['ticker'] == ticker_sel, 'match_score']
+        match_val = float(match_val.iloc[0]) if len(match_val) > 0 else fp.score_batch(
+            stock.iloc[[-1]]
+        )[0]
 
+        is_g = ticker_sel in gainer_tickers
+        is_l = ticker_sel in loser_tickers
+        sc_class = 'green' if match_val >= 70 else 'amber' if match_val >= 50 else 'gray'
+
+        badge_html = ''
+        if is_g:
+            badge_html = f'<span class="badge badge-confirmed">CONFIRMED GAINER +{gainer_matched.get(ticker_sel, 0):.0f}%</span>'
+        elif is_l:
+            badge_html = '<span class="badge badge-loser">KNOWN LOSER</span>'
+        elif match_val >= 70:
+            badge_html = '<span class="badge badge-new">🆕 GAINER CANDIDATE</span>'
+
+        st.markdown(f"""
+        <div class="scard">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                    {badge_html}
+                    <h2 style="margin:4px 0;color:#f1f5f9">{ticker_sel}</h2>
+                    <div class="muted">{str(last_row.get('company_name',''))[:50]} · {last_row.get('sector','')} · {last_row.get('category','')}</div>
+                </div>
+                <div style="text-align:right">
+                    <div class="big {sc_class}">{match_val:.0f}%</div>
+                    <div class="muted">Gainer Match</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Metrics
+        total_chg = (
+            (last_row['price'] - first_row['price']) / first_row['price'] * 100
+            if first_row['price'] > 0 else 0
+        )
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         with c1:
-            total_chg = ((last['price'] - first['price']) / first['price'] * 100) if first['price'] > 0 else 0
-            st.metric("Price", f"₹{last['price']:.0f}", f"{total_chg:+.1f}% total")
+            st.metric("Price", f"₹{last_row['price']:,.0f}", f"{total_chg:+.1f}%")
         with c2:
-            st.metric("Rank", f"#{last['rank']:.0f}", f"{last.get('rank_delta_1w',0):+.0f}")
+            rd = last_row.get('rank_delta_1w', 0)
+            st.metric("Rank", f"#{last_row['rank']:.0f}",
+                      f"{rd:+.0f}" if pd.notna(rd) else None)
         with c3:
-            st.metric("Score", f"{last['master_score']:.1f}", f"{last.get('score_delta_1w',0):+.1f}")
+            sd = last_row.get('score_delta_1w', 0)
+            st.metric("Score", f"{last_row['master_score']:.0f}",
+                      f"{sd:+.1f}" if pd.notna(sd) else None)
         with c4:
-            st.metric("State", last.get('market_state',''))
+            st.metric("Breakout", f"{last_row.get('breakout_score', 0):.0f}")
         with c5:
-            st.metric("Sector", str(last.get('sector',''))[:15])
+            st.metric("State", last_row.get('market_state', ''))
         with c6:
-            wit = last.get('weeks_in_top100', 0)
-            st.metric("Weeks in Top100", int(wit))
+            st.metric("Harmony", f"{last_row.get('momentum_harmony', 0):.0f}")
 
-        # 6-panel chart
+        # Reasons
+        reasons = fp.explain(last_row)
+        if reasons:
+            st.markdown("#### Why this match score?")
+            for cls, reason in reasons:
+                color = '#4ade80' if cls == 'ok' else '#f87171'
+                st.markdown(f'<span style="color:{color}">{reason}</span>',
+                            unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # ── Journey Charts ──
+        st.markdown("#### 📈 Weekly Journey")
         fig = make_subplots(
             rows=3, cols=2,
-            subplot_titles=['💰 Price','📊 Rank (↓ = better)','🎯 Master Score',
-                           '⚡ Breakout Score','📈 Momentum Score','🔊 Volume Score'],
-            vertical_spacing=0.08
+            subplot_titles=[
+                '💰 Price', '📊 Rank (↓=better)', '🎯 Master Score',
+                '⚡ Breakout Score', '📈 Momentum Score', '🔊 Volume Score',
+            ],
+            vertical_spacing=0.08,
         )
-
         w = stock['week']
-        chart_data = [
-            (stock['price'], '#38bdf8', 1, 1),
-            (stock['rank'], '#f87171', 1, 2),
-            (stock['master_score'], '#4ade80', 2, 1),
-            (stock['breakout_score'], '#fbbf24', 2, 2),
-            (stock['momentum_score'], '#a855f7', 3, 1),
-            (stock['volume_score'], '#06b6d4', 3, 2),
+        chart_conf = [
+            ('price', '#38bdf8', 1, 1),
+            ('rank', '#f87171', 1, 2),
+            ('master_score', '#4ade80', 2, 1),
+            ('breakout_score', '#fbbf24', 2, 2),
+            ('momentum_score', '#a855f7', 3, 1),
+            ('volume_score', '#06b6d4', 3, 2),
         ]
-
-        for data, color, r, c in chart_data:
-            fig.add_trace(go.Scatter(x=w, y=data, mode='lines+markers',
-                         line=dict(color=color, width=2), showlegend=False), row=r, col=c)
-
-        fig.update_yaxes(autorange="reversed", row=1, col=2)
+        for col_name, color, r, c in chart_conf:
+            if col_name in stock.columns:
+                fig.add_trace(
+                    go.Scatter(x=w, y=stock[col_name], mode='lines+markers',
+                               line=dict(color=color, width=2), showlegend=False),
+                    row=r, col=c,
+                )
+        fig.update_yaxes(autorange='reversed', row=1, col=2)
         fig.update_layout(height=700, template='plotly_dark', margin=dict(t=30, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
-        # Pattern timeline
-        st.markdown("### 🏷️ Pattern & State Timeline")
-        for _, row in stock.iterrows():
-            pat = str(row.get('patterns', ''))
-            state = row.get('market_state', '')
-            rk = row['rank']
-            sc = row['master_score']
-            pr = row['price']
+        # ── Match Score Over Time ──
+        st.markdown("#### 🎯 Gainer Match Score Trajectory")
+        st.caption("Is this stock BECOMING more gainer-like? Rising = stronger match.")
 
-            # Market state color
-            state_colors = {
-                'STRONG_UPTREND': '🟢', 'UPTREND': '🟢', 'PULLBACK': '🟡',
-                'ROTATION': '🟡', 'SIDEWAYS': '⚪', 'BOUNCE': '🔵',
-                'DOWNTREND': '🔴', 'STRONG_DOWNTREND': '🔴'
-            }
-            state_icon = state_colors.get(state, '⚪')
+        match_hist = []
+        for _, r in stock.iterrows():
+            ms_val = fp.score_batch(pd.DataFrame([r]))[0]
+            match_hist.append({'week': r['week'], 'match': ms_val})
+        mh_df = pd.DataFrame(match_hist)
 
-            line = f"**{row['week'].strftime('%b %d')}** | {state_icon} `{state}` | Rank #{rk:.0f} | Score {sc:.1f} | ₹{pr:.0f}"
-            if pat and pat != 'nan' and len(pat) > 3:
-                line += f" | {pat}"
-            st.markdown(line)
-
-        # Score delta table
-        with st.expander("📋 Full Weekly Data"):
-            display_cols = ['week','rank','rank_delta_1w','master_score','score_delta_1w',
-                           'price','breakout_score','momentum_score','volume_score',
-                           'acceleration_score','rvol_score','trend_quality',
-                           'ret_7d','ret_30d','ret_3m','market_state','patterns',
-                           'weeks_in_top100']
-            available = [c for c in display_cols if c in stock.columns]
-            disp = stock[available].copy()
-            disp['week'] = disp['week'].dt.strftime('%Y-%m-%d')
-            st.dataframe(disp.reset_index(drop=True), use_container_width=True, hide_index=True)
-
-        # Peer comparison
-        st.markdown("### 👥 Industry Peers")
-        industry = last.get('industry', '')
-        if industry:
-            peers = panel[(panel['week'] == latest_week) & (panel['industry'] == industry)].nsmallest(10, 'rank')
-            if len(peers) > 0:
-                peer_cols = ['ticker','company_name','rank','master_score','price',
-                            'ret_7d','ret_30d','market_state']
-                available = [c for c in peer_cols if c in peers.columns]
-                st.dataframe(peers[available].reset_index(drop=True), use_container_width=True, hide_index=True)
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 6: BACKTEST LAB
-# ═══════════════════════════════════════════════════════════
-elif page == "🧪 Backtest Lab":
-    st.markdown(f"## 🧪 Backtest Lab — Walk-Forward Proof ({horizon})")
-    st.caption("Each entry week: pick top-N stocks by rank (using ONLY current data). Measure ACTUAL forward return. No look-ahead bias.")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        bt_top_n = st.slider("Top N stocks per period", 5, 50, top_n, key="bt_n")
-    with col2:
-        bt_min_score = st.slider("Min score threshold", 0, 80, 0, 10, key="bt_score")
-    with col3:
-        st.markdown(f"**Horizon:** {horizon}")
-
-    if st.button("🚀 Run Backtest", type="primary"):
-        with st.spinner("Running walk-forward backtest..."):
-            bt = walk_forward_backtest(panel, weeks, bt_top_n, 1, bt_min_score, fwd_col)
-
-        if len(bt) > 0:
-            # Summary
-            c1, c2, c3, c4, c5 = st.columns(5)
-            with c1: st.metric("Top N Avg Return", f"{bt['top_avg'].mean():.2f}%")
-            with c2: st.metric("Bottom N Avg Return", f"{bt['bottom_avg'].mean():.2f}%")
-            with c3: st.metric("Spread (Top-Bottom)", f"{bt['spread'].mean():.2f}%")
-            with c4: st.metric("Top N Win Rate", f"{bt['top_wr'].mean():.0f}%")
-            with c5: st.metric("Periods Tested", len(bt))
-
-            spread_avg = bt['spread'].mean()
-            top_wr = bt['top_wr'].mean()
-
-            if spread_avg > 3 and top_wr > 55:
-                st.markdown(f'<div class="verdict-box verdict-good">✅ SYSTEM HAS EDGE — Top {bt_top_n} stocks average {spread_avg:.1f}% more return than Bottom {bt_top_n}, with {top_wr:.0f}% win rate over {len(bt)} periods. This is actionable.</div>', unsafe_allow_html=True)
-            elif spread_avg > 1:
-                st.markdown(f'<div class="verdict-box verdict-mid">⚠️ MODERATE EDGE — {spread_avg:.1f}% spread, {top_wr:.0f}% win rate. Signal exists but may improve with more data or tighter filters.</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="verdict-box verdict-bad">❌ WEAK EDGE — {spread_avg:.1f}% spread, {top_wr:.0f}% win rate. Rankings don\'t reliably predict {horizon} returns at this filter setting.</div>', unsafe_allow_html=True)
-
-            st.markdown("---")
-
-            # Return comparison
+        if len(mh_df) > 0:
+            bar_colors = [
+                '#22c55e' if s >= 70 else '#f59e0b' if s >= 50 else '#64748b'
+                for s in mh_df['match']
+            ]
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=bt['week'], y=bt['top_avg'], name=f'Top {bt_top_n}',
-                                marker_color='#4ade80', opacity=0.8))
-            fig.add_trace(go.Bar(x=bt['week'], y=bt['bottom_avg'], name=f'Bottom {bt_top_n}',
-                                marker_color='#f87171', opacity=0.8))
-            fig.add_trace(go.Scatter(x=bt['week'], y=bt['universe_avg'], name='Universe Avg',
-                                    line=dict(color='#fbbf24', width=2, dash='dash')))
+            fig.add_trace(go.Bar(x=mh_df['week'], y=mh_df['match'],
+                                 marker_color=bar_colors))
+            fig.add_hline(y=70, line_dash='dash', line_color='#22c55e',
+                          annotation_text='High')
+            fig.add_hline(y=50, line_dash='dash', line_color='#f59e0b',
+                          annotation_text='Medium')
             fig.update_layout(
-                title=f'Top {bt_top_n} vs Bottom {bt_top_n} — {horizon} Forward Return per Entry Week',
-                yaxis_title='Return %', height=400, barmode='group',
-                template='plotly_dark', margin=dict(t=40, b=30)
+                height=300, template='plotly_dark',
+                yaxis=dict(range=[0, 100]),
+                margin=dict(t=30, b=30),
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # Cumulative equity
-            bt['cum_top'] = (1 + bt['top_avg'] / 100).cumprod() * 100
-            bt['cum_bottom'] = (1 + bt['bottom_avg'] / 100).cumprod() * 100
-            bt['cum_universe'] = (1 + bt['universe_avg'] / 100).cumprod() * 100
-
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_top'], name=f'Top {bt_top_n}',
-                                     line=dict(color='#4ade80', width=3)))
-            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_bottom'], name=f'Bottom {bt_top_n}',
-                                     line=dict(color='#f87171', width=3)))
-            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_universe'], name='Universe',
-                                     line=dict(color='#94a3b8', width=2, dash='dot')))
-            fig2.add_hline(y=100, line_dash="dash", line_color="#475569")
-            fig2.update_layout(
-                title='Cumulative Equity Curve (₹100 start)',
-                yaxis_title='Portfolio Value ₹', height=400,
-                template='plotly_dark', margin=dict(t=40, b=30)
+        # ── Pattern & State Timeline ──
+        st.markdown("#### 🏷️ Pattern & State Timeline")
+        state_icons = {
+            'STRONG_UPTREND': '🟢', 'UPTREND': '🟢', 'PULLBACK': '🟡',
+            'ROTATION': '🟡', 'SIDEWAYS': '⚪', 'BOUNCE': '🔵',
+            'DOWNTREND': '🔴', 'STRONG_DOWNTREND': '🔴',
+        }
+        for _, r in stock.iterrows():
+            pat = str(r.get('patterns', ''))
+            st_val = r.get('market_state', '')
+            icon = state_icons.get(st_val, '⚪')
+            line = (
+                f"**{r['week'].strftime('%b %d')}** | {icon} {st_val} | "
+                f"#{r['rank']:.0f} | Score {r['master_score']:.0f} | ₹{r['price']:.0f}"
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            if pat and pat != 'nan' and len(pat) > 3:
+                line += f" | {pat[:100]}"
+            st.markdown(line)
 
-            # Win rate
-            fig3 = px.bar(bt, x='week', y='top_wr', color='top_wr',
-                          color_continuous_scale='RdYlGn', color_continuous_midpoint=50,
-                          title=f'Win Rate per Period (Top {bt_top_n})')
-            fig3.add_hline(y=50, line_dash="dash", line_color="#94a3b8")
-            fig3.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
-            st.plotly_chart(fig3, use_container_width=True)
+        # ── Full Data ──
+        with st.expander("📋 Full Weekly Data"):
+            show_cols = [
+                'week', 'rank', 'rank_delta_1w', 'rank_velocity', 'master_score',
+                'score_delta_1w', 'price', 'breakout_score', 'momentum_score',
+                'volume_score', 'ret_7d', 'ret_30d', 'ret_3m', 'market_state',
+                'patterns', 'weeks_in_top100',
+            ]
+            avail = [c for c in show_cols if c in stock.columns]
+            disp = stock[avail].copy()
+            disp['week'] = disp['week'].dt.strftime('%Y-%m-%d')
+            st.dataframe(disp.reset_index(drop=True), use_container_width=True,
+                         hide_index=True)
 
-            with st.expander("📋 Period Details"):
-                st.dataframe(bt.round(2), use_container_width=True, hide_index=True)
-
-            # Strategy comparison
-            st.markdown("---")
-            st.markdown("### 📊 Strategy Comparison")
-
-            strategies = {}
-            for n in [10, 20, 50]:
-                r = walk_forward_backtest(panel, weeks, n, 1, 0, fwd_col)
-                if len(r) > 0:
-                    strategies[f'Top {n}'] = {
-                        'Avg Return': round(r['top_avg'].mean(), 2),
-                        'Win Rate': round(r['top_wr'].mean(), 1),
-                        'Spread': round(r['spread'].mean(), 2),
-                        'Best Period': round(r['top_avg'].max(), 2),
-                        'Worst Period': round(r['top_avg'].min(), 2),
-                    }
-
-            if strategies:
-                st.dataframe(pd.DataFrame(strategies).T, use_container_width=True)
-
-        else:
-            st.warning("Not enough data for backtest. Try uploading more weekly files.")
-
-    else:
-        st.info("Click **Run Backtest** to start the walk-forward simulation.")
-
-    # Data confidence
-    st.markdown("---")
-    st.markdown("### 📊 Data Confidence Level")
-    if n_weeks >= 40:
-        st.success(f"🟢 **HIGH CONFIDENCE** — {n_weeks} weeks of data. All statistical tests are reliable. ML models viable as complement.")
-    elif n_weeks >= 20:
-        st.info(f"🟡 **MODERATE CONFIDENCE** — {n_weeks} weeks. Statistical tests meaningful but p-values may be wide. Add {40 - n_weeks} more weeks for high confidence.")
-    else:
-        st.warning(f"🟠 **LOW CONFIDENCE** — {n_weeks} weeks. Results are directional but not definitive. Keep adding weekly data.")
-
-    growth_note = f"Every new week you add makes the analysis more reliable. At 50+ weeks, ML models become viable as a complement to the statistical approach."
-    st.caption(growth_note)
+        # ── Peer Comparison ──
+        st.markdown("#### 👥 Industry Peers in Latest Week")
+        industry = last_row.get('industry', '')
+        if industry:
+            peers = panel[
+                (panel['week'] == latest_week) & (panel['industry'] == industry)
+            ].nsmallest(10, 'rank')
+            if len(peers) > 0:
+                peer_cols = [
+                    'ticker', 'company_name', 'rank', 'master_score',
+                    'price', 'ret_7d', 'ret_30d', 'market_state',
+                ]
+                pavail = [c for c in peer_cols if c in peers.columns]
+                st.dataframe(peers[pavail].reset_index(drop=True),
+                             use_container_width=True, hide_index=True)
 
 
-# ── Footer ──
+# ═══════════════════════════════════════════════════════════════════════════
+#  FOOTER
+# ═══════════════════════════════════════════════════════════════════════════
 st.markdown("---")
-st.caption("WAVE Analyzer — System Intelligence Engine. Companion to WAVE Detection 3.0. Not financial advice.")
+st.caption(
+    "WAVE Gainer Scanner — Finds future winners by studying past gainer DNA. "
+    "Companion to WAVE Detection 3.0. Not financial advice."
+)
