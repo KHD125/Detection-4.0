@@ -1,1267 +1,1578 @@
+"""
+WAVE Analyzer — System Intelligence Engine
+═══════════════════════════════════════════
+Companion to WAVE DETECTION 3.0.
+Takes weekly CSV snapshots → adds the TIME dimension your scoring system lacks.
+
+Answers: "Does my scoring system predict future gains? Which signals work?
+          What should I buy THIS week? How should I size and exit?"
+
+pip install streamlit pandas numpy plotly scipy
+streamlit run wave_analyzer.py
+"""
+
+# ═══════════════════════════════════════════
+#  IMPORTS
+# ═══════════════════════════════════════════
+import os
+os.environ['STREAMLIT_SERVER_FILE_WATCHER_TYPE'] = 'none'
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy import stats
+from collections import defaultdict
+import re
+import warnings
 from datetime import datetime
 
-# =========================================================
-# 🚀 V4 ULTRA+ FIXED — All bugs from evaluation resolved
-# =========================================================
-# FIXES APPLIED:
-#   1. cache_data removed (file objects can't be hashed)
-#   2. Z-score pipeline fixed (removed redundant rank step)
-#   3. total_expected count corrected to match actual flags
-#   4. Sector aliases consolidated (DRY — single source of truth)
-#   5. Early Entry / Turnaround loops VECTORIZED
-#   6. Data_Confidence vs "no penalty" contradiction resolved
-#   7. Verdict overlap priority documented & cleaned
-#   8. color_row fixed for Styler compatibility
-# =========================================================
+warnings.filterwarnings('ignore')
+np.seterr(all='ignore')
 
+# ═══════════════════════════════════════════
+#  PAGE CONFIG & STYLING
+# ═══════════════════════════════════════════
 st.set_page_config(
-    page_title="V4 ULTRA+ | Stock Analyzer",
-    page_icon="🚀",
+    page_title="WAVE Analyzer",
+    page_icon="🌊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# =========================================================
-# 🎨 STYLING
-# =========================================================
 st.markdown("""
 <style>
-    .stApp { background-color: #fafafa; }
-    .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-    .metric-box {
-        background: white; border-radius: 12px; padding: 1.5rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-        border: 1px solid #e8e8e8; text-align: center;
-    }
-    .metric-label {
-        font-size: 0.85rem; color: #888;
-        text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.5rem;
-    }
-    .metric-value { font-size: 1.8rem; font-weight: 600; color: #1a1a1a; }
-    .metric-value.green { color: #10b981; }
-    .metric-value.red { color: #ef4444; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+* { font-family: 'Inter', sans-serif; }
+.block-container { padding-top: 0.8rem; max-width: 1400px; }
 
-    section[data-testid="stSidebar"] {
-        background-color: #ffffff;
-        border-right: 1px solid #e8e8e8;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 0; background-color: #f1f5f9;
-        border-radius: 10px; padding: 4px;
-    }
-    .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 10px 20px; font-weight: 500; }
-    .stTabs [aria-selected="true"] { background-color: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+/* Header */
+.wave-header {
+    text-align: center; padding: 0.4rem 0 0.2rem 0;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    border-radius: 12px; margin-bottom: 0.8rem;
+    border: 1px solid #334155;
+}
+.wave-header h1 {
+    font-size: 1.8rem !important; font-weight: 800;
+    background: linear-gradient(90deg, #38bdf8, #818cf8, #c084fc);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin: 0; padding: 0;
+}
+.wave-header p { color: #94a3b8; font-size: 0.78rem; margin: 0; }
 
-    #MainMenu { visibility: hidden; }
-    footer { visibility: hidden; }
+/* Metrics */
+.verdict-box {
+    padding: 1rem 1.5rem; border-radius: 10px; margin: 0.8rem 0;
+    font-size: 0.95rem; font-weight: 600;
+}
+.verdict-good { background: #052e16; border: 1px solid #16a34a; color: #4ade80; }
+.verdict-mid  { background: #422006; border: 1px solid #d97706; color: #fbbf24; }
+.verdict-bad  { background: #450a0a; border: 1px solid #dc2626; color: #f87171; }
+
+.big { font-size: 2.2rem; font-weight: 800; line-height: 1; }
+.green { color: #4ade80; }
+.red { color: #f87171; }
+.amber { color: #fbbf24; }
+.blue { color: #38bdf8; }
+.muted { color: #64748b; font-size: 0.78rem; }
+.signal-stack { font-size: 0.82rem; line-height: 1.6; }
+
+/* Cards */
+.stock-card {
+    background: #0f172a; border: 1px solid #1e293b; border-radius: 10px;
+    padding: 0.8rem 1rem; margin-bottom: 0.5rem;
+}
+.stock-card:hover { border-color: #38bdf8; }
+.fresh-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 6px;
+    font-size: 0.72rem; font-weight: 700;
+}
+.fresh-new { background: #065f46; color: #6ee7b7; }
+.fresh-est { background: #1e3a5f; color: #93c5fd; }
+.fresh-aging { background: #713f12; color: #fcd34d; }
+
+/* Nav */
+div[data-testid="stHorizontalBlock"] > div[data-testid="column"] { padding: 0 0.3rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# =========================================================
-# FIX #4: SECTOR THRESHOLDS — DRY (No Duplicates)
-# Each sector defined ONCE. Aliases point to the same key.
-# =========================================================
-_SECTOR_BASE = {
-    'default': {
-        'debt_to_equity': {'danger': 1.0, 'high': 0.5, 'normal': 0.33},
-        'pe': {'danger': 100, 'high': 50, 'normal': 25},
-        'roe': {'min_good': 12, 'min_acceptable': 8},
-        'roce': {'min_good': 15, 'min_acceptable': 10},
-        'opm': {'min_good': 12, 'min_acceptable': 8},
-        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.1},
-        'rsi_sweet_spot': {'low': 40, 'high': 60},
-        'promoter_min': 25,
-    },
-    'bank': {
-        'debt_to_equity': {'danger': 15.0, 'high': 12.0, 'normal': 8.0},
-        'pe': {'danger': 50, 'high': 25, 'normal': 15},
-        'roe': {'min_good': 14, 'min_acceptable': 10},
-        'roce': {'min_good': 2, 'min_acceptable': 1},
-        'opm': {'min_good': 20, 'min_acceptable': 15},
-        'fii_accum': {'strong': 0.3, 'moderate': 0.2, 'weak': 0.1},
-        'rsi_sweet_spot': {'low': 35, 'high': 55},
-        'promoter_min': 20,
-    },
-    'nbfc': {
-        'debt_to_equity': {'danger': 10.0, 'high': 7.0, 'normal': 5.0},
-        'pe': {'danger': 60, 'high': 35, 'normal': 20},
-        'roe': {'min_good': 15, 'min_acceptable': 12},
-        'roce': {'min_good': 3, 'min_acceptable': 2},
-        'opm': {'min_good': 25, 'min_acceptable': 18},
-        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
-        'rsi_sweet_spot': {'low': 38, 'high': 58},
-        'promoter_min': 25,
-    },
-    'it': {
-        'debt_to_equity': {'danger': 1.0, 'high': 0.5, 'normal': 0.2},
-        'pe': {'danger': 80, 'high': 50, 'normal': 30},
-        'roe': {'min_good': 20, 'min_acceptable': 15},
-        'roce': {'min_good': 25, 'min_acceptable': 18},
-        'opm': {'min_good': 20, 'min_acceptable': 15},
-        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
-        'rsi_sweet_spot': {'low': 42, 'high': 62},
-        'promoter_min': 30,
-    },
-    'fmcg': {
-        'debt_to_equity': {'danger': 1.5, 'high': 0.8, 'normal': 0.3},
-        'pe': {'danger': 100, 'high': 60, 'normal': 40},
-        'roe': {'min_good': 25, 'min_acceptable': 18},
-        'roce': {'min_good': 30, 'min_acceptable': 22},
-        'opm': {'min_good': 18, 'min_acceptable': 14},
-        'fii_accum': {'strong': 0.3, 'moderate': 0.2, 'weak': 0.1},
-        'rsi_sweet_spot': {'low': 45, 'high': 65},
-        'promoter_min': 40,
-    },
-    'pharma': {
-        'debt_to_equity': {'danger': 2.0, 'high': 1.0, 'normal': 0.5},
-        'pe': {'danger': 80, 'high': 45, 'normal': 25},
-        'roe': {'min_good': 18, 'min_acceptable': 12},
-        'roce': {'min_good': 18, 'min_acceptable': 12},
-        'opm': {'min_good': 20, 'min_acceptable': 15},
-        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
-        'rsi_sweet_spot': {'low': 40, 'high': 60},
-        'promoter_min': 35,
-    },
-    'infrastructure': {
-        'debt_to_equity': {'danger': 4.0, 'high': 2.5, 'normal': 1.5},
-        'pe': {'danger': 60, 'high': 35, 'normal': 20},
-        'roe': {'min_good': 12, 'min_acceptable': 8},
-        'roce': {'min_good': 12, 'min_acceptable': 8},
-        'opm': {'min_good': 12, 'min_acceptable': 8},
-        'fii_accum': {'strong': 0.6, 'moderate': 0.35, 'weak': 0.15},
-        'rsi_sweet_spot': {'low': 38, 'high': 58},
-        'promoter_min': 30,
-    },
-    'capital_goods': {
-        'debt_to_equity': {'danger': 3.5, 'high': 2.0, 'normal': 1.2},
-        'pe': {'danger': 70, 'high': 40, 'normal': 25},
-        'roe': {'min_good': 15, 'min_acceptable': 10},
-        'roce': {'min_good': 15, 'min_acceptable': 10},
-        'opm': {'min_good': 14, 'min_acceptable': 10},
-        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
-        'rsi_sweet_spot': {'low': 40, 'high': 60},
-        'promoter_min': 30,
-    },
-    'metal': {
-        'debt_to_equity': {'danger': 3.5, 'high': 2.0, 'normal': 1.2},
-        'pe': {'danger': 30, 'high': 15, 'normal': 8},
-        'roe': {'min_good': 15, 'min_acceptable': 10},
-        'roce': {'min_good': 15, 'min_acceptable': 10},
-        'opm': {'min_good': 20, 'min_acceptable': 12},
-        'fii_accum': {'strong': 0.6, 'moderate': 0.35, 'weak': 0.15},
-        'rsi_sweet_spot': {'low': 35, 'high': 55},
-        'promoter_min': 30,
-    },
-    'power': {
-        'debt_to_equity': {'danger': 5.0, 'high': 3.0, 'normal': 2.0},
-        'pe': {'danger': 40, 'high': 20, 'normal': 12},
-        'roe': {'min_good': 12, 'min_acceptable': 8},
-        'roce': {'min_good': 10, 'min_acceptable': 7},
-        'opm': {'min_good': 25, 'min_acceptable': 18},
-        'fii_accum': {'strong': 0.4, 'moderate': 0.25, 'weak': 0.1},
-        'rsi_sweet_spot': {'low': 40, 'high': 58},
-        'promoter_min': 40,
-    },
-    'auto': {
-        'debt_to_equity': {'danger': 2.5, 'high': 1.5, 'normal': 0.8},
-        'pe': {'danger': 60, 'high': 35, 'normal': 20},
-        'roe': {'min_good': 18, 'min_acceptable': 12},
-        'roce': {'min_good': 18, 'min_acceptable': 12},
-        'opm': {'min_good': 14, 'min_acceptable': 10},
-        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
-        'rsi_sweet_spot': {'low': 40, 'high': 60},
-        'promoter_min': 35,
-    },
-    'realty': {
-        'debt_to_equity': {'danger': 4.0, 'high': 2.5, 'normal': 1.5},
-        'pe': {'danger': 50, 'high': 30, 'normal': 15},
-        'roe': {'min_good': 12, 'min_acceptable': 8},
-        'roce': {'min_good': 10, 'min_acceptable': 6},
-        'opm': {'min_good': 25, 'min_acceptable': 18},
-        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
-        'rsi_sweet_spot': {'low': 35, 'high': 55},
-        'promoter_min': 40,
-    },
-    'chemical': {
-        'debt_to_equity': {'danger': 2.5, 'high': 1.5, 'normal': 0.8},
-        'pe': {'danger': 60, 'high': 35, 'normal': 22},
-        'roe': {'min_good': 18, 'min_acceptable': 14},
-        'roce': {'min_good': 18, 'min_acceptable': 14},
-        'opm': {'min_good': 16, 'min_acceptable': 12},
-        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
-        'rsi_sweet_spot': {'low': 40, 'high': 60},
-        'promoter_min': 40,
-    },
-    'textile': {
-        'debt_to_equity': {'danger': 2.5, 'high': 1.5, 'normal': 1.0},
-        'pe': {'danger': 40, 'high': 25, 'normal': 15},
-        'roe': {'min_good': 14, 'min_acceptable': 10},
-        'roce': {'min_good': 14, 'min_acceptable': 10},
-        'opm': {'min_good': 12, 'min_acceptable': 8},
-        'fii_accum': {'strong': 0.5, 'moderate': 0.3, 'weak': 0.15},
-        'rsi_sweet_spot': {'low': 38, 'high': 58},
-        'promoter_min': 35,
-    },
+
+# ═══════════════════════════════════════════════════════════
+#  DATA ENGINE
+# ═══════════════════════════════════════════════════════════
+
+NUMERIC_COLS = [
+    'rank','master_score','position_score','volume_score','momentum_score',
+    'acceleration_score','breakout_score','rvol_score','trend_quality',
+    'price','pe','eps_current','eps_change_pct','from_low_pct','from_high_pct',
+    'ret_1d','ret_7d','ret_30d','ret_3m','ret_6m','ret_1y',
+    'rvol','vmi','money_flow_mm','position_tension','momentum_harmony',
+    'overall_market_strength'
+]
+
+SCORE_COLS = ['master_score','position_score','volume_score','momentum_score',
+              'acceleration_score','breakout_score','rvol_score','trend_quality']
+
+WAVE_WEIGHTS = {
+    'position_score': 0.27, 'volume_score': 0.23, 'momentum_score': 0.22,
+    'breakout_score': 0.18, 'rvol_score': 0.10, 'acceleration_score': 0.0
 }
 
-# Alias map — points to the canonical key. ZERO duplication.
-_SECTOR_ALIASES = {
-    'finance': 'bank', 'lending': 'bank', 'credit': 'bank', 'loan': 'bank',
-    'software': 'it', 'technology': 'it', 'tech': 'it', 'digital': 'it',
-    'internet': 'it', 'saas': 'it',
-    'consumer': 'fmcg', 'food': 'fmcg', 'beverage': 'fmcg', 'personal': 'fmcg',
-    'healthcare': 'pharma', 'drug': 'pharma', 'biotech': 'pharma', 'hospital': 'pharma',
-    'infra': 'infrastructure', 'construct': 'infrastructure',
-    'engineering': 'infrastructure', 'capital': 'infrastructure',
-    'mining': 'metal', 'steel': 'metal', 'aluminium': 'metal',
-    'copper': 'metal', 'iron': 'metal',
-    'electric': 'power', 'energy': 'power', 'utility': 'power', 'utilities': 'power',
-    'vehicle': 'auto', 'motor': 'auto', 'automobile': 'auto', 'tyre': 'auto',
-    'real estate': 'realty', 'property': 'realty', 'housing': 'realty',
-    'petrochem': 'chemical', 'specialty': 'chemical',
-    'apparel': 'textile', 'garment': 'textile', 'fabric': 'textile',
-    'financial service': 'nbfc', 'insurance': 'nbfc',
-    'capital goods': 'capital_goods', 'construction': 'infrastructure',
-}
+PATTERN_TAGS = [
+    ('CAT LEADER','cat_leader'), ('VOL EXPLOSION','vol_explosion'),
+    ('MARKET LEADER','market_leader'), ('MOMENTUM WAVE','momentum_wave'),
+    ('PREMIUM MOMENTUM','premium_momentum'), ('VELOCITY BREAKOUT','velocity_breakout'),
+    ('INSTITUTIONAL TSUNAMI','institutional_tsunami'), ('INSTITUTIONAL','institutional'),
+    ('GOLDEN CROSS','golden_cross'), ('STEALTH','stealth'),
+    ('DISTRIBUTION','distribution'), ('CAPITULATION','capitulation'),
+    ('HIGH PE','high_pe'), ('PHOENIX RISING','phoenix_rising'),
+    ('PULLBACK SUPPORT','pullback_support'), ('RANGE COMPRESS','range_compress'),
+    ('ACCELERATION','acceleration'), ('ROTATION LEADER','rotation_leader'),
+    ('GARP LEADER','garp_leader'), ('VALUE MOMENTUM','value_momentum'),
+    ('EARNINGS','earnings'), ('LIQUID LEADER','liquid_leader'),
+    ('VELOCITY SQUEEZE','velocity_squeeze'), ('RUNAWAY GAP','runaway_gap'),
+    ('PYRAMID','pyramid'), ('MOMENTUM DIVERGE','momentum_diverge'),
+    ('VACUUM','vacuum'), ('PERFECT STORM','perfect_storm'),
+    ('EXHAUSTION','exhaustion'), ('ENTROPY','entropy'),
+    ('ATOMIC DECAY','atomic_decay'), ('INFORMATION DECAY','info_decay'),
+]
 
-# Keyword → canonical sector (for fuzzy matching on Industry strings)
-_KEYWORD_MAP = {
-    'bank': 'bank', 'nbfc': 'nbfc',
-    'software': 'it', 'tech': 'it', 'digital': 'it', 'internet': 'it', 'saas': 'it',
-    'pharma': 'pharma', 'drug': 'pharma', 'biotech': 'pharma', 'hospital': 'pharma', 'health': 'pharma',
-    'fmcg': 'fmcg', 'consumer': 'fmcg', 'food': 'fmcg', 'beverage': 'fmcg', 'personal': 'fmcg',
-    'infra': 'infrastructure', 'construct': 'infrastructure', 'engineering': 'infrastructure',
-    'metal': 'metal', 'steel': 'metal', 'aluminium': 'metal', 'copper': 'metal', 'mining': 'metal',
-    'power': 'power', 'electric': 'power', 'energy': 'power', 'utility': 'power',
-    'auto': 'auto', 'vehicle': 'auto', 'motor': 'auto', 'tyre': 'auto',
-    'real': 'realty', 'property': 'realty', 'housing': 'realty',
-    'chemical': 'chemical', 'petrochem': 'chemical', 'specialty': 'chemical',
-    'textile': 'textile', 'apparel': 'textile', 'garment': 'textile', 'fabric': 'textile',
-    'capital good': 'capital_goods',
-}
+RANK_BUCKETS = [(1, 20, 'Top 20'), (21, 50, 'Top 21-50'), (51, 100, 'Top 51-100'),
+                (101, 200, '101-200'), (201, 500, '201-500'),
+                (501, 1000, '501-1000'), (1001, 9999, '1000+')]
+
+MARKET_STATES = ['STRONG_UPTREND','UPTREND','PULLBACK','ROTATION',
+                 'SIDEWAYS','BOUNCE','DOWNTREND','STRONG_DOWNTREND']
 
 
-def get_sector_thresholds(industry):
-    """Single lookup: direct → alias → keyword fuzzy → default."""
-    if not industry or pd.isna(industry):
-        return _SECTOR_BASE['default']
-
-    ind = str(industry).lower().strip()
-
-    # 1. Direct match in base
-    if ind in _SECTOR_BASE:
-        return _SECTOR_BASE[ind]
-
-    # 2. Direct match in aliases
-    if ind in _SECTOR_ALIASES:
-        return _SECTOR_BASE[_SECTOR_ALIASES[ind]]
-
-    # 3. Keyword fuzzy scan (first match wins)
-    for kw, canonical in _KEYWORD_MAP.items():
-        if kw in ind:
-            return _SECTOR_BASE[canonical]
-
-    return _SECTOR_BASE['default']
-
-
-# =========================================================
-# ONE-OFF INCOME DETECTION (unchanged logic, kept as-is)
-# =========================================================
-def detect_one_off_income(pat_growth, rev_growth, opm_current, opm_expected=None):
-    if pd.isna(pat_growth) or pd.isna(rev_growth):
-        return False, 0, "INSUFFICIENT_DATA"
-
-    suspicious = False
-    conf = 0
-    reasons = []
-
-    if pat_growth > 20 and rev_growth < pat_growth * 0.5:
-        suspicious, conf = True, conf + 40
-        reasons.append("PAT>>REV")
-    if pat_growth > 10 and rev_growth < 0:
-        suspicious, conf = True, conf + 50
-        reasons.append("PAT+REV-")
-    if pat_growth > 50 and abs(rev_growth) < 5:
-        suspicious, conf = True, conf + 35
-        reasons.append("PAT_SPIKE")
-    if opm_expected and opm_current and opm_current < opm_expected * 0.7 and pat_growth > 15:
-        suspicious, conf = True, conf + 30
-        reasons.append("OPM_WEAK")
-
-    return suspicious, min(conf, 100), (','.join(reasons) if reasons else "CLEAN")
-
-
-# =========================================================
-# DATA PROCESSING — FIX #1: removed @st.cache_data
-# File objects can't be hashed reliably by Streamlit.
-# We use st.session_state to cache manually instead.
-# =========================================================
-def process_files(uploaded_files):
-    if not uploaded_files:
-        return None
-
-    master = pd.DataFrame()
-    prog = st.progress(0)
-    status = st.empty()
-
-    for i, f in enumerate(uploaded_files):
+@st.cache_data(show_spinner=False)
+def load_weekly_csvs(uploaded_files):
+    """Parse all uploaded weekly CSVs into a unified panel."""
+    frames = []
+    file_info = []
+    for f in uploaded_files:
         try:
-            status.text(f"Processing: {f.name}")
             df = pd.read_csv(f)
-            df.columns = df.columns.str.strip()
-
-            if master.empty:
-                master = df
-            else:
-                key = 'companyId' if 'companyId' in master.columns and 'companyId' in df.columns else 'Name'
-                new_cols = [c for c in df.columns if c not in master.columns or c == key]
-                if len(new_cols) > 1:
-                    master = pd.merge(master, df[new_cols], on=key, how='outer')
+            m = re.search(r'(\d{4}-\d{2}-\d{2})', f.name)
+            if not m:
+                continue
+            week = pd.to_datetime(m.group(1))
+            df['week'] = week
+            for c in NUMERIC_COLS:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce')
+            frames.append(df)
+            file_info.append({'file': f.name, 'date': week, 'stocks': len(df)})
         except Exception as e:
-            st.warning(f"⚠️ Skipped {f.name}: {e}")
-        prog.progress((i + 1) / len(uploaded_files))
+            st.warning(f"Skipped {f.name}: {e}")
 
-    prog.empty()
-    status.empty()
+    if not frames:
+        return None, None, []
 
-    # --- Numeric coercion ---
-    non_num = {'companyId', 'Name', 'Industry', 'Sector', 'Fundamentals Source', 'Verdict'}
-    num_cols = [c for c in master.columns if c not in non_num]
-    for c in num_cols:
-        master[c] = pd.to_numeric(master[c], errors='coerce')
+    panel = pd.concat(frames, ignore_index=True)
+    panel = panel.sort_values(['ticker', 'week']).reset_index(drop=True)
+    weeks = sorted(panel['week'].unique())
+    return panel, weeks, file_info
 
-    # --- Smart NaN fill ---
-    growth_kw = ("Growth", "Change", "Returns", "Flow")
-    for c in num_cols:
-        if any(kw in c for kw in growth_kw):
-            master[c].fillna(0, inplace=True)
+
+@st.cache_data(show_spinner=False)
+def build_enriched_panel(_panel, _weeks):
+    """Add forward returns, rank deltas, entry freshness, pattern flags."""
+    panel = _panel.copy()
+    weeks = list(_weeks)
+    n_weeks = len(weeks)
+    week_idx = {w: i for i, w in enumerate(weeks)}
+
+    # ── Fast lookup tables ──
+    price_map = {}
+    rank_map = {}
+    score_map = {}
+    for _, r in panel[['ticker','week','price','rank','master_score']].iterrows():
+        key = (r['ticker'], r['week'])
+        price_map[key] = r['price']
+        rank_map[key] = r['rank']
+        score_map[key] = r['master_score']
+
+    # ── Compute per-row enrichments ──
+    fwd_cols = {1: [], 2: [], 4: [], 8: [], 12: []}
+    fwd_rank_cols = {1: [], 4: []}
+    rank_delta_1w = []
+    score_delta_1w = []
+    rank_delta_2w = []
+
+    for _, row in panel.iterrows():
+        t, w, p, rk, sc = row['ticker'], row['week'], row['price'], row['rank'], row['master_score']
+        wi = week_idx.get(w, -1)
+
+        # Forward returns
+        for fwd_n, col_list in fwd_cols.items():
+            fwd_wi = wi + fwd_n
+            if fwd_wi < n_weeks and p and p > 0:
+                fp = price_map.get((t, weeks[fwd_wi]))
+                col_list.append(((fp - p) / p * 100) if fp and fp > 0 else np.nan)
+            else:
+                col_list.append(np.nan)
+
+        # Forward rank change
+        for fwd_n, col_list in fwd_rank_cols.items():
+            fwd_wi = wi + fwd_n
+            if fwd_wi < n_weeks:
+                fr = rank_map.get((t, weeks[fwd_wi]))
+                col_list.append(rk - fr if fr else np.nan)  # +ve = rank improved
+            else:
+                col_list.append(np.nan)
+
+        # Backward deltas (vs previous weeks)
+        prev_rank = rank_map.get((t, weeks[wi - 1])) if wi > 0 else None
+        prev_score = score_map.get((t, weeks[wi - 1])) if wi > 0 else None
+        prev2_rank = rank_map.get((t, weeks[wi - 2])) if wi > 1 else None
+
+        rank_delta_1w.append((prev_rank - rk) if prev_rank is not None else 0)
+        score_delta_1w.append((sc - prev_score) if prev_score is not None else 0)
+        rank_delta_2w.append((prev2_rank - rk) if prev2_rank is not None else 0)
+
+    panel['fwd_1w'] = fwd_cols[1]
+    panel['fwd_2w'] = fwd_cols[2]
+    panel['fwd_4w'] = fwd_cols[4]
+    panel['fwd_8w'] = fwd_cols[8]
+    panel['fwd_12w'] = fwd_cols[12]
+    panel['fwd_rank_1w'] = fwd_rank_cols[1]
+    panel['fwd_rank_4w'] = fwd_rank_cols[4]
+    panel['rank_delta_1w'] = rank_delta_1w
+    panel['score_delta_1w'] = score_delta_1w
+    panel['rank_delta_2w'] = rank_delta_2w
+
+    # ── Pattern flags ──
+    for tag, key in PATTERN_TAGS:
+        panel[f'p_{key}'] = panel['patterns'].fillna('').str.contains(tag, case=False).astype(int)
+    panel['n_patterns'] = panel['patterns'].fillna('').apply(
+        lambda x: x.count('|') + 1 if x.strip() else 0
+    )
+
+    # ── Market state flags ──
+    ms = panel['market_state'].fillna('')
+    panel['is_uptrend'] = ms.isin(['UPTREND', 'STRONG_UPTREND']).astype(int)
+    panel['is_downtrend'] = ms.isin(['DOWNTREND', 'STRONG_DOWNTREND']).astype(int)
+
+    # ── Entry freshness ──
+    panel['rank_bucket'] = pd.cut(
+        panel['rank'], bins=[0, 20, 50, 100, 200, 500, 1000, 99999],
+        labels=['Top20','21-50','51-100','101-200','201-500','501-1000','1000+']
+    )
+
+    # Compute weeks_in_top100 per stock
+    weeks_in_top = []
+    prev_top100 = {}  # ticker -> consecutive count
+    for w in weeks:
+        week_tickers = set(panel[(panel['week'] == w) & (panel['rank'] <= 100)]['ticker'])
+        for t in panel[panel['week'] == w]['ticker'].unique():
+            if t in week_tickers:
+                prev_top100[t] = prev_top100.get(t, 0) + 1
+            else:
+                prev_top100[t] = 0
+
+    # Map back
+    wit_map = {}
+    for w in weeks:
+        wk_data = panel[panel['week'] == w]
+        temp_top100 = {}
+        for _, r in wk_data.iterrows():
+            t = r['ticker']
+            if t not in temp_top100:
+                # Count consecutive weeks in top 100 up to this week
+                count = 0
+                wi = week_idx[w]
+                for back in range(wi, -1, -1):
+                    rk = rank_map.get((t, weeks[back]))
+                    if rk is not None and rk <= 100:
+                        count += 1
+                    else:
+                        break
+                temp_top100[t] = count
+            wit_map[(t, w)] = temp_top100[t]
+
+    panel['weeks_in_top100'] = panel.apply(lambda r: wit_map.get((r['ticker'], r['week']), 0), axis=1)
+    panel['is_fresh_entry'] = ((panel['weeks_in_top100'] <= 2) & (panel['weeks_in_top100'] > 0)).astype(int)
+
+    return panel
+
+
+# ═══════════════════════════════════════════════════════════
+#  ANALYTICS ENGINE
+# ═══════════════════════════════════════════════════════════
+
+def compute_weekly_ic(panel, feature, fwd_col='fwd_4w'):
+    """Spearman rank IC between a feature and forward returns, per week."""
+    results = []
+    for w in sorted(panel['week'].unique()):
+        wk = panel[panel['week'] == w].dropna(subset=[feature, fwd_col])
+        if len(wk) < 50:
+            continue
+        ic, pval = stats.spearmanr(wk[feature], wk[fwd_col])
+        results.append({'week': w, 'IC': ic, 'p_value': pval, 'n': len(wk)})
+    return pd.DataFrame(results)
+
+
+def compute_quintile_analysis(panel, feature, fwd_col='fwd_4w'):
+    """Split into quintiles by feature per week, measure avg forward return."""
+    valid = panel.dropna(subset=[feature, fwd_col]).copy()
+    if len(valid) < 200:
+        return None, 0
+
+    # Ascending = True for rank (lower=better), False for scores (higher=better)
+    ascending = (feature == 'rank')
+    valid['quintile'] = valid.groupby('week')[feature].transform(
+        lambda x: pd.qcut(x.rank(method='first'), 5,
+                          labels=[5,4,3,2,1] if ascending else [1,2,3,4,5])
+    )
+    valid['quintile'] = pd.to_numeric(valid['quintile'])
+
+    qtable = valid.groupby('quintile').agg(
+        count=(fwd_col, 'count'),
+        mean_return=(fwd_col, 'mean'),
+        median_return=(fwd_col, 'median'),
+        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
+        big_win=(fwd_col, lambda x: (x > 10).mean() * 100),
+        big_loss=(fwd_col, lambda x: (x < -10).mean() * 100),
+    ).reset_index()
+
+    returns = qtable['mean_return'].values
+    mono = np.corrcoef(range(len(returns)), returns)[0, 1] if len(returns) >= 3 else 0
+    return qtable, mono
+
+
+def compute_pattern_edges(panel, fwd_col='fwd_4w'):
+    """For each pattern, compute edge vs baseline with t-test."""
+    valid = panel.dropna(subset=[fwd_col])
+    if len(valid) < 100:
+        return pd.DataFrame()
+
+    baseline_ret = valid[fwd_col].mean()
+    baseline_wr = (valid[fwd_col] > 0).mean() * 100
+
+    results = []
+    for tag, key in PATTERN_TAGS:
+        col = f'p_{key}'
+        if col not in valid.columns:
+            continue
+        with_p = valid[valid[col] == 1]
+        without_p = valid[valid[col] == 0]
+        if len(with_p) < 10:
+            continue
+
+        avg = with_p[fwd_col].mean()
+        wr = (with_p[fwd_col] > 0).mean() * 100
+        edge = avg - baseline_ret
+
+        if len(with_p) >= 10 and len(without_p) >= 10:
+            t, pval = stats.ttest_ind(with_p[fwd_col].dropna(), without_p[fwd_col].dropna(), equal_var=False)
         else:
-            master[c].fillna(master[c].median(), inplace=True)
-
-    return master
-
-
-# =========================================================
-# MARKET REGIME (unchanged logic)
-# =========================================================
-def analyze_market_regime(df):
-    r1m = df['Returns 1M'].median() if 'Returns 1M' in df.columns else 0
-    r3m = df['Returns 3M'].median() if 'Returns 3M' in df.columns else 0
-    r1y = df['Returns 1Y'].median() if 'Returns 1Y' in df.columns else 0
-
-    b1m = (df['Returns 1M'] > 0).mean() * 100 if 'Returns 1M' in df.columns else 50
-    b3m = (df['Returns 3M'] > 0).mean() * 100 if 'Returns 3M' in df.columns else 50
-
-    trend = "IMPROVING" if b1m > b3m + 10 else ("DETERIORATING" if b1m < b3m - 10 else "STABLE")
-
-    if r3m > 10 and r1y > 20 and b3m > 65:
-        regime, w, strat = "🚀 STRONG BULL", {'Momentum': .65, 'Institutional': .20, 'Quality': .10, 'Safety': .05}, "Max Momentum"
-    elif r3m > 5 and b3m > 50:
-        regime, w, strat = "📈 BULL", {'Momentum': .60, 'Institutional': .20, 'Quality': .10, 'Safety': .10}, "Momentum"
-    elif r3m < -10 or (r1m < -5 and b1m < 30):
-        regime, w, strat = "🐻 BEAR", {'Momentum': .45, 'Institutional': .20, 'Quality': .15, 'Safety': .20}, "Defensive"
-    elif r3m < -3 or b3m < 40:
-        regime, w, strat = "⚠️ CORRECTION", {'Momentum': .50, 'Institutional': .20, 'Quality': .15, 'Safety': .15}, "Cautious"
-    else:
-        regime, w, strat = "⚖️ SIDEWAYS", {'Momentum': .55, 'Institutional': .20, 'Quality': .12, 'Safety': .13}, "Selective"
-
-    if trend == "IMPROVING":
-        w['Momentum'] = min(.70, w['Momentum'] + .05)
-        w['Safety'] = max(.05, w['Safety'] - .05)
-        strat += " ↑"
-    elif trend == "DETERIORATING":
-        w['Safety'] = min(.25, w['Safety'] + .05)
-        w['Momentum'] = max(.40, w['Momentum'] - .05)
-        strat += " ↓"
-
-    total = sum(w.values())
-    w = {k: v / total for k, v in w.items()}
-
-    stats = {'r1m': r1m, 'r3m': r3m, 'r1y': r1y, 'breadth_3m': b3m,
-             'breadth_1m': b1m, 'regime_trend': trend}
-    return regime, w, strat, stats
-
-
-# =========================================================
-# FIX #2 & #3 & #5: SCORING ENGINE
-#   - Z-score: proper min-max to [0,1], NO redundant rank
-#   - total_expected matches actual flag count (33)
-#   - Early Entry + Turnaround fully VECTORIZED (no loops)
-#   - FIX #6: removed Data_Confidence multiplier
-#     → "no penalty" philosophy is now consistent
-# =========================================================
-def run_ultimate_scoring(df, base_weights):
-    n = len(df)
-
-    # ─── helpers ────────────────────────────────────────
-    def col(name, default=0):
-        """Return (Series, exists_bool). NaN filled with median or default."""
-        if name in df.columns:
-            s = df[name].copy()
-            med = s.median()
-            return s.fillna(med if not pd.isna(med) else default), True
-        return pd.Series([default] * n, index=df.index), False
-
-    def normalize(series, lower_better=False, exists=True):
-        """
-        FIX #2: Proper min-max normalisation to [0, 1].
-        Outliers capped at 2nd/98th percentile first.
-        If data doesn't exist → neutral 0.5 (no penalty).
-        """
-        if not exists:
-            return pd.Series([0.5] * n, index=df.index)
-
-        s = series.clip(lower=series.quantile(0.02), upper=series.quantile(0.98))
-        lo, hi = s.min(), s.max()
-        if hi == lo:
-            return pd.Series([0.5] * n, index=df.index)
-
-        normed = (s - lo) / (hi - lo)          # 0 → 1
-        return (1 - normed) if lower_better else normed
-
-    def weighted_sum(components):
-        """
-        Weighted average that redistributes weights among available data.
-        components = [(series, weight, exists), ...]
-        """
-        avail = [(s, w) for s, w, e in components if e]
-        if not avail:
-            return pd.Series([0.5] * n, index=df.index)
-        tw = sum(w for _, w in avail)
-        result = pd.Series(0.0, index=df.index)
-        for s, w in avail:
-            result += s * (w / tw)
-        return result
-
-    # ─── extract columns ────────────────────────────────
-    roe,  h_roe  = col('ROE', 12)
-    roce, h_roce = col('ROCE', 12)
-    opm,  h_opm  = col('OPM', 12)
-
-    pat_ttm, h_pat_ttm   = col('PAT Growth TTM', 10)
-    pat_yoy, h_pat_yoy   = col('PAT Growth YoY', 10)
-    rev_ttm, h_rev_ttm   = col('Revenue Growth TTM', 10)
-    rev_yoy, h_rev_yoy   = col('Revenue Growth YoY', 10)
-    eps_ttm, h_eps_ttm   = col('EPS Growth TTM', 10)
-    pat_qoq, h_pat_qoq   = col('PAT Growth QoQ', 0)
-    rev_qoq, h_rev_qoq   = col('Revenue Growth QoQ', 0)
-
-    pe,  h_pe  = col('Price To Earnings', 25)
-    ps,  h_ps  = col('Price To Sales', 3)
-
-    de,  h_de  = col('Debt To Equity', 0.5)
-    prom, h_prom = col('Promoter Holdings', 50)
-    fcf, h_fcf  = col('Free Cash Flow', 0)
-    ocf, h_ocf  = col('Operating Cash Flow', 0)
-    cash, h_cash = col('Cash Equivalents', 0)
-    debt, h_debt = col('Debt', 1)
-
-    rsi_w, h_rsi_w = col('RSI 14W', 50)
-    rsi_d, h_rsi_d = col('RSI 14D', 50)
-    adx_w, h_adx_w = col('ADX 14W', 25)
-    ret_1m, h_ret_1m = col('Returns 1M', 0)
-    ret_3m, h_ret_3m = col('Returns 3M', 0)
-    ret_6m, h_ret_6m = col('Returns 6M', 0)
-    ret_1y, h_ret_1y = col('Returns 1Y', 0)
-
-    fii,     h_fii     = col('FII Holdings', 5)
-    dii,     h_dii     = col('DII Holdings', 10)
-    fii_chg, h_fii_chg = col('Change In FII Holdings Latest Quarter', 0)
-    dii_chg, h_dii_chg = col('Change In DII Holdings Latest Quarter', 0)
-    prom_chg, h_prom_chg = col('Change In Promoter Holdings Latest Quarter', 0)
-    fii_chg_1y, h_fii_chg_1y = col('Change In FII Holdings 1 Year', 0)
-
-    dist_52wh, h_52wh   = col('52WH Distance', -15)
-    ret_vs_nifty, h_vs_nifty = col('Returns Vs Nifty 500 3M', 0)
-
-    has_industry = 'Industry' in df.columns
-    industry_series = df['Industry'] if has_industry else pd.Series([''] * n, index=df.index)
-
-    # ─── VECTORIZED: Momentum Acceleration ──────────────
-    if h_ret_1m and h_ret_3m:
-        mom_accel = ret_1m - ((ret_3m - ret_1m) / 2)
-        h_mom_accel = True
-    else:
-        mom_accel = pd.Series(0.0, index=df.index)
-        h_mom_accel = False
-    df['Momentum_Acceleration'] = mom_accel
-
-    # ─── VECTORIZED: RSI Velocity ────────────────────────
-    if h_rsi_w and h_rsi_d:
-        rsi_vel = rsi_w - rsi_d
-        h_rsi_vel = True
-    else:
-        rsi_vel = pd.Series(0.0, index=df.index)
-        h_rsi_vel = False
-    df['RSI_Velocity'] = rsi_vel
-
-    # ─── FIX #5: VECTORIZED Early Entry Score ───────────
-    # Build per-row sector thresholds as vectorized arrays
-    fii_strong  = industry_series.map(lambda x: get_sector_thresholds(x)['fii_accum']['strong'])
-    fii_mod     = industry_series.map(lambda x: get_sector_thresholds(x)['fii_accum']['moderate'])
-    fii_weak    = industry_series.map(lambda x: get_sector_thresholds(x)['fii_accum']['weak'])
-    rsi_lo      = industry_series.map(lambda x: get_sector_thresholds(x)['rsi_sweet_spot']['low'])
-    rsi_hi      = industry_series.map(lambda x: get_sector_thresholds(x)['rsi_sweet_spot']['high'])
-
-    ee = pd.Series(0.0, index=df.index)
-    ee_flags = pd.Series('', index=df.index)
-
-    # Signal 1: FII accumulation (sector-adjusted)
-    s1a = (fii_chg > fii_strong)
-    s1b = (fii_chg > fii_mod) & ~s1a
-    s1c = (fii_chg > fii_weak) & ~s1a & ~s1b
-    ee += s1a * 25 + s1b * 15 + s1c * 8
-    ee_flags = ee_flags.where(~s1a, ee_flags + 'FII_ACCUM,')
-    ee_flags = ee_flags.where(~s1b, ee_flags + 'FII_MOD,')
-
-    # Signal 2: FII 1Y trend
-    if h_fii_chg_1y:
-        s2 = (fii_chg_1y > 1) & (fii_chg > 0)
-        ee += s2 * 20
-        ee_flags = ee_flags.where(~s2, ee_flags + 'FII_TREND,')
-
-    # Signal 3: RSI in sweet spot (sector-adjusted)
-    s3a = (rsi_w >= rsi_lo) & (rsi_w <= rsi_hi)
-    s3b = ((rsi_w >= (rsi_lo - 5)) & (rsi_w < rsi_lo)) | ((rsi_w > rsi_hi) & (rsi_w <= (rsi_hi + 5)))
-    ee += s3a * 20 + s3b * 10
-    ee_flags = ee_flags.where(~s3a, ee_flags + 'RSI_READY,')
-
-    # Signal 4: Price hasn't run yet
-    s4a = (ret_3m >= -5) & (ret_3m <= 15)
-    s4b = (ret_3m < -5)
-    ee += s4a * 20 + s4b * 5
-    ee_flags = ee_flags.where(~s4a, ee_flags + 'NOT_EXTENDED,')
-
-    # Signal 5: Momentum acceleration positive
-    s5 = (mom_accel > 0)
-    ee += s5 * 15
-    ee_flags = ee_flags.where(~s5, ee_flags + 'MOM_BUILDING,')
-
-    df['Early_Entry_Score']   = (ee / 100).clip(0, 1)
-    df['Early_Entry_Signals'] = ee_flags.str.rstrip(',')
-
-    # ─── FIX #5: VECTORIZED Turnaround Score ─────────────
-    de_normal  = industry_series.map(lambda x: get_sector_thresholds(x)['debt_to_equity']['normal'])
-    de_high    = industry_series.map(lambda x: get_sector_thresholds(x)['debt_to_equity']['high'])
-    de_danger  = industry_series.map(lambda x: get_sector_thresholds(x)['debt_to_equity']['danger'])
-    opm_good   = industry_series.map(lambda x: get_sector_thresholds(x)['opm']['min_good'])
-    opm_accept = industry_series.map(lambda x: get_sector_thresholds(x)['opm']['min_acceptable'])
-
-    is_beaten = (ret_1y < 0) | (ret_3m < -5)
-
-    # One-off income detection (vectorised logic)
-    oneoff_high = ((pat_qoq > 10) & (rev_qoq < 0)) | \
-                  ((pat_qoq > 20) & (rev_qoq < pat_qoq * 0.5)) | \
-                  ((pat_qoq > 50) & (rev_qoq.abs() < 5))
-    oneoff_mod  = ((pat_qoq > 20) & (rev_qoq < pat_qoq * 0.5)) & ~oneoff_high
-
-    ta = pd.Series(0.0, index=df.index)
-    ta_flags = pd.Series('', index=df.index)
-    ta_warn  = pd.Series('', index=df.index)
-
-    # Penalty for one-off
-    ta -= oneoff_high * 30
-    ta -= oneoff_mod  * 10
-    ta_warn = ta_warn.where(~oneoff_high, ta_warn + 'ONE_OFF,')
-    ta_warn = ta_warn.where(~oneoff_mod,  ta_warn + 'CHECK_INCOME,')
-
-    # Signal 1: PAT improving + Revenue backing it
-    real_turn = is_beaten & (pat_qoq > pat_yoy) & (pat_qoq > 0) & (rev_qoq > 0)
-    pat_accel = is_beaten & (pat_qoq > pat_yoy) & (pat_qoq > 0) & (rev_qoq <= 0) & ~oneoff_high
-    pat_pos   = is_beaten & (pat_qoq > 0) & ~real_turn & ~pat_accel
-    ta += real_turn * 30 + pat_accel * 20 + pat_pos * 10
-    ta_flags = ta_flags.where(~real_turn, ta_flags + 'REAL_TURNAROUND,')
-    ta_flags = ta_flags.where(~pat_accel, ta_flags + 'PAT_ACCEL,')
-    ta_flags = ta_flags.where(~pat_pos,   ta_flags + 'PAT_POS_QOQ,')
-
-    # Signal 2: Revenue growing
-    rev_g2 = is_beaten & (rev_qoq > 5)
-    rev_g1 = is_beaten & (rev_qoq > 0) & ~rev_g2
-    ta += rev_g2 * 20 + rev_g1 * 10
-    ta_flags = ta_flags.where(~rev_g2, ta_flags + 'REV_GROWING,')
-
-    # Signal 3: Margin OK (sector-adjusted)
-    m_good = is_beaten & (opm > opm_good)
-    m_ok   = is_beaten & (opm > opm_accept) & ~m_good
-    ta += m_good * 15 + m_ok * 8
-    ta_flags = ta_flags.where(~m_good, ta_flags + 'MARGIN_OK,')
-
-    # Signal 4: Promoter buying during stress
-    ins_buy  = is_beaten & (prom_chg > 0.5) & (ret_3m < 0)
-    ins_pos  = is_beaten & (prom_chg > 0) & ~ins_buy
-    ta += ins_buy * 25 + ins_pos * 10
-    ta_flags = ta_flags.where(~ins_buy, ta_flags + 'INSIDER_BUY,')
-
-    # Signal 5: Debt under control (sector-adjusted)
-    d_low  = is_beaten & (de < de_normal)
-    d_ok   = is_beaten & (de < de_high) & ~d_low
-    d_bad  = is_beaten & (de > de_danger)
-    ta += d_low * 15 + d_ok * 8 - d_bad * 10
-    ta_flags = ta_flags.where(~d_low, ta_flags + 'LOW_DEBT,')
-    ta_warn  = ta_warn.where(~d_bad,  ta_warn  + 'EXCESS_DEBT,')
-
-    # Signal 6: OCF positive
-    ocf_pos = is_beaten & (ocf > 0)
-    ta += ocf_pos * 20
-    ta_flags = ta_flags.where(~ocf_pos, ta_flags + 'OCF_POS,')
-
-    # Zero out non-beaten-down stocks
-    ta = ta.where(is_beaten, 0)
-    ta_flags = ta_flags.where(is_beaten, '')
-    ta_warn  = ta_warn.where(is_beaten, '')
-
-    df['Turnaround_Score']    = (ta / 100).clip(0, 1)
-    df['Turnaround_Signals']  = ta_flags.str.rstrip(',')
-    df['Turnaround_Warnings'] = ta_warn.str.rstrip(',')
-
-    # ─── VECTORIZED Quality Gate ─────────────────────────
-    roe_min_v  = industry_series.map(lambda x: get_sector_thresholds(x)['roe']['min_acceptable'])
-    de_high_v  = industry_series.map(lambda x: get_sector_thresholds(x)['debt_to_equity']['high'])
-
-    qg  = (ocf > 0).astype(int)
-    qg += (roe > roe_min_v).astype(int)
-    qg += (de < de_high_v).astype(int)
-    qg += (pat_ttm > -30).astype(int)
-    qg += ((fii + dii) > 5).astype(int)
-    df['Quality_Gate'] = qg / 5.0
-
-    # ═══ 4-FACTOR SCORES ═════════════════════════════════
-
-    # FACTOR 1: MOMENTUM (60%)
-    rsi_adj = rsi_w.copy()
-    rsi_adj = np.where(rsi_w > 75, rsi_w * 0.7, rsi_adj)
-    rsi_adj = np.where(rsi_w < 30, rsi_w * 0.8, rsi_adj)
-
-    df['Score_Momentum'] = weighted_sum([
-        (normalize(pd.Series(rsi_adj, index=df.index), exists=h_rsi_w),  0.35, h_rsi_w),
-        (normalize(ret_3m, exists=h_ret_3m),                             0.25, h_ret_3m),
-        (normalize(dist_52wh, lower_better=True, exists=h_52wh),         0.20, h_52wh),
-        (normalize(mom_accel.clip(-30, 30), exists=h_mom_accel),         0.12, h_mom_accel),
-        (normalize(rsi_vel.clip(-20, 20), exists=h_rsi_vel),             0.08, h_rsi_vel),
-    ])
-
-    # FACTOR 2: INSTITUTIONAL (20%)
-    if h_fii_chg and h_fii_chg_1y:
-        fii_accum_s = (fii_chg + fii_chg_1y * 0.5).clip(-5, 5)
-        h_fii_accum = True
-    else:
-        fii_accum_s, h_fii_accum = fii_chg, h_fii_chg
-
-    df['Score_Institutional'] = weighted_sum([
-        (normalize(fii_accum_s, exists=h_fii_accum), 0.65, h_fii_accum),
-        (normalize(prom_chg, exists=h_prom_chg),     0.35, h_prom_chg),
-    ])
-
-    # FACTOR 3: QUALITY (10%) — ROCE only
-    df['Score_Quality'] = normalize(roce.clip(0, 50), exists=h_roce)
-
-    # FACTOR 4: SAFETY (10%)
-    df['Score_Safety'] = weighted_sum([
-        (normalize(ocf, exists=h_ocf),                          0.40, h_ocf),
-        (normalize(fcf, exists=h_fcf),                          0.35, h_fcf),
-        (normalize(de.clip(0, 5), lower_better=True, exists=h_de), 0.25, h_de),
-    ])
-
-    # ═══ FINAL SCORE (pure weighted, no confidence penalty) ═
-    df['Final_Score'] = (
-        df['Score_Momentum']    * base_weights.get('Momentum',    0.60) +
-        df['Score_Institutional'] * base_weights.get('Institutional', 0.20) +
-        df['Score_Quality']     * base_weights.get('Quality',     0.10) +
-        df['Score_Safety']      * base_weights.get('Safety',      0.10)
-    ) * 100
-    df['Final_Score'] = df['Final_Score'].clip(0, 100)
-
-    # ─── FIX #3: Data coverage count (matches actual flags = 33) ──
-    CRITICAL_COLS = [
-        'RSI 14W', 'RSI 14D', 'ADX 14W',
-        'Returns 1M', 'Returns 3M', 'Returns 6M', 'Returns 1Y',
-        '52WH Distance', 'Returns Vs Nifty 500 3M',
-        'Price To Earnings', 'Price To Sales', 'Debt To Equity',
-        'ROE', 'ROCE', 'OPM',
-        'PAT Growth TTM', 'PAT Growth YoY', 'PAT Growth QoQ',
-        'Revenue Growth TTM', 'Revenue Growth YoY', 'Revenue Growth QoQ',
-        'EPS Growth TTM',
-        'FII Holdings', 'DII Holdings', 'Promoter Holdings',
-        'Change In FII Holdings Latest Quarter',
-        'Change In FII Holdings 1 Year',
-        'Change In DII Holdings Latest Quarter',
-        'Change In Promoter Holdings Latest Quarter',
-        'Operating Cash Flow', 'Free Cash Flow',
-        'Cash Equivalents', 'Debt',
-    ]  # 33 items — matches reality
-
-    present = sum(1 for c in CRITICAL_COLS if c in df.columns)
-    df['Data_Coverage'] = f"{present}/{len(CRITICAL_COLS)}"
-
-    return df
-
-
-# =========================================================
-# FIX #7: VERDICT ENGINE — clear priority, no overlaps
-# Priority order (first match wins, documented):
-#   1. TRAP overrides (safety net — always first)
-#   2. EARLY ENTRY / ACCUMULATION
-#   3. TURNAROUND / RECOVERY
-#   4. STANDARD VERDICTS (Strong Buy → Buy → Hold → Avoid)
-# =========================================================
-def get_ultimate_verdict(row):
-    score = row['Final_Score']
-    sm = row.get('Score_Momentum', 0.5)
-    si = row.get('Score_Institutional', 0.5)
-    sq = row.get('Score_Quality', 0.5)
-    ss = row.get('Score_Safety', 0.5)
-
-    fcf_v  = row.get('Free Cash Flow', 0)
-    ocf_v  = row.get('Operating Cash Flow', 0)
-    de_v   = row.get('Debt To Equity', 0.5)
-    fii_c  = row.get('Change In FII Holdings Latest Quarter', 0)
-    prom_c = row.get('Change In Promoter Holdings Latest Quarter', 0)
-    prom_h = row.get('Promoter Holdings', 50)
-    rsi_v  = row.get('RSI 14W', 50)
-    qg     = row.get('Quality_Gate', 1.0)
-    ma     = row.get('Momentum_Acceleration', 0)
-    ee_sc  = row.get('Early_Entry_Score', 0)
-    ee_sig = row.get('Early_Entry_Signals', '')
-    ta_sc  = row.get('Turnaround_Score', 0)
-    ta_sig = row.get('Turnaround_Signals', '')
-    ta_wrn = row.get('Turnaround_Warnings', '')
-    rsi_vel = row.get('RSI_Velocity', 0)
-    industry = row.get('Industry', '')
-    debt_v = row.get('Debt', 0)
-    tot_liab = row.get('Total Liabilities', 0)
-
-    thresh = get_sector_thresholds(industry)
-    de_t = thresh['debt_to_equity']
-
-    # ── Trap probability ──────────────────────────────────
-    trap_p = 0
-    flags = []
-
-    if fcf_v < 0 and ocf_v < 0:
-        flags.append("CASH_TRAP")
-        trap_p += min(abs(fcf_v) / 500, 1) * 25
-    elif fcf_v < 0:
-        trap_p += 5
-
-    if de_v > de_t['danger']:
-        dv = debt_v if debt_v > 0 else tot_liab * 0.5
-        if dv > 0 and ocf_v < dv * 0.1:
-            flags.append("DEBT_BOMB"); trap_p += 20
+            pval = 1.0
+
+        results.append({
+            'Pattern': tag, 'key': key, 'Count': len(with_p),
+            'Avg Return %': round(avg, 2), 'Edge %': round(edge, 2),
+            'Win Rate %': round(wr, 1), 'WR Edge': round(wr - baseline_wr, 1),
+            'Big Win >10%': round((with_p[fwd_col] > 10).mean() * 100, 1),
+            'Big Loss <-10%': round((with_p[fwd_col] < -10).mean() * 100, 1),
+            'p-value': round(pval, 4),
+            'Sig': '✅' if pval < 0.10 else '❌',
+        })
+
+    return pd.DataFrame(results).sort_values('Edge %', ascending=False)
+
+
+def compute_transition_matrix(panel, horizon_weeks=4):
+    """P(stock in rank bucket A → rank bucket B after N weeks)."""
+    fwd_rank_col = f'fwd_rank_{"1w" if horizon_weeks == 1 else "4w"}'
+
+    bucket_labels = [b[2] for b in RANK_BUCKETS]
+
+    def get_bucket(rank):
+        for lo, hi, label in RANK_BUCKETS:
+            if lo <= rank <= hi:
+                return label
+        return '1000+'
+
+    valid = panel.dropna(subset=['rank']).copy()
+    weeks = sorted(valid['week'].unique())
+
+    transitions = defaultdict(lambda: defaultdict(int))
+    totals = defaultdict(int)
+
+    for _, row in valid.iterrows():
+        t, w, rk = row['ticker'], row['week'], row['rank']
+        wi = list(sorted(valid['week'].unique())).index(w) if w in weeks else -1
+
+        fwd_wi = wi + horizon_weeks
+        if fwd_wi >= len(weeks):
+            continue
+
+        # Get future rank
+        fwd_w = weeks[fwd_wi]
+        fwd_rows = valid[(valid['ticker'] == t) & (valid['week'] == fwd_w)]
+        if len(fwd_rows) == 0:
+            continue
+        fwd_rk = fwd_rows.iloc[0]['rank']
+
+        src = get_bucket(rk)
+        dst = get_bucket(fwd_rk)
+        transitions[src][dst] += 1
+        totals[src] += 1
+
+    # Build matrix
+    matrix = pd.DataFrame(0.0, index=bucket_labels, columns=bucket_labels)
+    for src in bucket_labels:
+        if totals[src] > 0:
+            for dst in bucket_labels:
+                matrix.loc[src, dst] = transitions[src][dst] / totals[src] * 100
+
+    counts = pd.Series({src: totals[src] for src in bucket_labels})
+    return matrix, counts
+
+
+def compute_survival_curve(panel, entry_threshold=50):
+    """Of stocks entering top N for the first time, what % remain after 1,2,...,K weeks?"""
+    weeks = sorted(panel['week'].unique())
+    week_idx = {w: i for i, w in enumerate(weeks)}
+
+    # Find first entry week for each stock
+    first_entry = {}
+    for w in weeks:
+        wk = panel[(panel['week'] == w) & (panel['rank'] <= entry_threshold)]
+        for t in wk['ticker'].unique():
+            if t not in first_entry:
+                first_entry[t] = w
+
+    # For each entry, check how many subsequent weeks it stays in top N
+    survival_data = defaultdict(list)
+    rank_map = panel.set_index(['ticker', 'week'])['rank'].to_dict()
+
+    for t, entry_week in first_entry.items():
+        wi = week_idx[entry_week]
+        for offset in range(0, min(16, len(weeks) - wi)):
+            future_week = weeks[wi + offset]
+            rk = rank_map.get((t, future_week))
+            survived = 1 if rk is not None and rk <= entry_threshold else 0
+            survival_data[offset].append(survived)
+
+    curve = {}
+    for offset, vals in sorted(survival_data.items()):
+        if len(vals) >= 5:
+            curve[offset] = np.mean(vals) * 100
+
+    return pd.DataFrame({'weeks_after_entry': list(curve.keys()), 'survival_%': list(curve.values())})
+
+
+def compute_market_state_edge(panel, fwd_col='fwd_4w'):
+    """Average forward return by market_state."""
+    valid = panel.dropna(subset=[fwd_col, 'market_state'])
+    if len(valid) < 100:
+        return pd.DataFrame()
+
+    results = valid.groupby('market_state').agg(
+        count=(fwd_col, 'count'),
+        avg_return=(fwd_col, 'mean'),
+        median_return=(fwd_col, 'median'),
+        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
+    ).reset_index().sort_values('avg_return', ascending=False)
+    return results
+
+
+def compute_harmony_edge(panel, fwd_col='fwd_4w'):
+    """Forward return by momentum_harmony level (0-4)."""
+    valid = panel.dropna(subset=[fwd_col, 'momentum_harmony'])
+    valid['mh'] = valid['momentum_harmony'].astype(int)
+    if len(valid) < 100:
+        return pd.DataFrame()
+
+    return valid.groupby('mh').agg(
+        count=(fwd_col, 'count'),
+        avg_return=(fwd_col, 'mean'),
+        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
+    ).reset_index().rename(columns={'mh': 'Harmony Level'})
+
+
+def compute_entry_freshness_edge(panel, fwd_col='fwd_4w'):
+    """Do fresh entries outperform established stocks?"""
+    valid = panel[(panel['rank'] <= 100)].dropna(subset=[fwd_col]).copy()
+    if len(valid) < 50:
+        return pd.DataFrame()
+
+    valid['freshness'] = valid['weeks_in_top100'].apply(
+        lambda x: '🆕 Fresh (1-2 wks)' if x <= 2 else
+                  '📊 Established (3-6 wks)' if x <= 6 else
+                  '⏳ Aging (7+ wks)')
+
+    return valid.groupby('freshness').agg(
+        count=(fwd_col, 'count'),
+        avg_return=(fwd_col, 'mean'),
+        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
+    ).reset_index().sort_values('avg_return', ascending=False)
+
+
+def compute_composite_entry_score(panel, weeks, pattern_edge_df, ic_data, fwd_col='fwd_4w'):
+    """
+    Data-driven composite score for latest week.
+    Weights derived from IC analysis, pattern bonuses from actual edges.
+    """
+    latest_week = max(weeks)
+    latest = panel[panel['week'] == latest_week].copy()
+    if len(latest) == 0:
+        return latest
+
+    # ── Factor weights from IC ──
+    factor_ics = {}
+    for feat in SCORE_COLS:
+        ic_df = ic_data.get(feat)
+        if ic_df is not None and len(ic_df) > 0:
+            factor_ics[feat] = max(0, ic_df['IC'].median())  # Only positive IC
         else:
-            flags.append("EXCESS_DEBT"); trap_p += 12
-    elif de_v > de_t['high']:
-        flags.append("HIGH_DEBT"); trap_p += 5
+            factor_ics[feat] = 0
 
-    if ocf_v < 0 and de_v > de_t['normal'] and "DEBT_BOMB" not in flags:
-        flags.append("DEBT_STRESS"); trap_p += 12
+    total_ic = sum(factor_ics.values())
+    if total_ic > 0:
+        ic_weights = {k: v / total_ic for k, v in factor_ics.items()}
+    else:
+        # Fallback to WAVE DETECTION weights
+        ic_weights = {k: WAVE_WEIGHTS.get(k, 0.05) for k in SCORE_COLS}
+        tot = sum(ic_weights.values())
+        ic_weights = {k: v / tot for k, v in ic_weights.items()}
 
-    if 'ONE_OFF' in ta_wrn:
-        flags.append("ONE_OFF_INCOME"); trap_p += 15
-    elif 'CHECK_INCOME' in ta_wrn:
-        trap_p += 5
+    # Weighted score (0-100)
+    latest['composite'] = sum(
+        latest[feat].fillna(0) * w for feat, w in ic_weights.items()
+    )
 
-    if prom_c < -3:
-        flags.append("PROMOTER_EXIT"); trap_p += min(abs(prom_c) / 5, 1) * 25
-    elif prom_c < -1.5:
-        trap_p += 8
+    # ── Pattern bonus (from actual edges) ──
+    if len(pattern_edge_df) > 0:
+        sig_patterns = pattern_edge_df[pattern_edge_df['p-value'] < 0.15]
+        bonus = pd.Series(0.0, index=latest.index)
+        for _, pr in sig_patterns.iterrows():
+            col = f"p_{pr['key']}"
+            if col in latest.columns:
+                edge_bonus = np.clip(pr['Edge %'] * 0.5, -3, 3)
+                bonus += latest[col] * edge_bonus
+        latest['composite'] += np.clip(bonus, -10, 10)
 
-    if prom_h < 25:
-        flags.append("LOW_SKIN"); trap_p += 10
+    # ── Entry freshness bonus ──
+    latest['composite'] += latest['is_fresh_entry'] * 3
+    latest.loc[latest['weeks_in_top100'] > 8, 'composite'] -= 2
 
-    if fii_c < -2 and sm > 0.5:
-        flags.append("FII_EXITING"); trap_p += 15
-    elif fii_c < -1:
-        trap_p += 5
+    # ── Rank velocity bonus ──
+    rv = latest['rank_delta_1w'].fillna(0)
+    latest['composite'] += np.clip(rv / 100, -3, 5)
 
-    if rsi_v > 75 and sq < 0.4:
-        flags.append("OVERBOUGHT"); trap_p += 12
-    elif rsi_v > 80:
-        trap_p += 8
+    # ── Uptrend bonus ──
+    latest['composite'] += latest['is_uptrend'] * 2
+    latest['composite'] -= latest['is_downtrend'] * 3
 
-    if ma < -5 and sm > 0.5:
-        flags.append("MOM_FADING"); trap_p += 8
+    # Normalize to 0-100
+    cmin, cmax = latest['composite'].min(), latest['composite'].max()
+    if cmax > cmin:
+        latest['composite'] = ((latest['composite'] - cmin) / (cmax - cmin) * 100).round(1)
+    else:
+        latest['composite'] = 50.0
 
-    if qg < 0.4:
-        trap_p += (1 - qg) * 15
+    # Percentile rank
+    latest['composite_pctile'] = latest['composite'].rank(pct=True) * 100
 
-    trap_p = min(trap_p, 100)
+    # Confidence tier
+    latest['confidence'] = latest.apply(lambda r: (
+        '🟢 HIGH' if r['composite_pctile'] >= 90 and r.get('is_uptrend', 0) == 1 else
+        '🟢 HIGH' if r['composite_pctile'] >= 95 else
+        '🟡 MEDIUM' if r['composite_pctile'] >= 75 else
+        '🟠 LOW' if r['composite_pctile'] >= 50 else
+        '🔴 AVOID'
+    ), axis=1)
 
-    # ── PRIORITY 1: TRAP OVERRIDES ────────────────────────
-    if "CASH_TRAP" in flags and "DEBT_BOMB" in flags:
-        return "🚨 DEATH SPIRAL", "trap", trap_p
-    if "CASH_TRAP" in flags and score > 60 and sm > 0.6:
-        return "🚨 PUMP & DUMP", "trap", trap_p
-    if "PROMOTER_EXIT" in flags:
-        return "🚨 INSIDER EXIT", "trap", trap_p
-    if "FII_EXITING" in flags and "CASH_TRAP" in flags:
-        return "🚨 SMART EXIT", "trap", trap_p
-    if trap_p >= 60:
-        return f"⚠️ RISKY ({trap_p:.0f}%)", "trap", trap_p
-    if len(flags) >= 3:
-        return f"⚠️ RISKY ({flags[0]})", "trap", trap_p
+    # Freshness label
+    latest['freshness_label'] = latest['weeks_in_top100'].apply(
+        lambda x: '🆕 NEW' if 0 < x <= 2 else '📊 ESTAB' if x <= 6 else '⏳ AGING' if x > 6 else '—'
+    )
 
-    # ── PRIORITY 2: EARLY ENTRY ───────────────────────────
-    sig_count = len([s for s in ee_sig.split(',') if s]) if ee_sig else 0
-    if ee_sc >= 0.6 and trap_p < 25 and sq >= 0.4 and sig_count >= 3:
-        return "🎯 EARLY ENTRY", "early-entry", trap_p
-    if ee_sc >= 0.45 and 'FII_ACCUM' in ee_sig and trap_p < 30:
-        return "🔍 ACCUMULATION", "accumulation", trap_p
-
-    # ── PRIORITY 3: TURNAROUND ────────────────────────────
-    has_one_off = 'ONE_OFF' in ta_wrn or 'CHECK_INCOME' in ta_wrn
-    if ta_sc >= 0.6 and trap_p < 40 and not has_one_off:
-        if 'REAL_TURNAROUND' in ta_sig:
-            return "🔄 TURNAROUND ✓", "turnaround", trap_p
-        if 'INSIDER_BUY' in ta_sig:
-            return "🔄 TURNAROUND", "turnaround", trap_p
-        if 'PAT_ACCEL' in ta_sig and 'REV_GROWING' in ta_sig:
-            return "📊 RECOVERY", "turnaround", trap_p
-    if ta_sc >= 0.5 and has_one_off and trap_p < 50 and 'INSIDER_BUY' in ta_sig:
-        return "🔄 TURNAROUND ⚠️", "turnaround", trap_p
-    if ta_sc >= 0.4 and 'OCF_POS' in ta_sig and trap_p < 35 and not has_one_off:
-        return "🌱 IMPROVING", "turnaround", trap_p
-
-    # ── PRIORITY 4: STANDARD VERDICTS ────────────────────
-    vel_bonus = rsi_vel > 5 and ma > 0
-    flag_tag  = f" ⚡{flags[0]}" if len(flags) == 1 else ""
-    trap_tag  = f" ({trap_p:.0f}%)" if trap_p >= 20 else ""
-
-    if score >= 85 and trap_p < 20 and len(flags) == 0:
-        return "💎 STRONG BUY", "strong-buy", trap_p
-    if score >= 80 and vel_bonus and trap_p < 20 and len(flags) == 0:
-        return "💎 STRONG BUY ↗", "strong-buy", trap_p
-    if score >= 70 and trap_p < 40 and len(flags) <= 1:
-        return f"📈 BUY{flag_tag}", "buy", trap_p
-    if score >= 50 and trap_p < 50:
-        return f"⏸️ HOLD{trap_tag}", "hold", trap_p
-    if score >= 30:
-        return f"⚠️ RISKY{trap_tag}", "trap", trap_p
-
-    return "❌ AVOID", "avoid", trap_p
+    return latest.sort_values('composite', ascending=False)
 
 
-# =========================================================
-# 📊 MAIN DASHBOARD
-# =========================================================
-def main():
-    st.markdown("""
-    <div style='text-align:center; padding:1rem 0 1.5rem 0;'>
-        <h1 style='margin:0; font-weight:700; color:#1a1a2e;'>V4 ULTRA+</h1>
-        <p style='color:#666; margin:0.3rem 0 0 0; font-size:0.95rem;'>
-            4-Factor Pure Quant • Early Entry • Turnaround Finder • Sector-Aware
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+def walk_forward_backtest(panel, weeks, top_n=20, rebalance=1, min_score=0, fwd_col='fwd_4w'):
+    """Walk-forward: each period picks top-N using ONLY past + current data."""
+    results = []
+    fwd_weeks = int(fwd_col.replace('fwd_', '').replace('w', ''))
 
-    # ── Sidebar ───────────────────────────────────────────
-    with st.sidebar:
-        st.markdown("### 📂 Upload Data")
-        uploaded_files = st.file_uploader(
-            "CSV Files", accept_multiple_files=True, type=['csv'],
-            label_visibility="collapsed"
-        )
-        if uploaded_files:
-            st.success(f"✓ {len(uploaded_files)} files loaded")
+    for i in range(0, len(weeks) - fwd_weeks):
+        w = weeks[i]
+        wk = panel[panel['week'] == w].copy()
+        if min_score > 0:
+            wk = wk[wk['master_score'] >= min_score]
+
+        wk_valid = wk.dropna(subset=[fwd_col])
+        if len(wk_valid) < top_n * 2:
+            continue
+
+        top = wk_valid.nsmallest(top_n, 'rank')
+        bottom = wk_valid.nlargest(top_n, 'rank')
+        universe = wk_valid
+
+        results.append({
+            'week': w,
+            'top_avg': top[fwd_col].mean(),
+            'top_median': top[fwd_col].median(),
+            'top_wr': (top[fwd_col] > 0).mean() * 100,
+            'bottom_avg': bottom[fwd_col].mean(),
+            'bottom_wr': (bottom[fwd_col] > 0).mean() * 100,
+            'universe_avg': universe[fwd_col].mean(),
+            'spread': top[fwd_col].mean() - bottom[fwd_col].mean(),
+            'top_tickers': ', '.join(top['ticker'].head(5).tolist()),
+        })
+
+    return pd.DataFrame(results)
+
+
+def get_sector_rotation(panel, weeks, top_n=100):
+    """% of top-N stocks from each sector, per week."""
+    records = []
+    for w in weeks:
+        wk = panel[(panel['week'] == w) & (panel['rank'] <= top_n)]
+        total = len(wk)
+        if total == 0:
+            continue
+        for sector, count in wk['sector'].value_counts().items():
+            records.append({'week': w, 'sector': sector, 'pct': count / total * 100, 'count': count})
+    return pd.DataFrame(records)
+
+
+# ═══════════════════════════════════════════════════════════
+#  SIDEBAR & NAVIGATION
+# ═══════════════════════════════════════════════════════════
+
+with st.sidebar:
+    st.markdown("# 🌊 WAVE Analyzer")
+    st.caption("System Intelligence Engine")
+    st.markdown("---")
+
+    uploaded_files = st.file_uploader(
+        "📁 Upload Weekly CSVs",
+        type=['csv'], accept_multiple_files=True,
+        help="Upload your Stocks_Weekly_*.csv files (5+ recommended)"
+    )
+
+    if uploaded_files:
+        st.success(f"✅ {len(uploaded_files)} files")
 
         st.markdown("---")
         st.markdown("### ⚙️ Settings")
-        show_all = st.checkbox("Show Factor Scores", value=False)
-        top_n   = st.slider("Display Top N", 10, 100, 30)
+
+        horizon = st.radio("⏱️ Forward Horizon", ['1 Week','2 Weeks','4 Weeks','8 Weeks','12 Weeks'],
+                           index=2, horizontal=True)
+        fwd_col = {'1 Week':'fwd_1w','2 Weeks':'fwd_2w','4 Weeks':'fwd_4w',
+                    '8 Weeks':'fwd_8w','12 Weeks':'fwd_12w'}[horizon]
+
+        top_n = st.slider("Top N for strategies", 5, 50, 20)
 
         st.markdown("---")
-        st.markdown("### 🎯 4-Factor Model")
-        st.markdown("""
-        | Factor | Weight | Key Signals |
-        |--------|--------|-------------|
-        | Momentum | 60% | RSI, Ret3M, 52WH, Velocity |
-        | Institutional | 20% | FII Trend, Promoter |
-        | Quality | 10% | ROCE |
-        | Safety | 10% | OCF, FCF, D/E |
-        """)
+        st.markdown("### 🔍 Filters")
+        min_score_filter = st.slider("Min Master Score", 0, 80, 0, 5)
+        max_rank_filter = st.slider("Max Rank", 50, 2200, 2200, 50)
 
-        with st.expander("🎯 Early Entry Detection"):
-            st.markdown("FII accumulating + RSI building + price hasn't run yet. Thresholds auto-adjust by sector.")
-        with st.expander("🔄 Turnaround Detection"):
-            st.markdown("PAT + Revenue both growing = REAL turnaround. One-off income detection flags fake recoveries.")
-        with st.expander("🏭 Sector Thresholds"):
-            st.markdown("Banks D/E normal=8, danger=15 | IT D/E normal=0.2, danger=1 | Metals D/E normal=1.2, danger=3.5")
-        with st.expander("🛡️ Trap Types"):
-            st.markdown("DEATH SPIRAL | PUMP & DUMP | INSIDER EXIT | ONE_OFF_INCOME | EXCESS_DEBT")
+        cat_filter = st.multiselect("Category", ['Mega Cap','Large Cap','Mid Cap','Small Cap','Micro Cap'])
+        sector_input = st.text_input("Sector contains", "")
 
-    # ── No data state ─────────────────────────────────────
-    if not uploaded_files:
-        st.markdown("""
-        <div style='text-align:center; padding:3rem; background:#f8f9fa; border-radius:12px; margin:2rem 0;'>
-            <h3 style='color:#333;'>🚀 Upload your CSV files in the sidebar to begin</h3>
-            <p style='color:#666;'>Supports 9-file Screener.in export format</p>
-        </div>
-        """, unsafe_allow_html=True)
-        return
 
-    # ── Manual session-state cache (FIX #1) ───────────────
-    file_key = str([(f.name, f.size) for f in uploaded_files])
-    if 'cached_key' not in st.session_state or st.session_state['cached_key'] != file_key:
-        st.session_state['cached_df']  = process_files(uploaded_files)
-        st.session_state['cached_key'] = file_key
+# ═══════════════════════════════════════════════════════════
+#  MAIN APP
+# ═══════════════════════════════════════════════════════════
 
-    df = st.session_state['cached_df']
-    if df is None or df.empty:
-        st.error("❌ No valid data found.")
-        return
+# Header
+st.markdown("""
+<div class="wave-header">
+    <h1>🌊 WAVE Analyzer</h1>
+    <p>System Intelligence Engine — Does your scoring system predict future gains?</p>
+</div>
+""", unsafe_allow_html=True)
 
-    # ── Market Regime ─────────────────────────────────────
-    regime, weights, strategy, stats = analyze_market_regime(df)
 
-    st.markdown(f"""
-    <div style='display:grid; grid-template-columns:repeat(4,1fr); gap:1rem; margin:0.5rem 0 1.5rem 0;'>
-        <div class='metric-box'><div class='metric-label'>Regime</div><div class='metric-value'>{regime}</div></div>
-        <div class='metric-box'><div class='metric-label'>Strategy</div><div class='metric-value' style='font-size:1rem;'>{strategy}</div></div>
-        <div class='metric-box'><div class='metric-label'>Stocks</div><div class='metric-value'>{len(df):,}</div></div>
-        <div class='metric-box'><div class='metric-label'>Breadth 3M</div>
-            <div class='metric-value' style='color:{"#10b981" if stats["breadth_3m"]>50 else "#ef4444"}'>{stats["breadth_3m"]:.0f}%</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+if not uploaded_files:
+    st.markdown("---")
+    st.markdown("""
+    ## How to Use
 
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### 📊 Live Weights")
-        for f, w in weights.items():
-            st.markdown(f"**{f}**: {w*100:.0f}%")
-            st.progress(w)
+    **1.** Upload your `Stocks_Weekly_*.csv` files (sidebar)
+    **2.** Explore 6 pages of temporal intelligence
 
-    # ── Score + Verdict ───────────────────────────────────
-    df = run_ultimate_scoring(df, weights)
+    | Page | Purpose |
+    |------|---------|
+    | **📊 System Health** | Does your master_score ACTUALLY predict gains? IC analysis proves it. |
+    | **⚡ Signal Lab** | Which patterns/states have real statistical edge? |
+    | **🎯 This Week's Picks** | Data-driven stock picks with confidence tiers |
+    | **🔄 Rank Dynamics** | Transition matrix — where do top stocks end up? |
+    | **🔬 Stock X-Ray** | Any stock's full weekly journey |
+    | **🧪 Backtest Lab** | Walk-forward proof — would this have worked? |
 
-    verdicts = df.apply(get_ultimate_verdict, axis=1)
-    df['Verdict']          = verdicts.apply(lambda x: x[0])
-    df['Verdict_Class']    = verdicts.apply(lambda x: x[1])
-    df['Trap_Probability'] = verdicts.apply(lambda x: x[2])
+    ---
 
-    # Sort & Rank
-    df = df.sort_values('Final_Score', ascending=False).reset_index(drop=True)
-    df.insert(0, 'Rank', range(1, len(df) + 1))
+    **Why this exists:** Your WAVE DETECTION system scores 2100+ stocks brilliantly at each point in time.
+    But it has **zero temporal memory** — it doesn't know if a stock just entered the top ranks (strong signal)
+    or has been there for 12 weeks (potentially exhausted). This app adds the **time dimension**.
 
-    # ── TABS ──────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Rankings", "🔍 Scanner", "📈 Charts", "📥 Export"])
+    **Minimum:** 3 weekly CSVs &nbsp;|&nbsp; **Recommended:** 10+ &nbsp;|&nbsp; **Best:** 23+ weeks
 
-    # ════════════════════════════════════════════════════════
-    # TAB 1: RANKINGS
-    # ════════════════════════════════════════════════════════
-    with tab1:
-        verdict_options = df['Verdict'].unique().tolist()
-        buy_defaults    = [v for v in verdict_options if 'BUY' in v or 'ENTRY' in v or 'TURN' in v]
-        verdict_filter  = st.multiselect("Filter by Verdict", options=verdict_options,
-                                         default=buy_defaults if buy_defaults else None)
+    ```
+    pip install streamlit pandas numpy plotly scipy
+    streamlit run wave_analyzer.py
+    ```
+    """)
+    st.stop()
 
-        filtered = df[df['Verdict'].isin(verdict_filter)] if verdict_filter else df.copy()
+if len(uploaded_files) < 3:
+    st.warning("Upload at least 3 weekly CSV files for meaningful analysis.")
+    st.stop()
 
-        # Columns to show
-        base  = ['Rank', 'Name', 'Verdict', 'Final_Score', 'Trap_Probability']
-        price = ['Close Price', 'Price To Earnings']
-        fund  = ['ROCE', 'Debt To Equity', 'Free Cash Flow']
-        scores = ['Score_Momentum', 'Score_Institutional', 'Score_Quality', 'Score_Safety']
-        detect = ['Early_Entry_Score', 'Turnaround_Score', 'RSI_Velocity',
-                  'Early_Entry_Signals', 'Turnaround_Signals', 'Turnaround_Warnings', 'Industry']
 
-        if show_all:
-            cols = base + scores + detect
+# ── Load & Process ──
+with st.spinner("Loading weekly snapshots..."):
+    panel, weeks, file_info = load_weekly_csvs(uploaded_files)
+
+if panel is None:
+    st.error("Could not parse any CSV files. Check file format.")
+    st.stop()
+
+with st.spinner("Computing forward returns & enrichments..."):
+    panel = build_enriched_panel(panel, weeks)
+
+latest_week = max(weeks)
+n_weeks = len(weeks)
+
+# ── Pre-compute analytics (cached internally) ──
+with st.spinner("Running analytics..."):
+    # IC for all score columns
+    ic_data = {}
+    for feat in SCORE_COLS:
+        ic_data[feat] = compute_weekly_ic(panel, feat, fwd_col)
+
+    # Pattern edges
+    pattern_edges = compute_pattern_edges(panel, fwd_col)
+
+    # Composite entry score for latest week
+    latest_scored = compute_composite_entry_score(panel, weeks, pattern_edges, ic_data, fwd_col)
+
+
+# ═══════════════════════════════════════════════════════════
+#  NAVIGATION
+# ═══════════════════════════════════════════════════════════
+
+page = st.radio(
+    "nav", ["📊 System Health", "⚡ Signal Lab", "🎯 This Week's Picks",
+            "🔄 Rank Dynamics", "🔬 Stock X-Ray", "🧪 Backtest Lab"],
+    horizontal=True, label_visibility="collapsed"
+)
+
+# Quick stats bar
+c1, c2, c3, c4, c5 = st.columns(5)
+with c1:
+    st.metric("Weeks", n_weeks)
+with c2:
+    n_stocks = panel[panel['week'] == latest_week]['ticker'].nunique()
+    st.metric("Stocks", f"{n_stocks:,}")
+with c3:
+    st.metric("Range", f"{weeks[0].strftime('%b %d')} → {weeks[-1].strftime('%b %d, %Y')}")
+with c4:
+    avg_mkt = panel[panel['week'] == latest_week]['overall_market_strength'].mean()
+    st.metric("Mkt Strength", f"{avg_mkt:.1f}")
+with c5:
+    st.metric("Horizon", horizon)
+
+st.markdown("---")
+
+
+# ═══════════════════════════════════════════════════════════
+#  PAGE 1: SYSTEM HEALTH
+# ═══════════════════════════════════════════════════════════
+if page == "📊 System Health":
+    st.markdown(f"## 📊 System Health — Does Your Scoring Predict {horizon} Gains?")
+
+    # ── Master Score IC ──
+    ms_ic = ic_data.get('master_score', pd.DataFrame())
+
+    if len(ms_ic) > 0:
+        median_ic = ms_ic['IC'].median()
+        pct_positive = (ms_ic['IC'] > 0).mean() * 100
+        t_stat, t_pval = stats.ttest_1samp(ms_ic['IC'].dropna(), 0)
+
+        # Verdict
+        if median_ic > 0.05 and pct_positive > 60:
+            verdict_class = 'verdict-good'
+            verdict_text = f"✅ SYSTEM WORKS — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks (p={t_pval:.4f}). Your master_score reliably predicts {horizon} forward returns."
+        elif median_ic > 0.02 and pct_positive > 50:
+            verdict_class = 'verdict-mid'
+            verdict_text = f"⚠️ MODERATE SIGNAL — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks. Signal exists but is noisy. More data will clarify."
         else:
-            cols = base + price + fund
+            verdict_class = 'verdict-bad'
+            verdict_text = f"❌ WEAK/NO SIGNAL — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks. master_score doesn't reliably predict {horizon} returns at this data volume."
 
-        cols = [c for c in cols if c in filtered.columns]
+        st.markdown(f'<div class="verdict-box {verdict_class}">{verdict_text}</div>', unsafe_allow_html=True)
 
-        # ── FIX #8: color_row — works correctly with Styler ──
-        # Styler.apply(axis=1) passes a Series; use .name to get index
-        verdict_color_map = {
-            'strong-buy':    'background-color: rgba(16,185,129,0.15)',
-            'buy':           'background-color: rgba(59,130,246,0.12)',
-            'early-entry':   'background-color: rgba(255,193,7,0.18)',
-            'accumulation':  'background-color: rgba(255,152,0,0.15)',
-            'turnaround':    'background-color: rgba(156,39,176,0.15)',
-            'hold':          'background-color: rgba(245,158,11,0.10)',
-            'trap':          'background-color: rgba(239,68,68,0.15)',
-            'avoid':         'background-color: rgba(239,68,68,0.08)',
-        }
+        # IC chart
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            fig = go.Figure()
+            colors = ['#4ade80' if x > 0 else '#f87171' for x in ms_ic['IC']]
+            fig.add_trace(go.Bar(x=ms_ic['week'], y=ms_ic['IC'], marker_color=colors, name='Weekly IC'))
+            fig.add_hline(y=median_ic, line_dash="dash", line_color="#38bdf8",
+                         annotation_text=f"Median: {median_ic:.4f}")
+            fig.add_hline(y=0, line_color="#475569")
+            fig.update_layout(title=f'master_score IC vs {horizon} Forward Return (per week)',
+                             height=350, template='plotly_dark', yaxis_title='Information Coefficient',
+                             margin=dict(t=40, b=30))
+            st.plotly_chart(fig, use_container_width=True)
 
-        def color_row(row):
-            # row is a Series when axis=1; row.name = the DataFrame index
-            vc = filtered.loc[row.name, 'Verdict_Class'] if row.name in filtered.index else 'hold'
-            color = verdict_color_map.get(vc, '')
-            return [color] * len(row)
+        with col2:
+            st.markdown("### IC Summary")
+            st.metric("Median IC", f"{median_ic:.4f}")
+            st.metric("Mean IC", f"{ms_ic['IC'].mean():.4f}")
+            st.metric("% Weeks Positive", f"{pct_positive:.0f}%")
+            st.metric("t-statistic", f"{t_stat:.2f}")
+            st.metric("p-value", f"{t_pval:.4f}")
+            st.caption("IC > 0.03 = signal exists")
+            st.caption("IC > 0.05 = strong signal")
+            st.caption("p-value < 0.05 = statistically significant")
 
-        display_df = filtered[cols].head(top_n)
+    st.markdown("---")
 
-        styler = display_df.style.apply(color_row, axis=1)
+    # ── Factor Decomposition ──
+    st.markdown("### 🔍 Factor IC Decomposition — Which Sub-Scores Carry the Edge?")
+    st.caption("Compares each of your 7 component scores. WAVE DETECTION weights: Position 27%, Volume 23%, Momentum 22%, Breakout 18%, RVOL 10%")
 
-        # Format numeric columns safely
-        fmt_map = {}
-        if 'Final_Score' in cols:        fmt_map['Final_Score']        = '{:.1f}'
-        if 'Trap_Probability' in cols:   fmt_map['Trap_Probability']   = '{:.0f}%'
-        for sc in scores:
-            if sc in cols: fmt_map[sc] = '{:.2f}'
-        if 'Early_Entry_Score' in cols:  fmt_map['Early_Entry_Score']  = '{:.2f}'
-        if 'Turnaround_Score' in cols:   fmt_map['Turnaround_Score']   = '{:.2f}'
-        if 'Close Price' in cols:        fmt_map['Close Price']        = '₹{:.2f}'
-        if 'Price To Earnings' in cols:  fmt_map['Price To Earnings']  = '{:.1f}'
-        if 'ROCE' in cols:               fmt_map['ROCE']               = '{:.1f}%'
-        if 'Debt To Equity' in cols:     fmt_map['Debt To Equity']     = '{:.2f}'
+    factor_summary = []
+    for feat in SCORE_COLS:
+        ic_df = ic_data.get(feat, pd.DataFrame())
+        if len(ic_df) > 0:
+            med_ic = ic_df['IC'].median()
+            wave_w = WAVE_WEIGHTS.get(feat, 0)
+            factor_summary.append({
+                'Factor': feat.replace('_score','').replace('_',' ').title(),
+                'Median IC': round(med_ic, 4),
+                'Mean IC': round(ic_df['IC'].mean(), 4),
+                '% Positive': round((ic_df['IC'] > 0).mean() * 100, 0),
+                'Current Weight': f"{wave_w:.0%}",
+                'IC Suggests': '⬆️ Increase' if med_ic > 0.04 and wave_w < 0.25 else
+                               '⬇️ Decrease' if med_ic < 0.01 and wave_w > 0.10 else
+                               '✅ OK',
+            })
 
-        styler = styler.format(fmt_map, na_rep='—')
-        st.dataframe(styler, height=600, use_container_width=True)
+    if factor_summary:
+        fsum = pd.DataFrame(factor_summary).sort_values('Median IC', ascending=False)
 
-        # Quick stats row
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("💎 Strong Buy",  len(df[df['Verdict_Class'] == 'strong-buy']))
-        c2.metric("📈 Buy",         len(df[df['Verdict_Class'] == 'buy']))
-        c3.metric("🎯 Early Entry", len(df[df['Verdict_Class'].isin(['early-entry','accumulation'])]))
-        c4.metric("🔄 Turnaround",  len(df[df['Verdict_Class'] == 'turnaround']))
-        c5.metric("⚠️ Risky/Trap",  len(df[df['Verdict_Class'] == 'trap']))
-        c6.metric("⏸️ Hold",        len(df[df['Verdict_Class'] == 'hold']))
+        fig = px.bar(fsum, x='Factor', y='Median IC', color='Median IC',
+                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
+                     title='Median IC by Factor (higher = more predictive)',
+                     hover_data=['% Positive','Current Weight'])
+        fig.add_hline(y=0, line_color="#475569")
+        fig.update_layout(height=350, template='plotly_dark', xaxis_tickangle=-30,
+                         margin=dict(t=40, b=30))
+        st.plotly_chart(fig, use_container_width=True)
 
-    # ════════════════════════════════════════════════════════
-    # TAB 2: CUSTOM SCANNER
-    # ════════════════════════════════════════════════════════
-    with tab2:
-        st.markdown("#### 🔍 Custom Scanner")
+        st.dataframe(fsum.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+        # Optimal weights suggestion
+        positive_factors = {row['Factor']: max(0, row['Median IC']) for _, row in fsum.iterrows()}
+        total_pos = sum(positive_factors.values())
+        if total_pos > 0:
+            suggested = {k: round(v / total_pos * 100) for k, v in positive_factors.items()}
+            st.markdown("#### 💡 Suggested Optimal Weights (based on IC)")
+            cols = st.columns(len(suggested))
+            for i, (k, v) in enumerate(sorted(suggested.items(), key=lambda x: -x[1])):
+                with cols[i]:
+                    st.metric(k, f"{v}%")
+
+    st.markdown("---")
+
+    # ── Quintile Spread ──
+    st.markdown("### 📊 Quintile Analysis — Top vs Bottom")
+    st.caption("All stocks split into 5 equal groups by master_score each week. Q5 = highest scores, Q1 = lowest.")
+
+    qt, mono = compute_quintile_analysis(panel, 'master_score', fwd_col)
+    if qt is not None:
+        col1, col2 = st.columns(2)
+        with col1:
+            fig = px.bar(qt, x='quintile', y='mean_return', color='mean_return',
+                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
+                         title=f'Average {horizon} Forward Return by Score Quintile',
+                         labels={'quintile': 'Quintile (1=worst, 5=best)', 'mean_return': 'Avg Return %'})
+            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            fig = px.bar(qt, x='quintile', y='win_rate', color='win_rate',
+                         color_continuous_scale='RdYlGn', color_continuous_midpoint=50,
+                         title='Win Rate by Quintile',
+                         labels={'quintile': 'Quintile', 'win_rate': 'Win Rate %'})
+            fig.add_hline(y=50, line_dash="dash", line_color="#94a3b8")
+            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.metric("Monotonicity Score", f"{mono:.3f}",
+                  help="1.0 = quintiles perfectly predict returns. >0.7 strong, >0.4 moderate")
+        st.dataframe(qt.round(2), use_container_width=True, hide_index=True)
+
+
+# ═══════════════════════════════════════════════════════════
+#  PAGE 2: SIGNAL LAB
+# ═══════════════════════════════════════════════════════════
+elif page == "⚡ Signal Lab":
+    st.markdown(f"## ⚡ Signal Lab — What Actually Works? ({horizon})")
+
+    # ── Pattern Edges ──
+    st.markdown("### 🏷️ Pattern Edge Analysis")
+    st.caption("Each pattern tested: does it predict gains beyond baseline? p-value < 0.10 = statistically significant.")
+
+    if len(pattern_edges) > 0:
+        valid = panel.dropna(subset=[fwd_col])
+        base_ret = valid[fwd_col].mean()
+        base_wr = (valid[fwd_col] > 0).mean() * 100
+        n_sig = (pattern_edges['p-value'] < 0.10).sum()
+
         c1, c2, c3 = st.columns(3)
+        with c1: st.metric("Baseline Avg Return", f"{base_ret:.2f}%")
+        with c2: st.metric("Baseline Win Rate", f"{base_wr:.1f}%")
+        with c3: st.metric("Significant Patterns", f"{n_sig}/{len(pattern_edges)}")
 
-        with c1:
-            min_score   = st.slider("Min Score",   0, 100, 60)
-            max_pe      = st.slider("Max P/E",     5, 200, 50)
-        with c2:
-            min_roe     = st.slider("Min ROE %",   0, 50,  10)
-            min_growth  = st.slider("Min PAT Growth %", -50, 100, 0)
-        with c3:
-            req_fcf     = st.checkbox("Positive FCF Only", value=True)
-            req_inst    = st.checkbox("Institutional Buying", value=False)
-            req_early   = st.checkbox("Early Entry Only", value=False)
+        fig = px.bar(pattern_edges, x='Pattern', y='Edge %', color='Edge %',
+                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
+                     title=f'Pattern Edge: Extra Return vs Baseline ({horizon})',
+                     hover_data=['Count','Win Rate %','p-value','Sig'], text='Sig')
+        fig.add_hline(y=0, line_color="#475569")
+        fig.update_layout(height=450, template='plotly_dark', xaxis_tickangle=-50,
+                         margin=dict(t=40, b=80))
+        st.plotly_chart(fig, use_container_width=True)
 
-        sc_df = df[df['Final_Score'] >= min_score].copy()
+        # Win rate chart
+        fig2 = px.bar(pattern_edges, x='Pattern', y='Win Rate %', color='WR Edge',
+                      color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
+                      title='Win Rate by Pattern', hover_data=['Count','Edge %'])
+        fig2.add_hline(y=base_wr, line_dash="dash", annotation_text=f"Baseline: {base_wr:.0f}%")
+        fig2.update_layout(height=400, template='plotly_dark', xaxis_tickangle=-50,
+                          margin=dict(t=40, b=80))
+        st.plotly_chart(fig2, use_container_width=True)
 
-        if 'Price To Earnings' in sc_df.columns:
-            sc_df = sc_df[sc_df['Price To Earnings'] <= max_pe]
-        if 'ROE' in sc_df.columns:
-            sc_df = sc_df[sc_df['ROE'] >= min_roe]
-        if 'PAT Growth TTM' in sc_df.columns:
-            sc_df = sc_df[sc_df['PAT Growth TTM'] >= min_growth]
-        if req_fcf and 'Free Cash Flow' in sc_df.columns:
-            sc_df = sc_df[sc_df['Free Cash Flow'] > 0]
-        if req_inst and 'Change In FII Holdings Latest Quarter' in sc_df.columns:
-            sc_df = sc_df[sc_df['Change In FII Holdings Latest Quarter'] > 0]
-        if req_early:
-            sc_df = sc_df[sc_df['Verdict_Class'].isin(['early-entry', 'accumulation'])]
+        with st.expander("📋 Full Pattern Statistics Table"):
+            st.dataframe(pattern_edges.drop(columns=['key']).reset_index(drop=True),
+                        use_container_width=True, hide_index=True)
 
-        col_a, col_b = st.columns(2)
-        col_a.metric("Total Matches", len(sc_df))
-        col_b.metric("Avg Score",     f"{sc_df['Final_Score'].mean():.1f}" if len(sc_df) > 0 else "—")
+    st.markdown("---")
 
-        if len(sc_df) > 0:
-            show_cols = ['Rank','Name','Verdict','Final_Score','Close Price',
-                         'Price To Earnings','ROE','ROCE','PAT Growth TTM',
-                         'Free Cash Flow','Debt To Equity']
-            show_cols = [c for c in show_cols if c in sc_df.columns]
-            st.dataframe(sc_df[show_cols].head(top_n), height=450, use_container_width=True)
+    # ── Pattern Combinations ──
+    st.markdown("### 🔗 Pattern Combinations")
+    combos = [
+        ('p_stealth','p_institutional','STEALTH + INSTITUTIONAL'),
+        ('p_cat_leader','p_market_leader','CAT LEADER + MARKET LEADER'),
+        ('p_velocity_breakout','p_premium_momentum','VELOCITY BREAK + PREMIUM MOM'),
+        ('p_golden_cross','p_momentum_wave','GOLDEN CROSS + MOMENTUM WAVE'),
+        ('p_cat_leader','p_vol_explosion','CAT LEADER + VOL EXPLOSION'),
+        ('p_institutional','p_golden_cross','INSTITUTIONAL + GOLDEN CROSS'),
+        ('p_stealth','p_acceleration','STEALTH + ACCELERATION'),
+        ('p_garp_leader','p_value_momentum','GARP + VALUE MOMENTUM'),
+        ('p_liquid_leader','p_market_leader','LIQUID LEADER + MARKET LEADER'),
+        ('p_institutional_tsunami','p_liquid_leader','INST TSUNAMI + LIQUID LEADER'),
+    ]
+
+    valid = panel.dropna(subset=[fwd_col])
+    combo_results = []
+    for c1_col, c2_col, label in combos:
+        if c1_col in valid.columns and c2_col in valid.columns:
+            combo = valid[(valid[c1_col] == 1) & (valid[c2_col] == 1)]
+            if len(combo) >= 5:
+                base = valid[fwd_col].mean()
+                combo_results.append({
+                    'Combination': label, 'Count': len(combo),
+                    'Avg Return %': round(combo[fwd_col].mean(), 2),
+                    'Edge %': round(combo[fwd_col].mean() - base, 2),
+                    'Win Rate %': round((combo[fwd_col] > 0).mean() * 100, 1),
+                })
+
+    if combo_results:
+        combo_df = pd.DataFrame(combo_results).sort_values('Edge %', ascending=False)
+        st.dataframe(combo_df.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ── Market State Edge ──
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 🌐 Market State Edge")
+        ms_edge = compute_market_state_edge(panel, fwd_col)
+        if len(ms_edge) > 0:
+            fig = px.bar(ms_edge, x='market_state', y='avg_return', color='avg_return',
+                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
+                         title=f'{horizon} Return by Market State',
+                         hover_data=['count','win_rate'])
+            fig.add_hline(y=0, line_color="#475569")
+            fig.update_layout(height=350, template='plotly_dark', xaxis_tickangle=-30,
+                             margin=dict(t=40, b=50))
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(ms_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
+
+    with col2:
+        st.markdown("### 🎵 Momentum Harmony Edge")
+        mh_edge = compute_harmony_edge(panel, fwd_col)
+        if len(mh_edge) > 0:
+            fig = px.bar(mh_edge, x='Harmony Level', y='avg_return', color='avg_return',
+                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
+                         title=f'{horizon} Return by Harmony Level (0-4)',
+                         hover_data=['count','win_rate'])
+            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(mh_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ── Entry Freshness Edge ──
+    st.markdown("### 🆕 Entry Freshness Edge")
+    st.caption("Do stocks that JUST entered Top 100 outperform those sitting there for weeks?")
+
+    fr_edge = compute_entry_freshness_edge(panel, fwd_col)
+    if len(fr_edge) > 0:
+        fig = px.bar(fr_edge, x='freshness', y='avg_return', color='avg_return',
+                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
+                     title=f'Fresh vs Established vs Aging — {horizon} Avg Return',
+                     hover_data=['count','win_rate'])
+        fig.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(fr_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
+
+    # ── Score Threshold Analysis ──
+    st.markdown("---")
+    st.markdown("### 📈 Score Threshold Analysis")
+    st.caption("What's the minimum master_score that matters?")
+
+    valid = panel.dropna(subset=[fwd_col])
+    thresholds = [0, 20, 30, 40, 50, 60, 70, 80]
+    thresh_results = []
+    for th in thresholds:
+        subset = valid[valid['master_score'] >= th]
+        if len(subset) >= 20:
+            thresh_results.append({
+                'Min Score': th, 'Stocks': len(subset),
+                'Avg Return %': round(subset[fwd_col].mean(), 2),
+                'Win Rate %': round((subset[fwd_col] > 0).mean() * 100, 1),
+            })
+
+    if thresh_results:
+        th_df = pd.DataFrame(thresh_results)
+        fig = px.line(th_df, x='Min Score', y='Avg Return %', markers=True,
+                      title=f'Average {horizon} Return at Different Score Cutoffs')
+        fig.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(th_df.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+
+# ═══════════════════════════════════════════════════════════
+#  PAGE 3: THIS WEEK'S PICKS
+# ═══════════════════════════════════════════════════════════
+elif page == "🎯 This Week's Picks":
+    st.markdown(f"## 🎯 This Week's Picks — {latest_week.strftime('%B %d, %Y')}")
+    st.caption("Composite score = data-driven weights (from IC analysis) + pattern bonuses (from tested edges) + entry freshness + rank velocity")
+
+    picks = latest_scored.copy()
+
+    # Apply sidebar filters
+    if min_score_filter > 0:
+        picks = picks[picks['master_score'] >= min_score_filter]
+    if max_rank_filter < 2200:
+        picks = picks[picks['rank'] <= max_rank_filter]
+    if cat_filter:
+        picks = picks[picks['category'].isin(cat_filter)]
+    if sector_input:
+        picks = picks[picks['sector'].str.contains(sector_input, case=False, na=False)]
+
+    # Market overview
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        up_pct = picks['is_uptrend'].mean() * 100
+        st.metric("% Uptrend", f"{up_pct:.0f}%")
+    with c2:
+        n_fresh = picks['is_fresh_entry'].sum()
+        st.metric("Fresh Top-100 Entries", int(n_fresh))
+    with c3:
+        high_conf = (picks['confidence'] == '🟢 HIGH').sum()
+        st.metric("High Confidence Picks", int(high_conf))
+    with c4:
+        avg_comp = picks.head(top_n)['composite'].mean()
+        st.metric(f"Avg Composite (Top {top_n})", f"{avg_comp:.1f}")
+
+    st.markdown("---")
+
+    # ── Rank Velocity Radar ──
+    st.markdown("### 🚀 Rank Velocity — Fastest Movers This Week")
+    st.caption("Stocks with biggest rank improvement — freshest buy signals")
+
+    movers = picks.nlargest(10, 'rank_delta_1w')
+    mover_cols = st.columns(5)
+    for i, (_, r) in enumerate(movers.head(10).iterrows()):
+        with mover_cols[i % 5]:
+            delta = r['rank_delta_1w']
+            st.markdown(f"""
+            <div class="stock-card">
+                <b>{r['ticker']}</b><br>
+                <span class="big green">+{delta:.0f}</span><br>
+                <span class="muted">Rank #{r['rank']:.0f} | ₹{r['price']:.0f}</span><br>
+                <span class="muted">{r.get('sector','')[:20]}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Top Picks Table ──
+    st.markdown(f"### 🏆 Top {top_n} Picks by Composite Score")
+
+    top_picks = picks.head(top_n)
+
+    for i, (_, row) in enumerate(top_picks.iterrows()):
+        comp = row.get('composite', 0)
+        conf = row.get('confidence', '🟠 LOW')
+        fresh = row.get('freshness_label', '—')
+
+        fresh_class = 'fresh-new' if '🆕' in fresh else 'fresh-aging' if '⏳' in fresh else 'fresh-est'
+
+        cols = st.columns([0.4, 2.2, 1, 1, 1, 1, 1.5])
+
+        with cols[0]:
+            st.markdown(f"**#{i+1}**")
+        with cols[1]:
+            st.markdown(f"**{row['ticker']}**")
+            st.caption(f"{str(row.get('company_name',''))[:35]} · {row.get('sector','')}")
+        with cols[2]:
+            color = 'green' if comp > 70 else 'amber' if comp > 50 else 'red'
+            st.markdown(f"<span class='big {color}'>{comp:.0f}</span><br><span class='muted'>Composite</span>", unsafe_allow_html=True)
+        with cols[3]:
+            rdelta = row.get('rank_delta_1w', 0)
+            st.metric("Rank", f"#{row['rank']:.0f}", f"{rdelta:+.0f}")
+        with cols[4]:
+            sdelta = row.get('score_delta_1w', 0)
+            st.metric("Score", f"{row['master_score']:.0f}", f"{sdelta:+.1f}")
+        with cols[5]:
+            st.metric("Price", f"₹{row['price']:.0f}", f"{row.get('ret_7d',0):+.1f}% 7d")
+        with cols[6]:
+            st.markdown(f"**{conf}**")
+            st.markdown(f"<span class='fresh-badge {fresh_class}'>{fresh}</span> · {row.get('market_state','')}", unsafe_allow_html=True)
+
+        # Pattern stack
+        patterns = str(row.get('patterns', ''))
+        if patterns and patterns != 'nan' and len(patterns) > 3:
+            # Annotate patterns with their edge values
+            annotated = []
+            for tag, key in PATTERN_TAGS:
+                if tag in patterns and len(pattern_edges) > 0:
+                    edge_row = pattern_edges[pattern_edges['key'] == key]
+                    if len(edge_row) > 0:
+                        e = edge_row.iloc[0]['Edge %']
+                        sig = edge_row.iloc[0]['Sig']
+                        color = 'green' if e > 0 else 'red'
+                        annotated.append(f"<span class='{color}'>{tag} ({e:+.1f}% {sig})</span>")
+                elif tag in patterns:
+                    annotated.append(tag)
+
+            if annotated:
+                st.markdown(f"<div class='signal-stack'>{'  ·  '.join(annotated)}</div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+
+    # ── Sector Allocation ──
+    st.markdown("### 🗺️ Sector Allocation of Top Picks")
+    sector_counts = top_picks['sector'].value_counts().reset_index()
+    sector_counts.columns = ['sector', 'count']
+    fig = px.treemap(sector_counts, path=['sector'], values='count',
+                     title=f'Top {top_n} Picks by Sector',
+                     color='count', color_continuous_scale='Blues')
+    fig.update_layout(height=350, margin=dict(t=40, b=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Risk Flags ──
+    st.markdown("### 🚨 Risk Flags in Top Picks")
+    risk_stocks = top_picks[
+        (top_picks.get('p_capitulation', 0) == 1) |
+        (top_picks.get('p_distribution', 0) == 1) |
+        (top_picks['is_downtrend'] == 1) |
+        (top_picks['rank_delta_1w'] < -200)
+    ]
+    if len(risk_stocks) > 0:
+        st.warning(f"⚠️ {len(risk_stocks)} stocks in Top {top_n} have risk flags:")
+        for _, r in risk_stocks.iterrows():
+            flags = []
+            if r.get('p_capitulation', 0) == 1: flags.append("💣 CAPITULATION")
+            if r.get('p_distribution', 0) == 1: flags.append("📊 DISTRIBUTION")
+            if r['is_downtrend'] == 1: flags.append("📉 DOWNTREND")
+            if r['rank_delta_1w'] < -200: flags.append(f"💀 Rank crashed {r['rank_delta_1w']:.0f}")
+            st.markdown(f"- **{r['ticker']}** — {' | '.join(flags)}")
+    else:
+        st.success("✅ No major risk flags in top picks")
+
+    # ── Download ──
+    st.markdown("---")
+    dl_cols = ['ticker','company_name','composite','confidence','freshness_label',
+               'rank','rank_delta_1w','master_score','score_delta_1w',
+               'price','ret_7d','ret_30d','ret_3m','market_state','patterns',
+               'sector','category','weeks_in_top100']
+    dl_available = [c for c in dl_cols if c in picks.columns]
+    csv_data = picks[dl_available].to_csv(index=False)
+    st.download_button("📥 Download Full Picks CSV", csv_data, "wave_picks.csv", "text/csv")
+
+
+# ═══════════════════════════════════════════════════════════
+#  PAGE 4: RANK DYNAMICS
+# ═══════════════════════════════════════════════════════════
+elif page == "🔄 Rank Dynamics":
+    st.markdown("## 🔄 Rank Dynamics — Where Do Top Stocks End Up?")
+
+    # ── Transition Matrix ──
+    st.markdown("### 🔢 Rank Transition Matrix")
+
+    tm_horizon = st.radio("Transition horizon", ['1 week', '4 weeks'], horizontal=True)
+    h = 1 if '1' in tm_horizon else 4
+
+    with st.spinner("Computing transition matrix..."):
+        matrix, counts = compute_transition_matrix(panel, h)
+
+    st.caption(f"Each cell = P(stock in row bucket this week → column bucket after {tm_horizon}). Diagonal = stocks that STAYED in same bucket.")
+
+    fig = px.imshow(
+        matrix.values.round(1), x=matrix.columns, y=matrix.index,
+        color_continuous_scale='YlOrRd', text_auto='.0f',
+        labels={'x': f'After {tm_horizon}', 'y': 'Current Bucket', 'color': 'Probability %'},
+        title=f'Rank Transition Probabilities ({tm_horizon})'
+    )
+    fig.update_layout(height=450, template='plotly_dark', margin=dict(t=40, b=30))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Key insights
+    diag = [matrix.iloc[i, i] for i in range(min(len(matrix), len(matrix.columns)))]
+    st.markdown("#### 💡 Key Insights")
+    bucket_labels = [b[2] for b in RANK_BUCKETS]
+    for i, label in enumerate(bucket_labels[:len(diag)]):
+        stability = diag[i]
+        emoji = '🟢' if stability > 50 else '🟡' if stability > 30 else '🔴'
+        st.markdown(f"- {emoji} **{label}**: {stability:.0f}% stay in same bucket after {tm_horizon}")
+
+    st.markdown("---")
+
+    # ── Survival Curves ──
+    st.markdown("### 📉 Survival Curve — How Long Do Top Stocks Stay?")
+    st.caption("Of stocks entering top N for the FIRST time, what % remain after K weeks?")
+
+    surv_threshold = st.slider("Top N threshold", 20, 200, 50, 10)
+    survival = compute_survival_curve(panel, surv_threshold)
+
+    if len(survival) > 0:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=survival['weeks_after_entry'], y=survival['survival_%'],
+            mode='lines+markers', line=dict(color='#38bdf8', width=3),
+            fill='tozeroy', fillcolor='rgba(56,189,248,0.1)'
+        ))
+        fig.add_hline(y=50, line_dash="dash", line_color="#64748b", annotation_text="50% threshold")
+        fig.update_layout(
+            title=f'Survival: % of stocks remaining in Top {surv_threshold} after entry',
+            xaxis_title='Weeks After First Entry', yaxis_title='% Still in Top N',
+            height=350, template='plotly_dark', yaxis=dict(range=[0, 105]),
+            margin=dict(t=40, b=30)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Half-life
+        half_life = survival[survival['survival_%'] < 50]
+        if len(half_life) > 0:
+            hl_week = half_life.iloc[0]['weeks_after_entry']
+            st.info(f"📊 **Half-life: {hl_week:.0f} weeks** — 50% of stocks that enter Top {surv_threshold} drop out within {hl_week:.0f} weeks. {'This suggests you should rebalance more frequently.' if hl_week < 6 else 'Your system has good staying power.'}")
         else:
-            st.info("No stocks match the current filters. Try relaxing the criteria.")
+            st.success(f"💪 Most stocks that enter Top {surv_threshold} stay there throughout the data period. Strong system stickiness.")
 
-    # ════════════════════════════════════════════════════════
-    # TAB 3: CHARTS
-    # ════════════════════════════════════════════════════════
-    with tab3:
-        c1, c2 = st.columns(2)
+    st.markdown("---")
 
-        with c1:
-            # ── GARP Scatter ────────────────────────────────
-            if 'Price To Earnings' in df.columns and 'PAT Growth TTM' in df.columns:
-                plot_df = df.dropna(subset=['Price To Earnings','PAT Growth TTM']).head(100)
-                fig = px.scatter(
-                    plot_df, x='Price To Earnings', y='PAT Growth TTM',
-                    color='Final_Score', size='Final_Score',
-                    hover_name='Name', hover_data={'Verdict': True, 'Final_Score': ':.1f'},
-                    log_x=True, title="📊 Growth at Reasonable Price (GARP)",
-                    color_continuous_scale='Viridis', height=380
-                )
-                fig.add_hline(y=20,  line_dash="dash", line_color="green", annotation_text="Growth 20%")
-                fig.add_vline(x=25,  line_dash="dash", line_color="red",   annotation_text="P/E 25")
-                fig.update_layout(margin=dict(l=40, r=40, t=50, b=40))
-                st.plotly_chart(fig, use_container_width=True)
+    # ── Biggest Movers ──
+    st.markdown("### 🔄 Biggest Rank Movers This Week")
 
-            # ── Score Distribution ──────────────────────────
-            fig = px.histogram(df, x='Final_Score', nbins=30,
-                               title="📊 Score Distribution", height=320,
-                               color_discrete_sequence=['#3b82f6'])
-            fig.add_vline(x=70, line_dash="dash", line_color="green", annotation_text="Buy zone")
-            fig.add_vline(x=35, line_dash="dash", line_color="red",   annotation_text="Avoid zone")
-            fig.update_layout(margin=dict(l=40, r=40, t=50, b=40))
-            st.plotly_chart(fig, use_container_width=True)
+    latest = panel[panel['week'] == latest_week].copy()
 
-            # ── Trap Probability Distribution ───────────────
-            fig = px.histogram(df, x='Trap_Probability', nbins=25,
-                               title="🛡️ Trap Probability Distribution", height=300,
-                               color_discrete_sequence=['#ef4444'])
-            fig.add_vline(x=60, line_dash="dash", line_color="purple", annotation_text="Danger 60%")
-            fig.update_layout(margin=dict(l=40, r=40, t=50, b=40))
-            st.plotly_chart(fig, use_container_width=True)
-
-        with c2:
-            # ── Radar: Top 3 stocks ─────────────────────────
-            if len(df) >= 3:
-                categories = ['Momentum','Institutional','Quality','Safety','Early Entry','Turnaround']
-                fig = go.Figure()
-
-                colors = ['#10b981', '#3b82f6', '#f59e0b']
-                for rank_idx in range(3):
-                    row = df.iloc[rank_idx]
-                    vals = [
-                        row.get('Score_Momentum', 0.5),
-                        row.get('Score_Institutional', 0.5),
-                        row.get('Score_Quality', 0.5),
-                        row.get('Score_Safety', 0.5),
-                        row.get('Early_Entry_Score', 0),
-                        row.get('Turnaround_Score', 0),
-                    ]
-                    fig.add_trace(go.Scatterpolar(
-                        r=vals + [vals[0]], theta=categories + [categories[0]],
-                        fill='toself', name=f"#{rank_idx+1} {row.get('Name','?')}",
-                        line_color=colors[rank_idx]
-                    ))
-
-                fig.update_layout(
-                    polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-                    title="🎯 Top 3 Stocks — Factor Radar",
-                    height=380, legend=dict(orientation='h', yanchor='bottom', y=-0.2)
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-            # ── Momentum Matrix ─────────────────────────────
-            if 'RSI 14W' in df.columns and 'ADX 14W' in df.columns:
-                fig = px.scatter(
-                    df.head(80), x='RSI 14W', y='ADX 14W',
-                    color='Final_Score', hover_name='Name',
-                    hover_data={'Verdict': True},
-                    title="⚡ Momentum Matrix (RSI vs ADX)",
-                    color_continuous_scale='Viridis', height=330
-                )
-                # Green zone: RSI 50-70, ADX 25-50 = strong confirmed momentum
-                fig.add_shape(type="rect", x0=50, y0=25, x1=70, y1=50,
-                              line=dict(color="green", width=2),
-                              fillcolor="green", opacity=0.08)
-                fig.add_annotation(x=60, y=48, text="Sweet Spot",
-                                   showarrow=False, font=dict(color="green", size=11))
-                fig.update_layout(margin=dict(l=40, r=40, t=50, b=40))
-                st.plotly_chart(fig, use_container_width=True)
-
-            # ── Verdict Breakdown Pie ───────────────────────
-            verdict_counts = df['Verdict_Class'].value_counts()
-            color_map = {
-                'strong-buy': '#10b981', 'buy': '#3b82f6',
-                'early-entry': '#ffc107', 'accumulation': '#ff9800',
-                'turnaround': '#9c27b0', 'hold': '#f59e0b',
-                'trap': '#ef4444', 'avoid': '#dc2626',
-            }
-            fig = px.pie(
-                verdict_counts.reset_index(),
-                names='Verdict_Class', values='count',
-                color='Verdict_Class', color_discrete_map=color_map,
-                title="📊 Verdict Breakdown", height=320
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### 🚀 Top 20 Rank Improvers")
+        improvers = latest.nlargest(20, 'rank_delta_1w')
+        for i, (_, r) in enumerate(improvers.iterrows()):
+            st.markdown(
+                f"**{i+1}. {r['ticker']}** | #{r['rank']:.0f} "
+                f"(+{r['rank_delta_1w']:.0f}) | Score {r['master_score']:.0f} "
+                f"| ₹{r['price']:.0f} | {r.get('market_state','')}"
             )
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-            fig.update_layout(showlegend=False, margin=dict(l=20, r=20, t=50, b=20))
-            st.plotly_chart(fig, use_container_width=True)
 
-    # ════════════════════════════════════════════════════════
-    # TAB 4: EXPORT
-    # ════════════════════════════════════════════════════════
-    with tab4:
-        st.markdown("#### 📥 Download Reports")
-        ts = datetime.now().strftime('%Y%m%d_%H%M')
+    with col2:
+        st.markdown("#### 💀 Top 20 Rank Crashers")
+        crashers = latest.nsmallest(20, 'rank_delta_1w')
+        for i, (_, r) in enumerate(crashers.iterrows()):
+            st.markdown(
+                f"**{i+1}. {r['ticker']}** | #{r['rank']:.0f} "
+                f"({r['rank_delta_1w']:.0f}) | Score {r['master_score']:.0f} "
+                f"| ₹{r['price']:.0f} | {r.get('market_state','')}"
+            )
 
-        # Row 1: Main exports
-        e1, e2, e3 = st.columns(3)
+    st.markdown("---")
 
-        e1.download_button(
-            "📄 Full Analysis",
-            df.to_csv(index=False).encode('utf-8'),
-            f"V4_Full_{ts}.csv", "text/csv",
-            use_container_width=True
+    # ── Sector Rotation ──
+    st.markdown("### 🔄 Sector Rotation Over Time")
+    st.caption("Which sectors dominated Top 100 each week?")
+
+    rotation = get_sector_rotation(panel, weeks, 100)
+    if len(rotation) > 0:
+        top_sectors = rotation.groupby('sector')['pct'].mean().nlargest(8).index.tolist()
+        rot_filtered = rotation[rotation['sector'].isin(top_sectors)]
+
+        fig = px.area(rot_filtered, x='week', y='pct', color='sector',
+                      title='Sector Share of Top 100 Over Time',
+                      labels={'pct': '% of Top 100', 'week': 'Week'})
+        fig.update_layout(height=400, template='plotly_dark', margin=dict(t=40, b=30))
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ═══════════════════════════════════════════════════════════
+#  PAGE 5: STOCK X-RAY
+# ═══════════════════════════════════════════════════════════
+elif page == "🔬 Stock X-Ray":
+    st.markdown("## 🔬 Stock X-Ray — Full Weekly Journey")
+
+    all_tickers = sorted(panel['ticker'].unique())
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        ticker = st.selectbox("Select Stock", all_tickers)
+    with col2:
+        search = st.text_input("Search ticker", "")
+        if search:
+            matches = [t for t in all_tickers if search.upper() in str(t).upper()]
+            if matches:
+                ticker = st.selectbox("Matches", matches, key="search_results")
+
+    stock = panel[panel['ticker'] == ticker].sort_values('week')
+
+    if len(stock) > 0:
+        last = stock.iloc[-1]
+        first = stock.iloc[0]
+
+        # Header
+        st.markdown(f"### {ticker} — {last.get('company_name','')}")
+
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        with c1:
+            total_chg = ((last['price'] - first['price']) / first['price'] * 100) if first['price'] > 0 else 0
+            st.metric("Price", f"₹{last['price']:.0f}", f"{total_chg:+.1f}% total")
+        with c2:
+            st.metric("Rank", f"#{last['rank']:.0f}", f"{last.get('rank_delta_1w',0):+.0f}")
+        with c3:
+            st.metric("Score", f"{last['master_score']:.1f}", f"{last.get('score_delta_1w',0):+.1f}")
+        with c4:
+            st.metric("State", last.get('market_state',''))
+        with c5:
+            st.metric("Sector", str(last.get('sector',''))[:15])
+        with c6:
+            wit = last.get('weeks_in_top100', 0)
+            st.metric("Weeks in Top100", int(wit))
+
+        # 6-panel chart
+        fig = make_subplots(
+            rows=3, cols=2,
+            subplot_titles=['💰 Price','📊 Rank (↓ = better)','🎯 Master Score',
+                           '⚡ Breakout Score','📈 Momentum Score','🔊 Volume Score'],
+            vertical_spacing=0.08
         )
 
-        buy_df = df[df['Verdict_Class'].isin(['strong-buy','buy'])]
-        if len(buy_df) > 0:
-            e2.download_button(
-                "📈 Buy Signals Only",
-                buy_df.to_csv(index=False).encode('utf-8'),
-                f"V4_Buys_{ts}.csv", "text/csv",
-                use_container_width=True
+        w = stock['week']
+        chart_data = [
+            (stock['price'], '#38bdf8', 1, 1),
+            (stock['rank'], '#f87171', 1, 2),
+            (stock['master_score'], '#4ade80', 2, 1),
+            (stock['breakout_score'], '#fbbf24', 2, 2),
+            (stock['momentum_score'], '#a855f7', 3, 1),
+            (stock['volume_score'], '#06b6d4', 3, 2),
+        ]
+
+        for data, color, r, c in chart_data:
+            fig.add_trace(go.Scatter(x=w, y=data, mode='lines+markers',
+                         line=dict(color=color, width=2), showlegend=False), row=r, col=c)
+
+        fig.update_yaxes(autorange="reversed", row=1, col=2)
+        fig.update_layout(height=700, template='plotly_dark', margin=dict(t=30, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Pattern timeline
+        st.markdown("### 🏷️ Pattern & State Timeline")
+        for _, row in stock.iterrows():
+            pat = str(row.get('patterns', ''))
+            state = row.get('market_state', '')
+            rk = row['rank']
+            sc = row['master_score']
+            pr = row['price']
+
+            # Market state color
+            state_colors = {
+                'STRONG_UPTREND': '🟢', 'UPTREND': '🟢', 'PULLBACK': '🟡',
+                'ROTATION': '🟡', 'SIDEWAYS': '⚪', 'BOUNCE': '🔵',
+                'DOWNTREND': '🔴', 'STRONG_DOWNTREND': '🔴'
+            }
+            state_icon = state_colors.get(state, '⚪')
+
+            line = f"**{row['week'].strftime('%b %d')}** | {state_icon} `{state}` | Rank #{rk:.0f} | Score {sc:.1f} | ₹{pr:.0f}"
+            if pat and pat != 'nan' and len(pat) > 3:
+                line += f" | {pat}"
+            st.markdown(line)
+
+        # Score delta table
+        with st.expander("📋 Full Weekly Data"):
+            display_cols = ['week','rank','rank_delta_1w','master_score','score_delta_1w',
+                           'price','breakout_score','momentum_score','volume_score',
+                           'acceleration_score','rvol_score','trend_quality',
+                           'ret_7d','ret_30d','ret_3m','market_state','patterns',
+                           'weeks_in_top100']
+            available = [c for c in display_cols if c in stock.columns]
+            disp = stock[available].copy()
+            disp['week'] = disp['week'].dt.strftime('%Y-%m-%d')
+            st.dataframe(disp.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+        # Peer comparison
+        st.markdown("### 👥 Industry Peers")
+        industry = last.get('industry', '')
+        if industry:
+            peers = panel[(panel['week'] == latest_week) & (panel['industry'] == industry)].nsmallest(10, 'rank')
+            if len(peers) > 0:
+                peer_cols = ['ticker','company_name','rank','master_score','price',
+                            'ret_7d','ret_30d','market_state']
+                available = [c for c in peer_cols if c in peers.columns]
+                st.dataframe(peers[available].reset_index(drop=True), use_container_width=True, hide_index=True)
+
+
+# ═══════════════════════════════════════════════════════════
+#  PAGE 6: BACKTEST LAB
+# ═══════════════════════════════════════════════════════════
+elif page == "🧪 Backtest Lab":
+    st.markdown(f"## 🧪 Backtest Lab — Walk-Forward Proof ({horizon})")
+    st.caption("Each entry week: pick top-N stocks by rank (using ONLY current data). Measure ACTUAL forward return. No look-ahead bias.")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        bt_top_n = st.slider("Top N stocks per period", 5, 50, top_n, key="bt_n")
+    with col2:
+        bt_min_score = st.slider("Min score threshold", 0, 80, 0, 10, key="bt_score")
+    with col3:
+        st.markdown(f"**Horizon:** {horizon}")
+
+    if st.button("🚀 Run Backtest", type="primary"):
+        with st.spinner("Running walk-forward backtest..."):
+            bt = walk_forward_backtest(panel, weeks, bt_top_n, 1, bt_min_score, fwd_col)
+
+        if len(bt) > 0:
+            # Summary
+            c1, c2, c3, c4, c5 = st.columns(5)
+            with c1: st.metric("Top N Avg Return", f"{bt['top_avg'].mean():.2f}%")
+            with c2: st.metric("Bottom N Avg Return", f"{bt['bottom_avg'].mean():.2f}%")
+            with c3: st.metric("Spread (Top-Bottom)", f"{bt['spread'].mean():.2f}%")
+            with c4: st.metric("Top N Win Rate", f"{bt['top_wr'].mean():.0f}%")
+            with c5: st.metric("Periods Tested", len(bt))
+
+            spread_avg = bt['spread'].mean()
+            top_wr = bt['top_wr'].mean()
+
+            if spread_avg > 3 and top_wr > 55:
+                st.markdown(f'<div class="verdict-box verdict-good">✅ SYSTEM HAS EDGE — Top {bt_top_n} stocks average {spread_avg:.1f}% more return than Bottom {bt_top_n}, with {top_wr:.0f}% win rate over {len(bt)} periods. This is actionable.</div>', unsafe_allow_html=True)
+            elif spread_avg > 1:
+                st.markdown(f'<div class="verdict-box verdict-mid">⚠️ MODERATE EDGE — {spread_avg:.1f}% spread, {top_wr:.0f}% win rate. Signal exists but may improve with more data or tighter filters.</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="verdict-box verdict-bad">❌ WEAK EDGE — {spread_avg:.1f}% spread, {top_wr:.0f}% win rate. Rankings don\'t reliably predict {horizon} returns at this filter setting.</div>', unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # Return comparison
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=bt['week'], y=bt['top_avg'], name=f'Top {bt_top_n}',
+                                marker_color='#4ade80', opacity=0.8))
+            fig.add_trace(go.Bar(x=bt['week'], y=bt['bottom_avg'], name=f'Bottom {bt_top_n}',
+                                marker_color='#f87171', opacity=0.8))
+            fig.add_trace(go.Scatter(x=bt['week'], y=bt['universe_avg'], name='Universe Avg',
+                                    line=dict(color='#fbbf24', width=2, dash='dash')))
+            fig.update_layout(
+                title=f'Top {bt_top_n} vs Bottom {bt_top_n} — {horizon} Forward Return per Entry Week',
+                yaxis_title='Return %', height=400, barmode='group',
+                template='plotly_dark', margin=dict(t=40, b=30)
             )
-        else:
-            e2.info("No buy signals")
+            st.plotly_chart(fig, use_container_width=True)
 
-        trap_df = df[df['Verdict_Class'] == 'trap']
-        if len(trap_df) > 0:
-            e3.download_button(
-                "⚠️ Traps & Avoid",
-                trap_df.to_csv(index=False).encode('utf-8'),
-                f"V4_Traps_{ts}.csv", "text/csv",
-                use_container_width=True
+            # Cumulative equity
+            bt['cum_top'] = (1 + bt['top_avg'] / 100).cumprod() * 100
+            bt['cum_bottom'] = (1 + bt['bottom_avg'] / 100).cumprod() * 100
+            bt['cum_universe'] = (1 + bt['universe_avg'] / 100).cumprod() * 100
+
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_top'], name=f'Top {bt_top_n}',
+                                     line=dict(color='#4ade80', width=3)))
+            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_bottom'], name=f'Bottom {bt_top_n}',
+                                     line=dict(color='#f87171', width=3)))
+            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_universe'], name='Universe',
+                                     line=dict(color='#94a3b8', width=2, dash='dot')))
+            fig2.add_hline(y=100, line_dash="dash", line_color="#475569")
+            fig2.update_layout(
+                title='Cumulative Equity Curve (₹100 start)',
+                yaxis_title='Portfolio Value ₹', height=400,
+                template='plotly_dark', margin=dict(t=40, b=30)
             )
+            st.plotly_chart(fig2, use_container_width=True)
+
+            # Win rate
+            fig3 = px.bar(bt, x='week', y='top_wr', color='top_wr',
+                          color_continuous_scale='RdYlGn', color_continuous_midpoint=50,
+                          title=f'Win Rate per Period (Top {bt_top_n})')
+            fig3.add_hline(y=50, line_dash="dash", line_color="#94a3b8")
+            fig3.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
+            st.plotly_chart(fig3, use_container_width=True)
+
+            with st.expander("📋 Period Details"):
+                st.dataframe(bt.round(2), use_container_width=True, hide_index=True)
+
+            # Strategy comparison
+            st.markdown("---")
+            st.markdown("### 📊 Strategy Comparison")
+
+            strategies = {}
+            for n in [10, 20, 50]:
+                r = walk_forward_backtest(panel, weeks, n, 1, 0, fwd_col)
+                if len(r) > 0:
+                    strategies[f'Top {n}'] = {
+                        'Avg Return': round(r['top_avg'].mean(), 2),
+                        'Win Rate': round(r['top_wr'].mean(), 1),
+                        'Spread': round(r['spread'].mean(), 2),
+                        'Best Period': round(r['top_avg'].max(), 2),
+                        'Worst Period': round(r['top_avg'].min(), 2),
+                    }
+
+            if strategies:
+                st.dataframe(pd.DataFrame(strategies).T, use_container_width=True)
+
         else:
-            e3.info("No traps detected")
+            st.warning("Not enough data for backtest. Try uploading more weekly files.")
 
-        # Row 2: Opportunity exports
-        e4, e5 = st.columns(2)
+    else:
+        st.info("Click **Run Backtest** to start the walk-forward simulation.")
 
-        early_df = df[df['Verdict_Class'].isin(['early-entry','accumulation'])]
-        if len(early_df) > 0:
-            e4.download_button(
-                "🎯 Early Entry Picks",
-                early_df.to_csv(index=False).encode('utf-8'),
-                f"V4_EarlyEntry_{ts}.csv", "text/csv",
-                use_container_width=True
-            )
-        else:
-            e4.info("No early entry signals")
+    # Data confidence
+    st.markdown("---")
+    st.markdown("### 📊 Data Confidence Level")
+    if n_weeks >= 40:
+        st.success(f"🟢 **HIGH CONFIDENCE** — {n_weeks} weeks of data. All statistical tests are reliable. ML models viable as complement.")
+    elif n_weeks >= 20:
+        st.info(f"🟡 **MODERATE CONFIDENCE** — {n_weeks} weeks. Statistical tests meaningful but p-values may be wide. Add {40 - n_weeks} more weeks for high confidence.")
+    else:
+        st.warning(f"🟠 **LOW CONFIDENCE** — {n_weeks} weeks. Results are directional but not definitive. Keep adding weekly data.")
 
-        turn_df = df[df['Verdict_Class'] == 'turnaround']
-        if len(turn_df) > 0:
-            e5.download_button(
-                "🔄 Turnaround Picks",
-                turn_df.to_csv(index=False).encode('utf-8'),
-                f"V4_Turnarounds_{ts}.csv", "text/csv",
-                use_container_width=True
-            )
-        else:
-            e5.info("No turnaround signals")
-
-        # Summary stats card
-        st.markdown("---")
-        st.markdown("#### 📋 Export Summary")
-        summary_data = {
-            'Category': ['Total Stocks','Strong Buy','Buy','Early Entry','Accumulation',
-                         'Turnaround','Hold','Risky/Trap','Avoid'],
-            'Count': [
-                len(df),
-                len(df[df['Verdict_Class']=='strong-buy']),
-                len(df[df['Verdict_Class']=='buy']),
-                len(df[df['Verdict_Class']=='early-entry']),
-                len(df[df['Verdict_Class']=='accumulation']),
-                len(df[df['Verdict_Class']=='turnaround']),
-                len(df[df['Verdict_Class']=='hold']),
-                len(df[df['Verdict_Class']=='trap']),
-                len(df[df['Verdict_Class']=='avoid']),
-            ]
-        }
-        st.dataframe(pd.DataFrame(summary_data), hide_index=True, use_container_width=False)
+    growth_note = f"Every new week you add makes the analysis more reliable. At 50+ weeks, ML models become viable as a complement to the statistical approach."
+    st.caption(growth_note)
 
 
-# =========================================================
-# ENTRY POINT
-# =========================================================
-if __name__ == "__main__":
-    main()
+# ── Footer ──
+st.markdown("---")
+st.caption("WAVE Analyzer — System Intelligence Engine. Companion to WAVE Detection 3.0. Not financial advice.")
