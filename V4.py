@@ -213,74 +213,144 @@ PATTERN_COLORS = {
 }
 
 # ============================================
-# CUSTOM CSS
+# CUSTOM CSS — CLEAN MODERN DESIGN SYSTEM
 # ============================================
 st.markdown("""
 <style>
+    /* ── Global ── */
     .main-header {
-        font-size: 2.5rem; font-weight: 800;
-        background: linear-gradient(90deg, #FF6B35, #004E98);
+        font-size: 2.2rem; font-weight: 800;
+        background: linear-gradient(120deg, #FF6B35, #004E98);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0; line-height: 1.2;
     }
     .sub-header {
-        font-size: 1.05rem; color: #888; margin-top: -8px; margin-bottom: 20px;
+        font-size: 1rem; color: #999; margin-top: -6px; margin-bottom: 18px;
+        font-weight: 400;
     }
+
+    /* ── KPI Cards ── */
     .kpi-card {
-        background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
-        border-radius: 12px; padding: 20px; text-align: center;
-        border: 1px solid #333; box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        background: #161b22; border-radius: 14px; padding: 18px 12px;
+        text-align: center; border: 1px solid #30363d;
+        transition: border-color 0.2s, transform 0.15s;
     }
-    .kpi-value { font-size: 2rem; font-weight: 700; color: #FF6B35; }
-    .kpi-label { font-size: 0.8rem; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
-    .stock-card {
-        background: linear-gradient(135deg, #1a1a2e, #16213e);
-        border-radius: 16px; padding: 25px; margin-bottom: 20px;
-        border: 1px solid #333;
+    .kpi-card:hover { border-color: #FF6B35; transform: translateY(-2px); }
+    .kpi-value { font-size: 1.7rem; font-weight: 700; color: #e6edf3; line-height: 1.1; }
+    .kpi-label {
+        font-size: 0.68rem; color: #8b949e; text-transform: uppercase;
+        letter-spacing: 0.8px; margin-top: 4px; font-weight: 500;
     }
+    .kpi-accent-orange .kpi-value { color: #FF6B35; }
+    .kpi-accent-green .kpi-value  { color: #3fb950; }
+    .kpi-accent-red .kpi-value    { color: #f85149; }
+    .kpi-accent-gold .kpi-value   { color: #d29922; }
+    .kpi-accent-blue .kpi-value   { color: #58a6ff; }
+
+    /* ── Alert Cards ── */
+    .alert-card {
+        border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
+        border: 1px solid; backdrop-filter: blur(4px);
+    }
+    .alert-danger {
+        background: rgba(248,81,73,0.06); border-color: rgba(248,81,73,0.35);
+    }
+    .alert-warning {
+        background: rgba(210,153,34,0.06); border-color: rgba(210,153,34,0.30);
+    }
+    .alert-title { font-weight: 700; font-size: 0.95rem; margin-bottom: 2px; }
+    .alert-sub   { font-size: 0.72rem; color: #8b949e; }
+    .alert-row   {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-top: 6px; font-size: 0.82rem;
+    }
+    .alert-badge {
+        display: inline-block; padding: 2px 8px; border-radius: 10px;
+        font-size: 0.7rem; font-weight: 600;
+    }
+
+    /* ── Conviction Cards (green glow) ── */
+    .conviction-card {
+        background: #0d1117; border-radius: 14px; padding: 16px;
+        border: 1px solid #238636; margin-bottom: 10px;
+        box-shadow: 0 0 18px rgba(35,134,54,0.08);
+        transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .conviction-card:hover {
+        border-color: #3fb950; box-shadow: 0 0 24px rgba(63,185,80,0.15);
+    }
+
+    /* ── Grade Badges ── */
     .grade-S { color: #FFD700; font-weight: 900; font-size: 1.5rem; }
-    .grade-A { color: #00C853; font-weight: 900; font-size: 1.5rem; }
-    .grade-B { color: #2196F3; font-weight: 900; font-size: 1.5rem; }
-    .grade-C { color: #FF9800; font-weight: 900; font-size: 1.5rem; }
+    .grade-A { color: #3fb950; font-weight: 900; font-size: 1.5rem; }
+    .grade-B { color: #58a6ff; font-weight: 900; font-size: 1.5rem; }
+    .grade-C { color: #d29922; font-weight: 900; font-size: 1.5rem; }
     .grade-D { color: #FF5722; font-weight: 900; font-size: 1.5rem; }
-    .grade-F { color: #F44336; font-weight: 900; font-size: 1.5rem; }
+    .grade-F { color: #f85149; font-weight: 900; font-size: 1.5rem; }
+
+    /* ── Inline Badges ── */
+    .pill {
+        display: inline-block; padding: 3px 10px; border-radius: 12px;
+        font-size: 0.72rem; font-weight: 600; margin: 2px;
+    }
+    .pill-green  { background: rgba(63,185,80,0.12); color: #3fb950; border: 1px solid rgba(63,185,80,0.3); }
+    .pill-red    { background: rgba(248,81,73,0.12); color: #f85149; border: 1px solid rgba(248,81,73,0.3); }
+    .pill-orange { background: rgba(210,153,34,0.12); color: #d29922; border: 1px solid rgba(210,153,34,0.3); }
+    .pill-blue   { background: rgba(88,166,255,0.12); color: #58a6ff; border: 1px solid rgba(88,166,255,0.3); }
+    .pill-gold   { background: rgba(255,215,0,0.12); color: #FFD700; border: 1px solid rgba(255,215,0,0.3); }
+
+    /* ── Tags ── */
     .pattern-tag {
         display: inline-block; padding: 4px 12px; border-radius: 15px;
-        font-size: 0.85rem; background: rgba(255,107,53,0.15); color: #FF6B35;
-        border: 1px solid rgba(255,107,53,0.3); margin: 2px;
+        font-size: 0.82rem; background: rgba(255,107,53,0.10); color: #FF6B35;
+        border: 1px solid rgba(255,107,53,0.25); margin: 2px;
     }
-    .mover-up { color: #00C853; font-weight: 700; }
-    .mover-down { color: #F44336; font-weight: 700; }
-    .divider { border-top: 1px solid #333; margin: 15px 0; }
+    .mover-up   { color: #3fb950; font-weight: 700; }
+    .mover-down { color: #f85149; font-weight: 700; }
+
+    /* ── Section Headers ── */
+    .section-title {
+        font-size: 1rem; font-weight: 700; color: #e6edf3;
+        margin: 24px 0 10px 0; padding-bottom: 6px;
+        border-bottom: 1px solid #21262d; display: flex; align-items: center; gap: 8px;
+    }
+    .section-caption {
+        font-size: 0.73rem; color: #8b949e; margin-top: -6px; margin-bottom: 12px;
+    }
+
+    /* ── Misc ── */
+    .divider { border-top: 1px solid #21262d; margin: 20px 0; }
+    .stock-card {
+        background: #0d1117; border-radius: 16px; padding: 24px;
+        margin-bottom: 18px; border: 1px solid #30363d;
+    }
     div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
     .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     .stTabs [data-baseweb="tab"] {
-        padding: 10px 24px; font-weight: 600;
-        border-radius: 8px 8px 0 0;
+        padding: 10px 24px; font-weight: 600; border-radius: 8px 8px 0 0;
     }
+
+    /* ── Funnel / Stage Cards ── */
     .funnel-stage {
-        background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
-        border-radius: 12px; padding: 18px; margin-bottom: 12px;
-        border-left: 5px solid;
+        background: #161b22; border-radius: 12px; padding: 18px;
+        margin-bottom: 12px; border-left: 4px solid;
     }
-    .stage-discovery { border-left-color: #2196F3; }
-    .stage-validation { border-left-color: #FF9800; }
-    .stage-final { border-left-color: #00C853; }
-    .rule-pass { color: #00C853; font-weight: 600; }
-    .rule-fail { color: #F44336; font-weight: 600; }
+    .stage-discovery  { border-left-color: #58a6ff; }
+    .stage-validation { border-left-color: #d29922; }
+    .stage-final      { border-left-color: #3fb950; }
+    .rule-pass { color: #3fb950; font-weight: 600; }
+    .rule-fail { color: #f85149; font-weight: 600; }
     .final-buy-card {
-        background: linear-gradient(135deg, #0d2b0d, #1a3a1a);
-        border: 2px solid #00C853; border-radius: 14px;
+        background: #0d1117; border: 2px solid #238636; border-radius: 14px;
         padding: 20px; margin-bottom: 12px;
-        box-shadow: 0 0 15px rgba(0,200,83,0.15);
+        box-shadow: 0 0 15px rgba(35,134,54,0.12);
     }
     .funnel-stat {
-        background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
-        border-radius: 10px; padding: 15px; text-align: center;
-        border: 1px solid #444;
+        background: #161b22; border-radius: 10px; padding: 15px;
+        text-align: center; border: 1px solid #30363d;
     }
     .funnel-stat-value { font-size: 1.8rem; font-weight: 700; }
-    .funnel-stat-label { font-size: 0.75rem; color: #aaa; text-transform: uppercase; }
+    .funnel-stat-label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1619,12 +1689,12 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
 
 
 # ============================================
-# UI: RANKINGS TAB — ALL TIME BEST (v2.3)
+# UI: RANKINGS TAB — CLEAN MODERN UI/UX (v2.3)
 # ============================================
 
 def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                         histories: dict, metadata: dict):
-    """Render the main rankings tab — ALL TIME BEST smart engineering"""
+    """Render the main rankings tab — Clean, professional UI/UX"""
 
     # ── Ensure all v2.3 columns exist (defensive) ──
     for col, default in [('price_tag', ''), ('signal_tags', ''), ('decay_tag', ''),
@@ -1632,164 +1702,213 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                          ('sector_alpha_tag', 'NEUTRAL'), ('sector_alpha_value', 0),
                          ('price_label', 'NEUTRAL'), ('price_alignment', 50),
                          ('price_multiplier', 1.0), ('pre_price_score', 0),
-                         ('pre_decay_score', 0)]:
+                         ('pre_decay_score', 0), ('grade_emoji', '📉'),
+                         ('pattern_key', 'neutral'), ('sector', ''),
+                         ('company_name', ''), ('category', '')]:
         if col not in all_df.columns:
             all_df[col] = default
         if col not in filtered_df.columns:
             filtered_df[col] = default
 
-    # ── Row 1: Smart KPI Cards (8 metrics) ──
-    k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
+    # ── Compute metrics once ──
+    total = len(all_df)
+    shown = len(filtered_df)
+    avg_score = all_df['trajectory_score'].mean() if total > 0 else 0
+    rockets = int((all_df['pattern_key'] == 'rocket').sum())
+    elites = int((all_df['pattern_key'] == 'stable_elite').sum())
+    confirmed = int((all_df['price_label'] == 'PRICE_CONFIRMED').sum())
+    divergent = int((all_df['price_label'] == 'PRICE_DIVERGENT').sum())
+    decay_high = int((all_df['decay_label'] == 'DECAY_HIGH').sum())
+    decay_mod = int((all_df['decay_label'] == 'DECAY_MODERATE').sum())
+    decay_any = int(all_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE', 'DECAY_MILD']).sum())
+    clean_pct = round((1 - decay_any / max(total, 1)) * 100, 1)
+    sect_leaders = int((all_df['sector_alpha_tag'] == 'SECTOR_LEADER').sum())
+    grade_s = int((all_df['grade'] == 'S').sum())
+    grade_a = int((all_df['grade'] == 'A').sum())
 
-    rockets = len(all_df[all_df['pattern_key'] == 'rocket'])
-    elites = len(all_df[all_df['pattern_key'] == 'stable_elite'])
-    avg_score = all_df['trajectory_score'].mean()
-    confirmed = len(all_df[all_df['price_label'] == 'PRICE_CONFIRMED'])
-    divergent = len(all_df[all_df['price_label'] == 'PRICE_DIVERGENT'])
-    decay_high = len(all_df[all_df['decay_label'] == 'DECAY_HIGH'])
-    decay_any = len(all_df[all_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE', 'DECAY_MILD'])])
-    sect_leaders = len(all_df[all_df['sector_alpha_tag'] == 'SECTOR_LEADER'])
-
+    # ════════════════════════════════════════════
+    # SECTION 1 — HERO KPIs (4 primary metrics)
+    # ════════════════════════════════════════════
+    k1, k2, k3, k4 = st.columns(4)
     with k1:
-        st.markdown(f"""<div class="kpi-card">
-            <div class="kpi-value">{len(filtered_df):,}</div>
-            <div class="kpi-label">Shown</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-accent-orange">
+            <div class="kpi-value">{shown:,}</div>
+            <div class="kpi-label">Stocks Shown</div></div>""", unsafe_allow_html=True)
     with k2:
-        st.markdown(f"""<div class="kpi-card">
+        sc_color = 'kpi-accent-green' if avg_score >= 55 else 'kpi-accent-orange' if avg_score >= 40 else ''
+        st.markdown(f"""<div class="kpi-card {sc_color}">
             <div class="kpi-value">{avg_score:.1f}</div>
-            <div class="kpi-label">Avg Score</div></div>""", unsafe_allow_html=True)
+            <div class="kpi-label">Avg T-Score</div></div>""", unsafe_allow_html=True)
     with k3:
-        st.markdown(f"""<div class="kpi-card">
-            <div class="kpi-value">{rockets}</div>
-            <div class="kpi-label">🚀 Rockets</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="kpi-card kpi-accent-green">
+            <div class="kpi-value">{grade_s + grade_a}</div>
+            <div class="kpi-label">Grade S + A</div></div>""", unsafe_allow_html=True)
     with k4:
         st.markdown(f"""<div class="kpi-card">
-            <div class="kpi-value">{elites}</div>
-            <div class="kpi-label">🎯 Elites</div></div>""", unsafe_allow_html=True)
-    with k5:
-        st.markdown(f"""<div class="kpi-card">
-            <div class="kpi-value">{confirmed}</div>
-            <div class="kpi-label">💰 Confirmed</div></div>""", unsafe_allow_html=True)
-    with k6:
-        st.markdown(f"""<div class="kpi-card">
-            <div class="kpi-value" style="color:#FF1744;">{decay_high}</div>
-            <div class="kpi-label">🔻 Traps</div></div>""", unsafe_allow_html=True)
-    with k7:
-        st.markdown(f"""<div class="kpi-card">
-            <div class="kpi-value" style="color:#FFD700;">{sect_leaders}</div>
-            <div class="kpi-label">👑 Sect Alpha</div></div>""", unsafe_allow_html=True)
-    with k8:
-        st.markdown(f"""<div class="kpi-card">
             <div class="kpi-value">{metadata['total_weeks']}</div>
-            <div class="kpi-label">📅 Weeks</div></div>""", unsafe_allow_html=True)
+            <div class="kpi-label">Weeks Tracked</div></div>""", unsafe_allow_html=True)
 
-    st.markdown("")
+    # ── Secondary KPIs (signal intelligence) ──
+    s1, s2, s3, s4, s5 = st.columns(5)
+    with s1:
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value" style="font-size:1.3rem;">
+            {rockets}</div><div class="kpi-label">🚀 Rockets</div></div>""", unsafe_allow_html=True)
+    with s2:
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value" style="font-size:1.3rem;">
+            {elites}</div><div class="kpi-label">🎯 Elites</div></div>""", unsafe_allow_html=True)
+    with s3:
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value" style="font-size:1.3rem; color:#3fb950;">
+            {confirmed}</div><div class="kpi-label">💰 Confirmed</div></div>""", unsafe_allow_html=True)
+    with s4:
+        trap_color = '#f85149' if decay_high > 0 else '#8b949e'
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value" style="font-size:1.3rem; color:{trap_color};">
+            {decay_high}</div><div class="kpi-label">🔻 Decay Traps</div></div>""", unsafe_allow_html=True)
+    with s5:
+        st.markdown(f"""<div class="kpi-card"><div class="kpi-value" style="font-size:1.3rem; color:#d29922;">
+            {sect_leaders}</div><div class="kpi-label">👑 Sector Alpha</div></div>""", unsafe_allow_html=True)
 
-    # ── Row 2: Signal Alert Cards (only if alerts exist) ──
-    # Show DECAY_HIGH stocks as red danger cards + PRICE_DIVERGENT as orange
-    traps = all_df[(all_df['decay_label'] == 'DECAY_HIGH') & (all_df['trajectory_score'] >= 50)].head(8)
-    divergent_stocks = all_df[(all_df['price_label'] == 'PRICE_DIVERGENT') & (all_df['trajectory_score'] >= 55)].head(5)
+    st.markdown('<div style="height:12px;"></div>', unsafe_allow_html=True)
 
-    if not traps.empty or not divergent_stocks.empty:
-        with st.expander("🚨 SIGNAL ALERTS — Stocks Requiring Attention", expanded=True):
-            if not traps.empty:
-                st.markdown("##### 🔻 Momentum Decay Traps — Good Rank, Bad Returns")
-                st.caption("These stocks rank well but have significantly negative recent returns. The rank hasn't caught up yet — proceed with caution.")
-                trap_cols = st.columns(min(len(traps), 4))
-                for idx, (_, t_row) in enumerate(traps.iterrows()):
-                    with trap_cols[idx % len(trap_cols)]:
-                        # Get latest ret_7d and ret_30d from history
-                        t_h = histories.get(t_row['ticker'], {})
-                        _r7 = [v for v in t_h.get('ret_7d', []) if v is not None and not np.isnan(v)]
-                        _r30 = [v for v in t_h.get('ret_30d', []) if v is not None and not np.isnan(v)]
-                        lr7 = f"{_r7[-1]:+.1f}%" if _r7 else 'N/A'
-                        lr30 = f"{_r30[-1]:+.1f}%" if _r30 else 'N/A'
-                        st.markdown(f"""
-                        <div style="background:linear-gradient(135deg,#2a1010,#1a0505); border-radius:10px;
-                            padding:12px; border:1px solid #FF1744; margin-bottom:8px;">
-                            <div style="font-weight:700; color:#FF1744; font-size:1rem;">{t_row['ticker']}</div>
-                            <div style="color:#aaa; font-size:0.75rem;">{str(t_row.get('company_name',''))[:25]}</div>
-                            <div style="display:flex; justify-content:space-between; margin-top:6px;">
-                                <span style="color:#888;">Rank #{int(t_row['current_rank'])}</span>
-                                <span style="color:#FF6B35; font-weight:600;">T-Score {t_row['trajectory_score']:.0f}</span>
-                            </div>
-                            <div style="display:flex; justify-content:space-between; margin-top:4px;">
-                                <span style="color:#FF1744;">7d: {lr7}</span>
-                                <span style="color:#FF1744;">30d: {lr30}</span>
-                            </div>
-                            <div style="color:#FF6347; font-size:0.7rem; margin-top:4px;">
-                                Decay: {int(t_row.get('decay_score',0))}/100 • ×{t_row.get('decay_multiplier',1):.3f}
-                            </div>
-                        </div>""", unsafe_allow_html=True)
+    # ════════════════════════════════════════════
+    # SECTION 2 — ALERT BANNER (only if traps exist)
+    # ════════════════════════════════════════════
+    high_traps = all_df[
+        (all_df['decay_label'] == 'DECAY_HIGH') & (all_df['trajectory_score'] >= 50)
+    ].sort_values('trajectory_score', ascending=False).head(6)
 
-            if not divergent_stocks.empty:
-                st.markdown("##### ⚠️ Price Divergent — Returns Contradict Rank")
-                div_cards = st.columns(min(len(divergent_stocks), 5))
-                for idx, (_, d_row) in enumerate(divergent_stocks.iterrows()):
-                    with div_cards[idx % len(div_cards)]:
-                        st.markdown(f"""
-                        <div style="background:linear-gradient(135deg,#2a1f10,#1a1505); border-radius:10px;
-                            padding:10px; border:1px solid #FF9800; margin-bottom:8px;">
-                            <div style="font-weight:600; color:#FF9800;">{d_row['ticker']}</div>
-                            <div style="color:#aaa; font-size:0.7rem;">{str(d_row.get('company_name',''))[:20]}</div>
-                            <div style="color:#888; font-size:0.8rem; margin-top:4px;">
-                                Rank #{int(d_row['current_rank'])} • Score {d_row['trajectory_score']:.0f}
-                            </div>
-                            <div style="color:#FF9800; font-size:0.7rem;">
-                                Align: {d_row.get('price_alignment',50):.0f} • ×{d_row.get('price_multiplier',1):.3f}
-                            </div>
-                        </div>""", unsafe_allow_html=True)
+    if not high_traps.empty:
+        st.markdown('<div class="section-title">🚨 Trap Alert — High-Ranked Stocks with Decaying Momentum</div>',
+                    unsafe_allow_html=True)
+        st.markdown('<div class="section-caption">These stocks have strong trajectory scores but their recent '
+                    'returns are negative. The rank hasn\'t caught up yet — exercise caution.</div>',
+                    unsafe_allow_html=True)
+        trap_cols = st.columns(min(len(high_traps), 3))
+        for idx, (_, tr) in enumerate(high_traps.iterrows()):
+            with trap_cols[idx % len(trap_cols)]:
+                t_h = histories.get(tr['ticker'], {})
+                _r7 = [v for v in t_h.get('ret_7d', []) if v is not None and not np.isnan(v)]
+                _r30 = [v for v in t_h.get('ret_30d', []) if v is not None and not np.isnan(v)]
+                lr7 = f"{_r7[-1]:+.1f}%" if _r7 else '—'
+                lr30 = f"{_r30[-1]:+.1f}%" if _r30 else '—'
+                st.markdown(f"""
+                <div class="alert-card alert-danger">
+                    <div class="alert-title" style="color:#f85149;">{tr['ticker']}</div>
+                    <div class="alert-sub">{str(tr.get('company_name',''))[:28]}</div>
+                    <div class="alert-row">
+                        <span style="color:#8b949e;">Rank #{int(tr['current_rank'])}</span>
+                        <span class="alert-badge" style="background:rgba(248,81,73,0.15); color:#f85149;">
+                            Score {tr['trajectory_score']:.0f}</span>
+                    </div>
+                    <div class="alert-row">
+                        <span style="color:#f85149;">7d {lr7}</span>
+                        <span style="color:#f85149;">30d {lr30}</span>
+                        <span style="color:#8b949e;">×{tr.get('decay_multiplier',1):.3f}</span>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+        st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
 
-    # ── Row 3: Top Movers This Week (upgraded) ──
+    # ════════════════════════════════════════════
+    # SECTION 3 — CONVICTION SPOTLIGHT
+    # ════════════════════════════════════════════
+    conviction_mask = (
+        (all_df['grade'].isin(['S', 'A'])) &
+        (~all_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE'])) &
+        (all_df['weeks'] >= 4)
+    )
+    # Prefer price-confirmed; fallback to any clean S/A stock
+    conviction_preferred = all_df[
+        conviction_mask & (all_df['price_label'] == 'PRICE_CONFIRMED')
+    ].sort_values('trajectory_score', ascending=False).head(5)
+    if len(conviction_preferred) < 3:
+        conviction_preferred = all_df[conviction_mask].sort_values(
+            'trajectory_score', ascending=False).head(5)
+
+    if not conviction_preferred.empty:
+        st.markdown('<div class="section-title">🏆 Top Conviction</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-caption">Grade S/A  ·  Clean momentum  ·  4+ weeks tracked</div>',
+                    unsafe_allow_html=True)
+        cv_cols = st.columns(min(len(conviction_preferred), 5))
+        for idx, (_, cr) in enumerate(conviction_preferred.iterrows()):
+            with cv_cols[idx % len(cv_cols)]:
+                gc = GRADE_COLORS.get(cr['grade'], '#8b949e')
+                alpha_pill = ''
+                if cr.get('sector_alpha_tag') == 'SECTOR_LEADER':
+                    alpha_pill = '<span class="pill pill-gold">👑 Leader</span>'
+                elif cr.get('sector_alpha_tag') == 'SECTOR_OUTPERFORM':
+                    alpha_pill = '<span class="pill pill-green">Outperform</span>'
+                price_pill = ''
+                if cr.get('price_label') == 'PRICE_CONFIRMED':
+                    price_pill = '<span class="pill pill-green">💰 Confirmed</span>'
+                st.markdown(f"""
+                <div class="conviction-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-weight:700; color:#e6edf3; font-size:1rem;">{cr['ticker']}</span>
+                        <span style="color:{gc}; font-weight:800; font-size:1.2rem;">{cr.get('grade_emoji','')} {cr['trajectory_score']:.0f}</span>
+                    </div>
+                    <div style="color:#8b949e; font-size:0.72rem; margin:2px 0 6px;">{str(cr.get('company_name',''))[:24]}</div>
+                    <div style="color:#8b949e; font-size:0.75rem;">
+                        Rank #{int(cr['current_rank'])}  ·  {cr.get('pattern','')}
+                    </div>
+                    <div style="margin-top:6px;">{price_pill} {alpha_pill}</div>
+                </div>""", unsafe_allow_html=True)
+        st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════
+    # SECTION 4 — TOP MOVERS
+    # ════════════════════════════════════════════
     with st.expander("🔥 Top Movers This Week", expanded=False):
         gainers, decliners = get_top_movers(histories, n=10)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("##### ⬆️ Biggest Climbers")
+        mv1, mv2 = st.columns(2)
+        with mv1:
+            st.markdown("**⬆️ Biggest Climbers**")
             if not gainers.empty:
-                # Enrich with trajectory scores and signals
-                g_enriched = gainers.copy()
-                g_enriched = g_enriched.merge(
-                    all_df[['ticker', 'trajectory_score', 'grade', 'signal_tags', 'pattern']],
+                ge = gainers.merge(
+                    all_df[['ticker', 'trajectory_score', 'grade', 'signal_tags']].drop_duplicates('ticker'),
                     on='ticker', how='left'
                 )
-                display_g = g_enriched[['ticker', 'company_name', 'prev_rank', 'current_rank',
-                                         'rank_change', 'trajectory_score', 'grade', 'signal_tags']].copy()
-                display_g.columns = ['Ticker', 'Company', 'Prev', 'Now', 'Δ', 'T-Score', 'Grade', 'Signals']
-                display_g['Company'] = display_g['Company'].str[:25]
-                st.dataframe(display_g, column_config={
+                dg = ge[['ticker', 'company_name', 'prev_rank', 'current_rank',
+                          'rank_change', 'trajectory_score', 'grade']].copy()
+                dg.columns = ['Ticker', 'Company', 'Prev', 'Now', 'Δ', 'T-Score', 'Grade']
+                dg['Company'] = dg['Company'].str[:22]
+                st.dataframe(dg, column_config={
                     'Δ': st.column_config.NumberColumn(format="%+d"),
                     'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.0f"),
                 }, hide_index=True, use_container_width=True)
             else:
-                st.info("No data")
-        with c2:
-            st.markdown("##### ⬇️ Biggest Decliners")
+                st.caption("No movers detected")
+        with mv2:
+            st.markdown("**⬇️ Biggest Decliners**")
             if not decliners.empty:
-                d_enriched = decliners.copy()
-                d_enriched = d_enriched.merge(
-                    all_df[['ticker', 'trajectory_score', 'grade', 'signal_tags', 'pattern']],
+                de = decliners.merge(
+                    all_df[['ticker', 'trajectory_score', 'grade', 'signal_tags']].drop_duplicates('ticker'),
                     on='ticker', how='left'
                 )
-                display_d = d_enriched[['ticker', 'company_name', 'prev_rank', 'current_rank',
-                                         'rank_change', 'trajectory_score', 'grade', 'signal_tags']].copy()
-                display_d.columns = ['Ticker', 'Company', 'Prev', 'Now', 'Δ', 'T-Score', 'Grade', 'Signals']
-                display_d['Company'] = display_d['Company'].str[:25]
-                st.dataframe(display_d, column_config={
+                dd = de[['ticker', 'company_name', 'prev_rank', 'current_rank',
+                          'rank_change', 'trajectory_score', 'grade']].copy()
+                dd.columns = ['Ticker', 'Company', 'Prev', 'Now', 'Δ', 'T-Score', 'Grade']
+                dd['Company'] = dd['Company'].str[:22]
+                st.dataframe(dd, column_config={
                     'Δ': st.column_config.NumberColumn(format="%+d"),
                     'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.0f"),
                 }, hide_index=True, use_container_width=True)
             else:
-                st.info("No data")
+                st.caption("No movers detected")
 
-    # ── Sort Options ──
-    sort_col1, sort_col2 = st.columns([1, 3])
-    with sort_col1:
-        sort_by = st.selectbox("Sort By", [
-            'Trajectory Score', 'Positional Quality', 'TMI', 'Current Rank', 'Rank Change',
-            'Best Rank', 'Streak', 'Trend', 'Velocity', 'Consistency',
-            'Price Alignment', 'Decay Score', 'Sector Alpha'
-        ], key='rank_sort')
+    # ════════════════════════════════════════════
+    # SECTION 5 — SORT + TABLE
+    # ════════════════════════════════════════════
+    st.markdown('<div class="section-title">📋 Trajectory Rankings</div>', unsafe_allow_html=True)
+
+    sc1, sc2, sc3 = st.columns([1.2, 1.2, 3.6])
+    with sc1:
+        sort_by = st.selectbox("Sort", [
+            'Trajectory Score', 'Positional Quality', 'TMI', 'Current Rank',
+            'Rank Change', 'Best Rank', 'Streak', 'Trend', 'Velocity',
+            'Consistency', 'Price Alignment', 'Decay Score', 'Sector Alpha'
+        ], key='rank_sort', label_visibility='collapsed')
+    with sc2:
+        view_mode = st.selectbox("View", ['Standard', 'Compact', 'Signals Focus'],
+                                  key='rank_view', label_visibility='collapsed')
 
     sort_map = {
         'Trajectory Score': ('trajectory_score', False),
@@ -1806,276 +1925,274 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Decay Score': ('decay_score', True),
         'Sector Alpha': ('sector_alpha_value', False),
     }
-    col_name, ascending = sort_map[sort_by]
+    col_name, ascending = sort_map.get(sort_by, ('trajectory_score', False))
     display_df = filtered_df.sort_values(col_name, ascending=ascending).reset_index(drop=True)
     display_df['t_rank'] = range(1, len(display_df) + 1)
 
-    # ── Rankings Table ──
-    st.markdown("##### 📋 Trajectory Rankings")
-
-    # Prepare display columns
-    table_df = display_df[[
-        't_rank', 'ticker', 'company_name', 'sector',
-        'trajectory_score', 'grade', 'pattern', 'signal_tags', 'tmi',
-        'current_rank', 'best_rank', 'rank_change', 'last_week_change',
-        'streak', 'weeks', 'sparkline'
-    ]].copy()
-
-    table_df.columns = [
-        '#', 'Ticker', 'Company', 'Sector',
-        'T-Score', 'Grade', 'Pattern', 'Signals', 'TMI',
-        'Rank Now', 'Best', 'Δ Total', 'Δ Week',
-        'Streak', 'Wks', 'Trajectory'
-    ]
-
-    # Truncate display
-    table_df['Company'] = table_df['Company'].str[:25]
-    table_df['Sector'] = table_df['Sector'].str[:18]
-
-    st.dataframe(
-        table_df,
-        column_config={
+    # ── Build table based on view mode ──
+    if view_mode == 'Signals Focus':
+        table_df = display_df[[
+            't_rank', 'ticker', 'company_name', 'sector',
+            'trajectory_score', 'grade', 'pattern', 'signal_tags',
+            'price_label', 'decay_label', 'sector_alpha_tag',
+            'current_rank', 'sparkline'
+        ]].copy()
+        table_df.columns = [
+            '#', 'Ticker', 'Company', 'Sector',
+            'T-Score', 'Grade', 'Pattern', 'Signals',
+            'Price', 'Decay', 'Alpha',
+            'Rank', 'Trajectory'
+        ]
+        table_df['Company'] = table_df['Company'].str[:20]
+        table_df['Sector'] = table_df['Sector'].str[:15]
+        col_config = {
             '#': st.column_config.NumberColumn(width="small"),
-            'T-Score': st.column_config.ProgressColumn(
-                'T-Score', min_value=0, max_value=100, format="%.1f"
-            ),
-            'TMI': st.column_config.ProgressColumn(
-                'TMI', min_value=0, max_value=100, format="%.0f"
-            ),
-            'Trajectory': st.column_config.LineChartColumn(
-                'Trajectory', y_min=0, y_max=100, width="medium"
-            ),
+            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
+            'Trajectory': st.column_config.LineChartColumn('Trajectory', y_min=0, y_max=100, width="medium"),
+        }
+    elif view_mode == 'Compact':
+        table_df = display_df[[
+            't_rank', 'ticker', 'trajectory_score', 'grade', 'pattern',
+            'current_rank', 'rank_change', 'streak', 'sparkline'
+        ]].copy()
+        table_df.columns = ['#', 'Ticker', 'T-Score', 'Grade', 'Pattern',
+                            'Rank', 'Δ', 'Streak', 'Trajectory']
+        col_config = {
+            '#': st.column_config.NumberColumn(width="small"),
+            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
+            'Δ': st.column_config.NumberColumn(format="%+d"),
+            'Streak': st.column_config.NumberColumn(format="%d 🔥"),
+            'Trajectory': st.column_config.LineChartColumn('Trajectory', y_min=0, y_max=100, width="medium"),
+        }
+    else:  # Standard
+        table_df = display_df[[
+            't_rank', 'ticker', 'company_name', 'sector',
+            'trajectory_score', 'grade', 'pattern', 'signal_tags', 'tmi',
+            'current_rank', 'best_rank', 'rank_change', 'last_week_change',
+            'streak', 'weeks', 'sparkline'
+        ]].copy()
+        table_df.columns = [
+            '#', 'Ticker', 'Company', 'Sector',
+            'T-Score', 'Grade', 'Pattern', 'Signals', 'TMI',
+            'Rank', 'Best', 'Δ Total', 'Δ Week',
+            'Streak', 'Wks', 'Trajectory'
+        ]
+        table_df['Company'] = table_df['Company'].str[:24]
+        table_df['Sector'] = table_df['Sector'].str[:16]
+        col_config = {
+            '#': st.column_config.NumberColumn(width="small"),
+            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
+            'TMI': st.column_config.ProgressColumn('TMI', min_value=0, max_value=100, format="%.0f"),
+            'Trajectory': st.column_config.LineChartColumn('Trajectory', y_min=0, y_max=100, width="medium"),
             'Δ Total': st.column_config.NumberColumn(format="%+d"),
             'Δ Week': st.column_config.NumberColumn(format="%+d"),
             'Streak': st.column_config.NumberColumn(format="%d 🔥"),
-        },
-        hide_index=True,
-        use_container_width=True,
-        height=650
+        }
+
+    st.dataframe(
+        table_df, column_config=col_config,
+        hide_index=True, use_container_width=True, height=620
     )
 
-    # ── Insights Section (v2.3 — ALL TIME BEST) ──
-    with st.expander("📊 Trajectory Intelligence Dashboard", expanded=False):
+    # ════════════════════════════════════════════
+    # SECTION 6 — INTELLIGENCE DASHBOARD (tabs)
+    # ════════════════════════════════════════════
+    st.markdown('<div class="section-title">📊 Intelligence</div>', unsafe_allow_html=True)
 
-        # ─── Row 1: Score Pipeline Waterfall + Decay Breakdown ───
-        wf_c1, wf_c2 = st.columns(2)
+    tab_health, tab_sectors, tab_patterns, tab_grades = st.tabs([
+        "🫀 Health", "🏢 Sectors", "🔮 Patterns", "📊 Grades & Alpha"
+    ])
 
-        with wf_c1:
-            # Score Pipeline Waterfall — how many stocks survive each scoring layer
-            total = len(all_df)
-            above70 = len(all_df[all_df['pre_price_score'] >= 70])
-            price_boosted = len(all_df[all_df['price_multiplier'] > 1.01])
-            price_penalized = len(all_df[all_df['price_multiplier'] < 0.99])
-            decay_penalized = len(all_df[all_df['decay_multiplier'] < 0.99])
-            final_s_grade = len(all_df[all_df['grade'] == 'S'])
-            final_a_grade = len(all_df[all_df['grade'] == 'A'])
-
-            fig_wf = go.Figure(go.Waterfall(
-                name="Pipeline", orientation="v",
-                measure=["absolute", "absolute", "relative", "relative", "relative", "absolute"],
-                x=["Universe", "T≥70 (Pre)", "💰 Boosted", "⚠️ Price Pen", "🔻 Decay Pen", "Grade S+A"],
-                y=[total, above70, price_boosted, -price_penalized, -decay_penalized, final_s_grade + final_a_grade],
-                connector={"line": {"color": "#444"}},
-                increasing={"marker": {"color": "#00C853"}},
-                decreasing={"marker": {"color": "#FF1744"}},
-                totals={"marker": {"color": "#FF6B35"}},
-                text=[total, above70, f"+{price_boosted}", f"-{price_penalized}", f"-{decay_penalized}", final_s_grade + final_a_grade],
-                textposition="outside"
-            ))
-            fig_wf.update_layout(
-                title="Score Pipeline — How Multipliers Shape Rankings",
-                height=380, template='plotly_dark',
-                margin=dict(t=40, b=30, l=30, r=20),
-                showlegend=False
-            )
-            st.plotly_chart(fig_wf, use_container_width=True)
-
-        with wf_c2:
-            # Decay Health — donut showing universe decay status
-            clean = len(all_df[~all_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE', 'DECAY_MILD'])])
-            mild = len(all_df[all_df['decay_label'] == 'DECAY_MILD'])
-            moderate = len(all_df[all_df['decay_label'] == 'DECAY_MODERATE'])
-            severe = len(all_df[all_df['decay_label'] == 'DECAY_HIGH'])
-
-            fig_decay = go.Figure(data=[go.Pie(
-                labels=['✅ Clean', '~ Mild', '⚡ Moderate', '🔻 Severe'],
-                values=[clean, mild, moderate, severe],
-                marker_colors=['#00C853', '#FFD700', '#FF9800', '#FF1744'],
-                hole=0.55,
-                textinfo='label+value',
-                textfont_size=12,
-                sort=False
+    # ─── TAB: Health ───
+    with tab_health:
+        h1, h2 = st.columns(2)
+        with h1:
+            # Decay Health donut
+            clean_n = total - decay_any
+            mild_n = int((all_df['decay_label'] == 'DECAY_MILD').sum())
+            fig_health = go.Figure(data=[go.Pie(
+                labels=['Clean', 'Mild', 'Moderate', 'Severe'],
+                values=[clean_n, mild_n, decay_mod, decay_high],
+                marker_colors=['#238636', '#d29922', '#da3633', '#f85149'],
+                hole=0.6, textinfo='label+value', textfont_size=12, sort=False,
+                textfont_color='#e6edf3'
             )])
-            fig_decay.update_layout(
-                title="Momentum Decay Health — Universe Overview",
-                height=380, template='plotly_dark',
-                showlegend=False,
-                margin=dict(t=40, b=20, l=20, r=20),
-                annotations=[dict(text=f'{clean}/{total}<br>Clean',
-                                   x=0.5, y=0.5, font_size=14, showarrow=False,
-                                   font_color='#00C853')]
+            fig_health.update_layout(
+                title=dict(text="Momentum Health", font=dict(size=14, color='#e6edf3')),
+                height=360, template='plotly_dark', showlegend=False,
+                margin=dict(t=50, b=20, l=20, r=20),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                annotations=[dict(text=f'{clean_pct}%<br><span style="font-size:11px;color:#8b949e">Clean</span>',
+                                   x=0.5, y=0.5, font_size=20, showarrow=False, font_color='#3fb950')]
             )
-            st.plotly_chart(fig_decay, use_container_width=True)
+            st.plotly_chart(fig_health, use_container_width=True)
 
-        # ─── Row 2: Sector Heatmap + Pattern Distribution ───
-        sec_c1, sec_c2 = st.columns([3, 2])
+        with h2:
+            # Score pipeline — how multipliers shape final scores
+            above70 = int((all_df['pre_price_score'] >= 70).sum()) if 'pre_price_score' in all_df.columns else 0
+            price_boosted = int((all_df['price_multiplier'] > 1.01).sum())
+            price_pen = int((all_df['price_multiplier'] < 0.99).sum())
+            decay_pen = int((all_df['decay_multiplier'] < 0.99).sum())
 
-        with sec_c1:
-            # Sector Scoreboard Heatmap
-            qualified = all_df[all_df['weeks'] >= 3].copy()
-            if not qualified.empty:
-                sect_agg = qualified.groupby('sector').agg(
-                    avg_score=('trajectory_score', 'mean'),
-                    count=('trajectory_score', 'count'),
-                    leaders=('sector_alpha_tag', lambda x: (x == 'SECTOR_LEADER').sum()),
-                    betas=('sector_alpha_tag', lambda x: (x == 'SECTOR_BETA').sum()),
-                    rockets_n=('pattern_key', lambda x: (x == 'rocket').sum()),
-                    decay_n=('decay_label', lambda x: x.isin(['DECAY_HIGH', 'DECAY_MODERATE']).sum()),
-                    avg_decay=('decay_score', 'mean'),
-                ).reset_index()
-                sect_agg = sect_agg[sect_agg['count'] >= 3].sort_values('avg_score', ascending=False).head(18)
+            fig_pipe = go.Figure(go.Waterfall(
+                orientation="v",
+                measure=["absolute", "absolute", "relative", "relative", "relative", "absolute"],
+                x=["Universe", "Pre≥70", "💰 Boost", "⚠️ Price↓", "🔻 Decay↓", "S+A Final"],
+                y=[total, above70, price_boosted, -price_pen, -decay_pen, grade_s + grade_a],
+                connector={"line": {"color": "#30363d"}},
+                increasing={"marker": {"color": "#238636"}},
+                decreasing={"marker": {"color": "#da3633"}},
+                totals={"marker": {"color": "#FF6B35"}},
+                text=[total, above70, f"+{price_boosted}", f"−{price_pen}", f"−{decay_pen}", grade_s + grade_a],
+                textposition="outside", textfont_color='#e6edf3'
+            ))
+            fig_pipe.update_layout(
+                title=dict(text="Score Pipeline", font=dict(size=14, color='#e6edf3')),
+                height=360, template='plotly_dark', showlegend=False,
+                margin=dict(t=50, b=30, l=30, r=20),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                yaxis=dict(gridcolor='#21262d'),
+            )
+            st.plotly_chart(fig_pipe, use_container_width=True)
 
-                if not sect_agg.empty:
-                    # Color bars by avg_score — green=high, red=low
-                    max_s = sect_agg['avg_score'].max()
-                    min_s = sect_agg['avg_score'].min()
-                    colors = []
-                    for s in sect_agg['avg_score']:
-                        ratio = (s - min_s) / max(max_s - min_s, 1)
-                        if ratio > 0.7:
-                            colors.append('#00C853')
-                        elif ratio > 0.4:
-                            colors.append('#FF9800')
-                        else:
-                            colors.append('#FF5722')
+        # Health summary metrics
+        hm1, hm2, hm3, hm4 = st.columns(4)
+        hm1.metric("Clean Stocks", f"{clean_n:,}", f"{clean_pct}%")
+        hm2.metric("Price Confirmed", confirmed, f"{round(confirmed/max(total,1)*100,1)}%")
+        hm3.metric("Decay Warnings", decay_any, f"−{round(decay_any/max(total,1)*100,1)}%", delta_color="inverse")
+        hm4.metric("Divergent", divergent, f"{round(divergent/max(total,1)*100,1)}%", delta_color="inverse")
 
-                    labels = [f"{row['sector'][:20]}  ({int(row['count'])} stk, 👑{int(row['leaders'])}, 🔻{int(row['decay_n'])})"
-                              for _, row in sect_agg.iterrows()]
+    # ─── TAB: Sectors ───
+    with tab_sectors:
+        qualified = all_df[all_df['weeks'] >= 3].copy()
+        if not qualified.empty:
+            sect_agg = qualified.groupby('sector').agg(
+                avg_score=('trajectory_score', 'mean'),
+                count=('trajectory_score', 'count'),
+                leaders=('sector_alpha_tag', lambda x: (x == 'SECTOR_LEADER').sum()),
+                decay_n=('decay_label', lambda x: x.isin(['DECAY_HIGH', 'DECAY_MODERATE']).sum()),
+            ).reset_index()
+            sect_agg = sect_agg[sect_agg['count'] >= 3].sort_values('avg_score', ascending=False).head(20)
 
-                    fig_sh = go.Figure(data=[go.Bar(
-                        x=sect_agg['avg_score'].values,
-                        y=labels,
-                        orientation='h',
-                        marker_color=colors,
-                        text=[f"{v:.1f}" for v in sect_agg['avg_score']],
-                        textposition='auto'
-                    )])
-                    fig_sh.update_layout(
-                        title="Sector Scoreboard — Avg T-Score (stocks, 👑leaders, 🔻decay)",
-                        height=480, template='plotly_dark',
-                        xaxis_title='Avg T-Score',
-                        yaxis=dict(autorange='reversed'),
-                        margin=dict(t=40, b=40, l=280, r=20)
-                    )
-                    st.plotly_chart(fig_sh, use_container_width=True)
+            if not sect_agg.empty:
+                # Color gradient: green → orange → red
+                max_s = sect_agg['avg_score'].max()
+                min_s = sect_agg['avg_score'].min()
+                rng = max(max_s - min_s, 1)
+                colors = []
+                for s in sect_agg['avg_score']:
+                    r = (s - min_s) / rng
+                    colors.append('#238636' if r > 0.7 else '#d29922' if r > 0.35 else '#da3633')
 
-        with sec_c2:
-            # Pattern distribution donut
+                bar_labels = [
+                    f"{row['sector'][:22]}  ·  {int(row['count'])} stk  ·  👑{int(row['leaders'])}"
+                    for _, row in sect_agg.iterrows()
+                ]
+                fig_sec = go.Figure(data=[go.Bar(
+                    x=sect_agg['avg_score'].values, y=bar_labels,
+                    orientation='h', marker_color=colors,
+                    text=[f"{v:.1f}" for v in sect_agg['avg_score']],
+                    textposition='auto', textfont_color='#e6edf3'
+                )])
+                fig_sec.update_layout(
+                    title=dict(text="Sectors by Avg Trajectory Score", font=dict(size=14, color='#e6edf3')),
+                    height=min(500, 80 + len(sect_agg) * 24), template='plotly_dark',
+                    xaxis_title='Avg T-Score', yaxis=dict(autorange='reversed'),
+                    margin=dict(t=50, b=40, l=250, r=20),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    xaxis=dict(gridcolor='#21262d'),
+                )
+                st.plotly_chart(fig_sec, use_container_width=True)
+        else:
+            st.info("Need 3+ weeks of data for sector analysis")
+
+    # ─── TAB: Patterns ───
+    with tab_patterns:
+        p1, p2 = st.columns([3, 2])
+        with p1:
             pattern_counts = all_df['pattern_key'].value_counts()
+            p_labels = [PATTERN_DEFS.get(k, ('', k, ''))[1] for k in pattern_counts.index]
+            p_colors = [PATTERN_COLORS.get(k, '#8b949e') for k in pattern_counts.index]
             fig_pat = go.Figure(data=[go.Pie(
-                labels=[PATTERN_DEFS.get(k, ('', k, ''))[1] for k in pattern_counts.index],
-                values=pattern_counts.values,
-                marker_colors=[PATTERN_COLORS.get(k, '#888') for k in pattern_counts.index],
-                hole=0.45,
-                textinfo='label+percent',
-                textfont_size=10
+                labels=p_labels, values=pattern_counts.values,
+                marker_colors=p_colors, hole=0.5,
+                textinfo='label+percent', textfont_size=11,
+                textfont_color='#e6edf3'
             )])
             fig_pat.update_layout(
-                title="Pattern Distribution",
-                height=480, template='plotly_dark',
-                showlegend=False,
-                margin=dict(t=40, b=20, l=20, r=20)
+                title=dict(text="Pattern Distribution", font=dict(size=14, color='#e6edf3')),
+                height=400, template='plotly_dark', showlegend=False,
+                margin=dict(t=50, b=20, l=20, r=20),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             )
             st.plotly_chart(fig_pat, use_container_width=True)
 
-        # ─── Row 3: Grade Distribution + Sector Alpha Breakdown ───
-        gr_c1, gr_c2 = st.columns(2)
+        with p2:
+            st.markdown("**Pattern Breakdown**")
+            for pk in pattern_counts.index[:10]:
+                emoji, name, _ = PATTERN_DEFS.get(pk, ('•', pk, ''))
+                cnt = int(pattern_counts[pk])
+                pct = round(cnt / max(total, 1) * 100, 1)
+                bar_w = min(pct * 3, 100)
+                bar_color = PATTERN_COLORS.get(pk, '#8b949e')
+                st.markdown(f"""<div style="margin-bottom:6px;">
+                    <div style="display:flex; justify-content:space-between; font-size:0.82rem; color:#e6edf3;">
+                        <span>{emoji} {name}</span><span style="color:#8b949e;">{cnt} ({pct}%)</span>
+                    </div>
+                    <div style="background:#21262d; border-radius:4px; height:6px; margin-top:3px;">
+                        <div style="background:{bar_color}; width:{bar_w}%; height:6px; border-radius:4px;"></div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
 
-        with gr_c1:
-            # Grade distribution with colored bars
-            grade_counts = all_df['grade'].value_counts().reindex(['S', 'A', 'B', 'C', 'D', 'F']).fillna(0)
-            fig_grade = go.Figure(data=[go.Bar(
-                x=grade_counts.index,
-                y=grade_counts.values,
-                marker_color=[GRADE_COLORS.get(g, '#888') for g in grade_counts.index],
-                text=[f"{int(v)}" for v in grade_counts.values],
-                textposition='outside',
-                width=0.7
+    # ─── TAB: Grades & Alpha ───
+    with tab_grades:
+        ga1, ga2 = st.columns(2)
+        with ga1:
+            grade_counts = all_df['grade'].value_counts().reindex(
+                ['S', 'A', 'B', 'C', 'D', 'F']).fillna(0)
+            fig_gr = go.Figure(data=[go.Bar(
+                x=grade_counts.index, y=grade_counts.values,
+                marker_color=[GRADE_COLORS.get(g, '#8b949e') for g in grade_counts.index],
+                text=[int(v) for v in grade_counts.values],
+                textposition='outside', width=0.65,
+                textfont_color='#e6edf3'
             )])
-            fig_grade.update_layout(
-                title="Grade Distribution",
-                height=320, template='plotly_dark',
-                xaxis_title='Grade', yaxis_title='Count',
-                margin=dict(t=40, b=40, l=40, r=20)
+            fig_gr.update_layout(
+                title=dict(text="Grade Distribution", font=dict(size=14, color='#e6edf3')),
+                height=340, template='plotly_dark',
+                margin=dict(t=50, b=40, l=40, r=20),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                yaxis=dict(gridcolor='#21262d'),
             )
-            st.plotly_chart(fig_grade, use_container_width=True)
+            st.plotly_chart(fig_gr, use_container_width=True)
 
-        with gr_c2:
-            # Sector Alpha breakdown
+        with ga2:
+            alpha_order = ['SECTOR_LEADER', 'SECTOR_OUTPERFORM', 'SECTOR_ALIGNED',
+                           'SECTOR_BETA', 'SECTOR_LAGGARD', 'NEUTRAL']
+            alpha_cmap = {'SECTOR_LEADER': '#d29922', 'SECTOR_OUTPERFORM': '#238636',
+                          'SECTOR_ALIGNED': '#8b949e', 'SECTOR_BETA': '#da3633',
+                          'SECTOR_LAGGARD': '#f85149', 'NEUTRAL': '#484f58'}
             alpha_counts = all_df['sector_alpha_tag'].value_counts()
-            alpha_order = ['SECTOR_LEADER', 'SECTOR_OUTPERFORM', 'SECTOR_ALIGNED', 'SECTOR_BETA', 'SECTOR_LAGGARD', 'NEUTRAL']
-            alpha_colors_map = {'SECTOR_LEADER': '#FFD700', 'SECTOR_OUTPERFORM': '#00C853',
-                                'SECTOR_ALIGNED': '#888', 'SECTOR_BETA': '#FF9800',
-                                'SECTOR_LAGGARD': '#FF1744', 'NEUTRAL': '#555'}
-            alpha_labels = []
-            alpha_vals = []
-            alpha_cols = []
+            al, av, ac = [], [], []
             for a in alpha_order:
                 if a in alpha_counts.index:
-                    alpha_labels.append(a.replace('SECTOR_', ''))
-                    alpha_vals.append(alpha_counts[a])
-                    alpha_cols.append(alpha_colors_map.get(a, '#888'))
-
-            if alpha_labels:
-                fig_alpha = go.Figure(data=[go.Bar(
-                    x=alpha_labels, y=alpha_vals,
-                    marker_color=alpha_cols,
-                    text=[int(v) for v in alpha_vals],
-                    textposition='outside', width=0.6
+                    al.append(a.replace('SECTOR_', ''))
+                    av.append(int(alpha_counts[a]))
+                    ac.append(alpha_cmap.get(a, '#8b949e'))
+            if al:
+                fig_al = go.Figure(data=[go.Bar(
+                    x=al, y=av, marker_color=ac,
+                    text=av, textposition='outside', width=0.55,
+                    textfont_color='#e6edf3'
                 )])
-                fig_alpha.update_layout(
-                    title="Sector Alpha Classification",
-                    height=320, template='plotly_dark',
-                    xaxis_title='Classification', yaxis_title='Stocks',
-                    margin=dict(t=40, b=40, l=40, r=20)
+                fig_al.update_layout(
+                    title=dict(text="Sector Alpha Classification", font=dict(size=14, color='#e6edf3')),
+                    height=340, template='plotly_dark',
+                    margin=dict(t=50, b=40, l=40, r=20),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    yaxis=dict(gridcolor='#21262d'),
                 )
-                st.plotly_chart(fig_alpha, use_container_width=True)
-
-        # ─── Row 4:  Top-10 Elite Conviction list ───
-        st.markdown("---")
-        st.markdown("##### 🏆 Top-10 Highest Conviction Stocks")
-        st.caption("Stocks with Grade S/A + 💰 Price Confirmed + ✅ Clean Decay + 👑 Sector Leader/Outperform")
-        conviction_mask = (
-            (all_df['grade'].isin(['S', 'A'])) &
-            (all_df['price_label'] == 'PRICE_CONFIRMED') &
-            (~all_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE'])) &
-            (all_df['sector_alpha_tag'].isin(['SECTOR_LEADER', 'SECTOR_OUTPERFORM', 'NEUTRAL']))
-        )
-        conviction = all_df[conviction_mask].sort_values('trajectory_score', ascending=False).head(10)
-
-        if not conviction.empty:
-            conv_cols = st.columns(min(len(conviction), 5))
-            for idx, (_, c_row) in enumerate(conviction.iterrows()):
-                with conv_cols[idx % len(conv_cols)]:
-                    g_color = GRADE_COLORS.get(c_row['grade'], '#888')
-                    st.markdown(f"""
-                    <div style="background:linear-gradient(135deg,#0d1a0d,#0a1a0a); border-radius:12px;
-                        padding:14px; border:1px solid #00C853; margin-bottom:8px;
-                        box-shadow:0 0 10px rgba(0,200,83,0.1);">
-                        <div style="font-weight:800; color:#00C853; font-size:1.05rem;">{c_row['ticker']}</div>
-                        <div style="color:#aaa; font-size:0.72rem;">{str(c_row.get('company_name',''))[:22]}</div>
-                        <div style="color:{g_color}; font-weight:700; font-size:1.4rem; margin:4px 0;">
-                            {c_row['grade_emoji']} {c_row['trajectory_score']:.0f}
-                        </div>
-                        <div style="color:#888; font-size:0.72rem;">
-                            Rank #{int(c_row['current_rank'])} • {c_row['pattern']}
-                        </div>
-                        <div style="color:#555; font-size:0.65rem; margin-top:4px;">
-                            💰 ×{c_row['price_multiplier']:.3f} • {c_row['signal_tags']}
-                        </div>
-                    </div>""", unsafe_allow_html=True)
-        else:
-            st.info("No stocks currently pass all conviction filters. This is normal — high conviction requires ALL signals aligned.")
+                st.plotly_chart(fig_al, use_container_width=True)
 
 
 # ============================================
