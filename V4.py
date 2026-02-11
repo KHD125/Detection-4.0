@@ -1520,7 +1520,6 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
 def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
     """Render sidebar with data info and global filters"""
     with st.sidebar:
-        st.markdown("### 📊 Rank Trajectory Engine")
         st.markdown("---")
 
         # Data status
@@ -1562,7 +1561,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                                 index=0, key='sb_quick')
 
         st.markdown("---")
-        st.caption("v2.0.0 | Elite-Aware + 3-Stage Funnel")
+        st.caption("v2.3.0 | Return-Based + Decay + Sector Alpha")
 
     return {
         'categories': selected_cats,
@@ -2782,27 +2781,30 @@ def render_about_tab():
 def main():
     """Main application entry point"""
 
+    # ── Sidebar: Upload CSVs ──
+    with st.sidebar:
+        st.markdown("### 📊 Rank Trajectory Engine")
+        uploaded_files = st.file_uploader(
+            "📂 Upload Weekly CSV Snapshots",
+            type=['csv'],
+            accept_multiple_files=True,
+            help="Upload your Wave Detection weekly CSV exports (Stocks_Weekly_YYYY-MM-DD_*.csv)"
+        )
+
     # Header
     st.markdown('<div class="main-header">📊 RANK TRAJECTORY ENGINE</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-header">Professional Stock Rank Trajectory Analysis • Multi-Week Momentum Intelligence</div>',
                 unsafe_allow_html=True)
 
-    # ── Upload CSVs ──
-    uploaded_files = st.file_uploader(
-        "📂 Upload Weekly CSV Snapshots",
-        type=['csv'],
-        accept_multiple_files=True,
-        help="Upload your Wave Detection weekly CSV exports (Stocks_Weekly_YYYY-MM-DD_*.csv)"
-    )
-
     if not uploaded_files:
-        st.info("👆 Upload your weekly CSV snapshots to begin trajectory analysis")
+        st.info("👈 Upload your weekly CSV snapshots from the sidebar to begin trajectory analysis")
         st.markdown("""
         **How to use:**
-        1. Click **Browse files** or drag-and-drop your Wave Detection weekly CSV exports
-        2. Upload multiple weeks at once (select all CSVs together)
-        3. Files should be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year.csv`
-        4. Minimum **3 weeks** recommended for meaningful trajectory analysis
+        1. Open the **sidebar** (click `>` at the top-left if collapsed)
+        2. Click **Browse files** or drag-and-drop your Wave Detection weekly CSV exports
+        3. Upload multiple weeks at once (select all CSVs together)
+        4. Files should be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year.csv`
+        5. Minimum **3 weeks** recommended for meaningful trajectory analysis
         """)
         return
 
