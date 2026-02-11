@@ -2420,27 +2420,41 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
 
 
 def _render_rank_chart(h: dict, ticker: str):
-    """Rank percentile trajectory chart"""
+    """Rank + Master Score dual-axis trajectory chart"""
     dates = h['dates']
-    pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
+    ranks = h['ranks']
+    scores = h['scores']
 
-    fig = go.Figure()
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Rank (primary y — inverted so lower rank = higher on chart)
     fig.add_trace(go.Scatter(
-        x=dates, y=pcts,
+        x=dates, y=ranks,
         mode='lines+markers',
-        name='Rank Percentile',
+        name='Rank',
         line=dict(color='#FF6B35', width=3),
         marker=dict(size=6),
         fill='tozeroy',
         fillcolor='rgba(255,107,53,0.08)',
-        hovertemplate='%{x}<br>Rank Pctl: %{y:.1f}%<extra></extra>'
-    ))
+        hovertemplate='%{x}<br>Rank: #%{y}<extra></extra>'
+    ), secondary_y=False)
+
+    # Master Score (secondary y)
+    fig.add_trace(go.Scatter(
+        x=dates, y=scores,
+        mode='lines+markers',
+        name='Master Score',
+        line=dict(color='#58a6ff', width=2, dash='dot'),
+        marker=dict(size=4),
+        opacity=0.85,
+        hovertemplate='%{x}<br>M.Score: %{y:.1f}<extra></extra>'
+    ), secondary_y=True)
 
     # Best rank annotation
-    best_idx = int(np.argmax(pcts))
+    best_idx = int(np.argmin(ranks))
     fig.add_annotation(
-        x=dates[best_idx], y=pcts[best_idx],
-        text=f"Peak: {pcts[best_idx]:.0f}%",
+        x=dates[best_idx], y=ranks[best_idx],
+        text=f"Best: #{int(ranks[best_idx])}",
         showarrow=True, arrowhead=2,
         font=dict(color='#FFD700', size=10),
         bgcolor='rgba(0,0,0,0.7)', bordercolor='#FFD700'
@@ -2450,13 +2464,17 @@ def _render_rank_chart(h: dict, ticker: str):
         height=340,
         template='plotly_dark',
         hovermode='x unified',
-        margin=dict(t=10, b=50, l=50, r=20),
+        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
+        margin=dict(t=10, b=55, l=50, r=50),
         xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
-        yaxis=dict(title='Rank Pctl %', range=[0, 100], gridcolor='rgba(255,255,255,0.04)'),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        showlegend=False,
     )
+    fig.update_yaxes(title_text="Rank", autorange="reversed",
+                     secondary_y=False, gridcolor='rgba(255,255,255,0.04)')
+    fig.update_yaxes(title_text="Master Score",
+                     secondary_y=True, gridcolor='rgba(255,255,255,0.02)')
+
     st.plotly_chart(fig, use_container_width=True)
 
 
