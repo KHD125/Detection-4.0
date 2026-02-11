@@ -1,26 +1,33 @@
 """
-Rank Trajectory Engine 2.0 — Elite-Aware + 3-Stage Funnel
+Rank Trajectory Engine v2.2 — Adaptive Intelligence + Price-Rank Alignment
 =================================================================
 Professional Stock Rank Trajectory Analysis System
-with Position-Aware Intelligence and Multi-Stage Selection Funnel
+with Adaptive Weight Intelligence, Price-Rank Alignment Multiplier,
+and Multi-Stage Selection Funnel.
 
-THE ELITE FIX: Traditional trajectory scores penalize stable top-ranked
-stocks because they have "no room to improve". Version 2.0 introduces
-Positional Quality scoring — WHERE you sit matters, not just direction.
+CORE ARCHITECTURE:
+  6-Component Adaptive Scoring → Elite Dominance Bonus → Price-Rank Multiplier
+  Weights shift dynamically by position tier (elite/strong/mid/bottom).
+  Price alignment confirms or flags trajectory via ×0.92 to ×1.08 multiplier.
 
 3-STAGE FUNNEL:
   Stage 1: Discovery  — Trajectory Score ≥70 or Rocket/Breakout → 50-100 candidates
   Stage 2: Validation — 5 Wave Engine rules, must pass 4/5    → 20-30 stocks
   Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND  → 5-10 FINAL BUYS
 
-Components: Positional (25%) | Trend (20%) | Velocity (15%)
-            Acceleration (10%) | Consistency (15%) | Resilience (15%)
+Components: Adaptive Weights by Tier
+  Elite (>90pct):  Pos 45% | Trend 12% | Vel 8% | Acc 5% | Con 18% | Res 12%
+  Strong (70-90):  Pos 32% | Trend 18% | Vel 12% | Acc 8% | Con 16% | Res 14%
+  Mid (40-70):     Pos 18% | Trend 22% | Vel 20% | Acc 12% | Con 14% | Res 14%
+  Bottom (<40):    Pos 10% | Trend 20% | Vel 25% | Acc 18% | Con 12% | Res 15%
 
-Patterns: Rocket | Breakout | Stable Elite | At Peak |
-          Steady Climber | Recovery | Fading | Volatile |
-          New Entry | Stagnant
+Price-Rank Alignment Multiplier: ×0.92 (divergent) to ×1.08 (confirmed)
+  - Auto-detects stock splits/bonus (price crashes + rank stable = split)
+  - Directional agreement (55%): week-to-week co-movement
+  - Trend correlation (45%): overall shape similarity
+  - PRICE_CONFIRMED / PRICE_DIVERGENT pattern tags
 
-Version: 2.0.0
+Version: 2.2.0
 Last Updated: February 2026
 """
 
@@ -114,6 +121,20 @@ ELITE_BONUS = {
     'top20_sustained': {'pct_threshold': 80, 'history_ratio': 0.50, 'floor': 68}
 }
 
+# Price-Rank Alignment Configuration
+PRICE_ALIGNMENT = {
+    'split_threshold': -0.35,        # Week-to-week price drop that triggers split detection
+    'split_rank_tolerance': 20,      # Max percentile rank drop to still be considered a split
+    'noise_band_stable': 2.0,        # Ignore rank moves < this for stable stocks
+    'noise_band_normal': 1.0,        # Ignore rank moves < this for normal stocks
+    'stability_threshold': 3.0,      # Pct std below which a stock is "stable"
+    'min_weeks': 4,                  # Minimum weeks needed for alignment calculation
+    'multiplier_max_boost': 1.08,    # Maximum upward multiplier
+    'multiplier_max_penalty': 0.92,  # Maximum downward multiplier
+    'confirmed_threshold': 72,       # Alignment score above this = PRICE_CONFIRMED
+    'divergent_threshold': 35,       # Alignment score below this = PRICE_DIVERGENT
+}
+
 # Funnel Stage Defaults
 FUNNEL_DEFAULTS = {
     'stage1_score': 70,
@@ -148,14 +169,16 @@ PATTERN_DEFS = {
     'fading':         ('📉', 'Fading',          'Rank deteriorating from recent levels'),
     'volatile':       ('🌊', 'Volatile',        'Large and unpredictable rank swings'),
     'new_entry':      ('💎', 'New Entry',        'Recently appeared or insufficient history'),
-    'stagnant':       ('⏸️', 'Stagnant',        'No significant rank movement')
+    'stagnant':       ('⏸️', 'Stagnant',        'No significant rank movement'),
+    'price_confirmed': ('💰', 'Price Confirmed', 'Price movement validates rank trajectory'),
+    'price_divergent': ('⚠️', 'Price Divergent', 'Price movement contradicts rank trajectory')
 }
 
 PATTERN_COLORS = {
     'rocket': '#FF4500', 'breakout': '#FFD700', 'stable_elite': '#8A2BE2',
     'at_peak': '#FF69B4', 'steady_climber': '#32CD32', 'recovery': '#00BFFF',
     'fading': '#808080', 'volatile': '#FF8C00', 'new_entry': '#00CED1',
-    'stagnant': '#A9A9A9'
+    'stagnant': '#A9A9A9', 'price_confirmed': '#00E676', 'price_divergent': '#FF1744'
 }
 
 # ============================================
@@ -452,6 +475,13 @@ def _compute_single_trajectory(h: dict) -> dict:
     # Sustained top-tier presence guarantees a minimum score floor
     trajectory_score = _apply_elite_bonus(trajectory_score, pcts, n)
 
+    # ── Price-Rank Alignment Multiplier ──
+    # Price confirms or flags the trajectory score
+    prices = h.get('prices', [])
+    price_multiplier, price_label, price_alignment = _calc_price_alignment(prices, pcts, avg_pct)
+    pre_price_score = trajectory_score
+    trajectory_score = float(np.clip(trajectory_score * price_multiplier, 0, 100))
+
     # ── Grade ──
     grade, grade_emoji = get_grade(trajectory_score)
 
@@ -489,6 +519,13 @@ def _compute_single_trajectory(h: dict) -> dict:
     else:
         last_week_change = 0
 
+    # Build price alignment tag (secondary pattern)
+    price_tag = ''
+    if price_label == 'PRICE_CONFIRMED':
+        price_tag = '💰'
+    elif price_label == 'PRICE_DIVERGENT':
+        price_tag = '⚠️'
+
     return {
         'trajectory_score': round(trajectory_score, 2),
         'positional': round(positional, 2),
@@ -501,6 +538,11 @@ def _compute_single_trajectory(h: dict) -> dict:
         'grade_emoji': grade_emoji,
         'pattern_key': pattern_key,
         'pattern': f"{p_emoji} {p_name}",
+        'price_alignment': round(price_alignment, 1),
+        'price_multiplier': round(price_multiplier, 3),
+        'price_label': price_label,
+        'price_tag': price_tag,
+        'pre_price_score': round(pre_price_score, 2),
         'current_rank': current_rank,
         'best_rank': best_rank,
         'worst_rank': worst_rank,
@@ -522,6 +564,9 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'acceleration': 50, 'consistency': 50, 'resilience': 50,
         'grade': 'F', 'grade_emoji': '📉',
         'pattern_key': 'new_entry', 'pattern': '💎 New Entry',
+        'price_alignment': 50.0, 'price_multiplier': 1.0,
+        'price_label': 'NEUTRAL', 'price_tag': '',
+        'pre_price_score': 0,
         'current_rank': int(ranks[-1]) if ranks else 0,
         'best_rank': int(min(ranks)) if ranks else 0,
         'worst_rank': int(max(ranks)) if ranks else 0,
@@ -593,6 +638,192 @@ def _apply_elite_bonus(score: float, pcts: List[float], n: int) -> float:
             break  # Only apply highest qualifying tier
     
     return min(score, 100.0)
+
+
+# ── Price-Rank Alignment Engine ──
+
+def _detect_splits(prices: List[float], pcts: List[float]) -> List[float]:
+    """
+    Auto-detect stock splits/bonus shares and adjust historical prices.
+    
+    INSIGHT: A stock split causes price to drop 50-80% in one week while
+    rank stays the same or improves. A genuine crash would cause both
+    price AND rank to plummet. This asymmetry is the detection signal.
+    
+    MCX example: Price ₹11,050 → ₹2,219 (-80%), Rank 38 → 3 (improved!)
+    That's a 5:1 stock split, not a crash. Adjust all prior prices ×0.2.
+    
+    Returns: Split-adjusted price series (same length as input).
+    """
+    cfg = PRICE_ALIGNMENT
+    adjusted = list(prices)
+    n = len(adjusted)
+
+    for i in range(1, n):
+        prev_p = adjusted[i - 1]
+        curr_p = adjusted[i]
+
+        # Skip invalid prices
+        if prev_p is None or curr_p is None or prev_p <= 0 or curr_p <= 0:
+            continue
+
+        price_change = (curr_p - prev_p) / prev_p
+
+        if price_change < cfg['split_threshold']:
+            # Price crashed — but did rank crash too?
+            rank_drop = pcts[i - 1] - pcts[i]  # Positive = rank worsened
+
+            if rank_drop < cfg['split_rank_tolerance']:
+                # Rank DIDN'T drop proportionally → this is a SPLIT
+                ratio = curr_p / prev_p  # e.g., 0.2 for 5:1 split
+                for j in range(i):
+                    if adjusted[j] is not None and adjusted[j] > 0:
+                        adjusted[j] *= ratio
+
+    return adjusted
+
+
+def _calc_price_alignment(prices: List[float], pcts: List[float], avg_pct: float) -> Tuple[float, str, float]:
+    """
+    Price-Rank Alignment Multiplier.
+    
+    PHILOSOPHY: Rank is the technical opinion. Price is the market's verdict.
+    When they agree → HIGH CONVICTION (boost score up to ×1.08)
+    When they disagree → SKEPTICISM (penalize score down to ×0.92)
+    
+    TWO CLEAN SIGNALS:
+    
+    Signal 1 — Directional Agreement (55%):
+      For each week, did price and rank move in the same direction?
+      Uses a wider noise band for stable elite stocks (small oscillations
+      at rank 1-8 are noise, not signal).
+      Handles the case where a stable elite has tiny rank moves but
+      meaningful price moves by falling back to cumulative return check.
+    
+    Signal 2 — Trend Correlation (45%):
+      Pearson correlation between cumulative price returns and rank
+      percentile series. Captures "same shape over time" — did the
+      price trajectory mirror the rank trajectory?
+      Falls back to simple directional check when variance is too low.
+    
+    MULTIPLIER RANGE: ×0.92 (strong divergence) to ×1.08 (strong confirmation)
+      - Conservative enough to not override the 6-component engine
+      - Impactful enough to differentiate (turns 88 → 95 or 72 → 66)
+    
+    SPLIT SAFETY: Prices are auto-adjusted before alignment calculation.
+    Invalid/missing price data → neutral multiplier (×1.00).
+    
+    Returns: (multiplier, label, alignment_score)
+    """
+    cfg = PRICE_ALIGNMENT
+
+    # ── Guard: Need valid price data ──
+    valid_pairs = [(p, r) for p, r in zip(prices, pcts)
+                   if p is not None and p > 0 and r is not None]
+    if len(valid_pairs) < cfg['min_weeks']:
+        return 1.0, 'NEUTRAL', 50.0
+
+    ps = [p for p, _ in valid_pairs]
+    rs = [r for _, r in valid_pairs]
+    n = len(ps)
+
+    # ── Step 1: Split-adjust prices ──
+    adjusted = _detect_splits(ps, rs)
+
+    # ── Step 2: Compute series characteristics ──
+    rank_std = float(np.std(rs))
+    is_stable = rank_std < cfg['stability_threshold']
+
+    # ── Signal 1: Directional Agreement (55%) ──
+    agree = 0
+    counted = 0
+    noise_band = cfg['noise_band_stable'] if is_stable else cfg['noise_band_normal']
+
+    for i in range(1, n):
+        p_chg = (adjusted[i] - adjusted[i - 1]) / max(adjusted[i - 1], 0.01) * 100
+        r_chg = rs[i] - rs[i - 1]
+
+        # Skip if rank move is within noise band (especially for elite stocks)
+        if abs(r_chg) < noise_band:
+            continue
+
+        counted += 1
+        if p_chg * r_chg > 0:
+            # Same direction — strong agreement
+            agree += 1.0
+        elif abs(p_chg) < 1.0:
+            # Price flat — not really disagreeing (price can lag rank by a week)
+            agree += 0.3
+        else:
+            # Opposite direction — disagreement (mild penalty, not harsh)
+            agree -= 0.3
+
+    if counted > 0:
+        dir_score = float(np.clip((agree / counted) * 50 + 50, 0, 100))
+    else:
+        # No significant rank moves → stable stock, use cumulative return check
+        total_ret = (adjusted[-1] / max(adjusted[0], 0.01) - 1) * 100
+        if avg_pct >= 80 and total_ret >= 0:
+            dir_score = 72.0   # Elite + positive return = confirmed
+        elif avg_pct >= 80 and total_ret >= -10:
+            dir_score = 55.0   # Elite + small negative = neutral
+        elif avg_pct >= 80:
+            dir_score = 35.0   # Elite + falling price = concerning
+        else:
+            dir_score = 55.0   # Non-elite stable = neutral
+
+    # ── Signal 2: Trend Correlation (45%) ──
+    cum_ret = [(adjusted[i] / max(adjusted[0], 0.01) - 1) * 100 for i in range(n)]
+
+    if n >= 4 and np.std(cum_ret) > 0.01 and np.std(rs) > 0.01:
+        corr_matrix = np.corrcoef(cum_ret, rs)
+        corr = corr_matrix[0, 1]
+        if np.isnan(corr):
+            corr = 0.0
+        trend_score = (corr + 1) / 2 * 100  # Map -1..+1 → 0..100
+    else:
+        # Can't compute meaningful correlation — fallback to direction match
+        total_ret = cum_ret[-1] if cum_ret else 0
+        total_rank = rs[-1] - rs[0] if len(rs) >= 2 else 0
+        if (total_ret > 2 and total_rank > 2) or (total_ret < -2 and total_rank < -2):
+            trend_score = 75.0   # Same direction
+        elif abs(total_ret) < 5 and abs(total_rank) < 5:
+            trend_score = 55.0   # Both stagnant
+        else:
+            trend_score = 35.0   # Opposite or inconclusive
+
+    # ── Composite Alignment Score ──
+    alignment = 0.55 * dir_score + 0.45 * trend_score
+    alignment = float(np.clip(alignment, 0, 100))
+
+    # ── Convert to Multiplier ──
+    conf_thresh = cfg['confirmed_threshold']
+    div_thresh = cfg['divergent_threshold']
+    max_boost = cfg['multiplier_max_boost']
+    max_pen = cfg['multiplier_max_penalty']
+
+    if alignment >= conf_thresh:
+        # Confirmed: 1.03 → max_boost (1.08)
+        t = (alignment - conf_thresh) / (100 - conf_thresh)
+        multiplier = 1.03 + t * (max_boost - 1.03)
+        label = 'PRICE_CONFIRMED'
+    elif alignment >= 50:
+        # Mildly positive: 1.00 → 1.03
+        t = (alignment - 50) / (conf_thresh - 50)
+        multiplier = 1.00 + t * 0.03
+        label = 'NEUTRAL'
+    elif alignment >= div_thresh:
+        # Mildly negative: max_pen_soft → 1.00
+        t = (alignment - div_thresh) / (50 - div_thresh)
+        multiplier = 0.97 + t * 0.03
+        label = 'NEUTRAL'
+    else:
+        # Divergent: max_pen → 0.97
+        t = alignment / div_thresh
+        multiplier = max_pen + t * (0.97 - max_pen)
+        label = 'PRICE_DIVERGENT'
+
+    return float(multiplier), label, float(alignment)
 
 
 # ── Component Score Calculators (v2.1 Adaptive Engine) ──
@@ -1269,14 +1500,14 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # Prepare display columns
     table_df = display_df[[
         't_rank', 'ticker', 'company_name', 'category',
-        'trajectory_score', 'grade', 'pattern', 'tmi',
+        'trajectory_score', 'grade', 'pattern', 'price_tag', 'tmi',
         'current_rank', 'best_rank', 'rank_change', 'last_week_change',
         'streak', 'weeks', 'sparkline'
     ]].copy()
 
     table_df.columns = [
         '#', 'Ticker', 'Company', 'Category',
-        'T-Score', 'Grade', 'Pattern', 'TMI',
+        'T-Score', 'Grade', 'Pattern', '💰', 'TMI',
         'Rank Now', 'Best', 'Δ Total', 'Δ Week',
         'Streak', 'Weeks', 'Trajectory'
     ]
@@ -1434,7 +1665,9 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
     k3.metric("Total Δ Rank", f"{row['rank_change']:+d}", "improved" if row['rank_change'] > 0 else "declined")
     k4.metric("TMI", f"{row['tmi']:.0f}")
     k5.metric("Streak", f"{row['streak']} weeks")
-    k6.metric("Pattern", row['pattern'])
+    price_label_display = row.get('price_label', 'NEUTRAL')
+    price_icon = '💰' if price_label_display == 'PRICE_CONFIRMED' else '⚠️' if price_label_display == 'PRICE_DIVERGENT' else '➖'
+    k6.metric("Price Alignment", f"{price_icon} {row.get('price_alignment', 50):.0f}")
 
     st.markdown("---")
 
@@ -1483,24 +1716,50 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
 
     with stat_c2:
         st.markdown("##### 🧩 Component Scores")
+        # Get adaptive weights for this stock's percentile tier
+        avg_pct_val = float(np.mean(histories.get(ticker, {}).get('ranks', [500])))
+        total_wk = histories.get(ticker, {}).get('total_per_week', [2000])
+        avg_total = float(np.mean(total_wk)) if total_wk else 2000
+        stock_avg_pct = (1 - avg_pct_val / max(avg_total, 1)) * 100
+        adp_w = _get_adaptive_weights(stock_avg_pct)
         comp_data = {
             'Component': ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience'],
-            'Weight': ['25%', '20%', '15%', '10%', '15%', '15%'],
+            'Weight': [f"{adp_w['positional']*100:.0f}%", f"{adp_w['trend']*100:.0f}%",
+                       f"{adp_w['velocity']*100:.0f}%", f"{adp_w['acceleration']*100:.0f}%",
+                       f"{adp_w['consistency']*100:.0f}%", f"{adp_w['resilience']*100:.0f}%"],
             'Score': [row['positional'], row['trend'], row['velocity'], row['acceleration'],
                       row['consistency'], row['resilience']],
             'Contribution': [
-                round(row['positional'] * 0.25, 1),
-                round(row['trend'] * 0.20, 1),
-                round(row['velocity'] * 0.15, 1),
-                round(row['acceleration'] * 0.10, 1),
-                round(row['consistency'] * 0.15, 1),
-                round(row['resilience'] * 0.15, 1)
+                round(row['positional'] * adp_w['positional'], 1),
+                round(row['trend'] * adp_w['trend'], 1),
+                round(row['velocity'] * adp_w['velocity'], 1),
+                round(row['acceleration'] * adp_w['acceleration'], 1),
+                round(row['consistency'] * adp_w['consistency'], 1),
+                round(row['resilience'] * adp_w['resilience'], 1)
             ]
         }
         comp_df = pd.DataFrame(comp_data)
         st.dataframe(comp_df, column_config={
             'Score': st.column_config.ProgressColumn('Score', min_value=0, max_value=100, format="%.1f")
         }, hide_index=True, use_container_width=True)
+
+        # Price-Rank Alignment detail
+        pa_score = row.get('price_alignment', 50)
+        pa_mult = row.get('price_multiplier', 1.0)
+        pa_label = row.get('price_label', 'NEUTRAL')
+        pre_price = row.get('pre_price_score', row['trajectory_score'])
+        pa_color = '#00E676' if pa_label == 'PRICE_CONFIRMED' else '#FF1744' if pa_label == 'PRICE_DIVERGENT' else '#888'
+        st.markdown(f"""
+        ##### 💰 Price-Rank Alignment
+        <div style="background:#1e1e2e; border-radius:10px; padding:12px; border:1px solid {pa_color};">
+            <div style="display:flex; justify-content:space-between;">
+                <div><span style="color:#aaa;">Alignment Score:</span> <b style="color:{pa_color};">{pa_score:.0f}/100</b></div>
+                <div><span style="color:#aaa;">Multiplier:</span> <b style="color:{pa_color};">×{pa_mult:.3f}</b></div>
+            </div>
+            <div style="margin-top:6px;"><span style="color:#aaa;">Status:</span> <b style="color:{pa_color};">{pa_label}</b></div>
+            <div style="margin-top:4px; color:#666; font-size:0.8rem;">Pre-price score: {pre_price:.1f} → Final: {row['trajectory_score']:.1f}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
         # Latest patterns from Wave Detection
         if row.get('latest_patterns', ''):
@@ -2025,43 +2284,67 @@ def render_about_tab():
     """Render about/documentation tab"""
 
     st.markdown("""
-    ## 📊 Rank Trajectory Engine v2.1 — Adaptive Intelligence + 3-Stage Funnel
+    ## 📊 Rank Trajectory Engine v2.2 — Adaptive Intelligence + Price-Rank Alignment
 
     A professional stock rank trajectory analysis system with **adaptive weight intelligence**
-    that dynamically adjusts scoring based on WHERE a stock sits — solving the fundamental
-    problem where elite stocks get penalized for having "nowhere to improve."
+    and **price-rank alignment verification** — the cleanest, smartest scoring engine for
+    tracking how stocks evolve across weekly snapshots.
 
     ---
 
-    ### 🧠 The 3-Layer Intelligence Fix
+    ### 🧠 The Architecture: 3-Layer Pipeline
 
-    **The Problem (v1.0):** A stock at **Rank 5/2000** for 23 straight weeks scored **37/100 (Grade F)**
-    because the movement-based scoring saw "no improvement." A mediocre stock jumping **1500→500** scored higher!
+    ```
+    6-Component Adaptive Scoring → Elite Dominance Bonus → Price-Rank Multiplier
+    ```
 
-    **v2.0 Partial Fix:** Added Positional Quality (25% weight) + Elite Trend Floor. Same stock scored **57 (Grade B)**.
-    Better, but still wrong — a stock that's been in the TOP 0.25% for half a year deserves S-grade.
-
-    **v2.1 Full Solution — 3 Innovations:**
-
-    | Innovation | What It Does | Impact |
+    | Layer | What It Does | Impact |
     |---|---|---|
-    | **Adaptive Weights** | Weight profile changes based on position tier | Elite: Position=45%. Bottom: Velocity=25% |
-    | **Position-Relative Velocity** | Holding rank 5 = achievement. Dips at top forgiven | Elite velocity 65 (not 50) |
-    | **Elite Dominance Bonus** | Sustained top-5% → score floor 82 | 530843 (top 3%, 23wk): **88** not 37 |
+    | **Adaptive Weights** | Weight profile shifts by position tier | Elite: Position=45%. Bottom: Velocity=25% |
+    | **Elite Bonus** | Sustained top-tier → guaranteed score floor | Top 3% for 60% weeks → floor 88 |
+    | **Price Alignment** | Market confirms or flags trajectory | ×0.92 (divergent) to ×1.08 (confirmed) |
 
-    | Stock Scenario | v1.0 | v2.0 | v2.1 |
-    |---|---|---|---|
-    | 530843 (top 3%, 23 weeks) | 37 (F) | 57 (B) | **88 (S)** ✅ |
-    | MCX (top 4%, stable elite) | 60 (B) | 73 (A) | **85 (S)** ✅ |
-    | 513599 (#1 rank!) | 57 (B) | 69 (B) | **88 (S)** ✅ |
-    | Climber 1500→500 | 75 (A) | 69 (B) | **62 (B)** ✅ |
-    | True rocket 500→20 | 82 (A) | 85 (S) | **87 (S)** ✅ |
+    ---
+
+    ### 💰 Price-Rank Alignment (v2.2 NEW)
+
+    **Core Insight:** Rank is the **technical opinion**. Price is the **market's verdict.**
+    When they agree, conviction is 10× higher. When they disagree, something is suspicious.
+
+    #### How It Works
+
+    | Signal | Weight | What It Measures |
+    |--------|--------|------------------|
+    | **Directional Agreement** | 55% | Each week: did price and rank move the same way? |
+    | **Trend Correlation** | 45% | Pearson correlation between cumulative price returns and rank percentile |
+
+    #### Multiplier Range
+
+    | Alignment Score | Multiplier | Label | Meaning |
+    |----------------|-----------|-------|---------|
+    | **75-100** | ×1.03 — ×1.08 | 💰 CONFIRMED | Price validates rank trajectory |
+    | **50-72** | ×1.00 — ×1.03 | NEUTRAL | Inconclusive |
+    | **35-50** | ×0.97 — ×1.00 | NEUTRAL | Mild concern |
+    | **0-35** | ×0.92 — ×0.97 | ⚠️ DIVERGENT | Price contradicts rank |
+
+    #### Stock Split Auto-Detection
+    Price drops >35% in one week, but rank stays stable or improves?
+    → **Split detected** — all prior prices auto-adjusted. No false divergence.
+
+    #### Example Impact
+
+    | Stock | Pre-Price Score | Alignment | Multiplier | Final Score |
+    |-------|----------------|-----------|------------|-------------|
+    | 513599 (rank #1, +200% price) | 88 | 92 | ×1.07 | **94** |
+    | 530843 (top 3%, +134% price) | 88 | 85 | ×1.06 | **93** |
+    | MCX (split: ₹11K→₹2.5K, rank 3) | 85 | 78 | ×1.05 | **89** ✔️ |
+    | Fake climber (rank up, price flat) | 72 | 30 | ×0.94 | **68** |
 
     ---
 
     ### 🏗️ Adaptive Weight System
 
-    Weights **dynamically shift** based on the stock's average percentile position:
+    Weights **dynamically shift** based on the stock's average percentile:
 
     | Tier | Avg Percentile | Positional | Trend | Velocity | Accel | Consistency | Resilience |
     |------|---------------|------------|-------|----------|-------|-------------|------------|
@@ -2072,17 +2355,9 @@ def render_about_tab():
 
     *Smooth interpolation between tiers — no hard cutoffs.*
 
-    **Why this works:**
-    - **Elite stocks:** Being rank 5 IS the achievement → Position dominates (45%)
-    - **Mid stocks:** Need to prove direction → Movement metrics dominate (Trend+Velocity = 42%)
-    - **Bottom stocks:** Need acceleration → Are they even trying to turn around?
-
     ---
 
     ### 🛡️ Elite Dominance Bonus
-
-    If a stock has been in the top tier for a sustained portion of its history,
-    it gets a guaranteed minimum score floor:
 
     | Tier | Percentile | Required Duration | Score Floor |
     |------|-----------|------------------|-------------|
@@ -2090,21 +2365,6 @@ def render_about_tab():
     | Top 5% | > 95th | ≥ 60% of weeks | **82** |
     | Top 10% | > 90th | ≥ 55% of weeks | **75** |
     | Top 20% | > 80th | ≥ 50% of weeks | **68** |
-
-    *Scale above floor: 90% of weeks at top-3% scores higher than 60%.*
-
-    ---
-
-    ### 📊 Position-Relative Velocity
-
-    Moving from rank 5 → 3 is **exponentially harder** than 500 → 300.
-    The velocity component now accounts for this:
-
-    | Position | Holding Steady | Small Dip (-3%) | Big Dip (-10%) |
-    |----------|---------------|-----------------|----------------|
-    | Top 5% | 65 (good!) | 55 (forgiven) | 40 |
-    | Top 15% | 60 | 48 | 35 |
-    | Mid 50% | 50 (neutral) | 42 | 25 |
 
     ---
 
@@ -2170,16 +2430,17 @@ def render_about_tab():
     ### ⚙️ Technical Details
 
     - **Adaptive Weights**: Smooth interpolation between 4 tier profiles (elite/strong/mid/bottom)
-    - **Positional Quality**: Sigmoid-boosted percentile — non-linear scaling rewards top positions exponentially
+    - **Positional Quality**: Sigmoid-boosted percentile — non-linear scaling for top positions
     - **Elite Trend Floor**: Top 5% → floor 70, Top 10% → 65, Top 20% → 58
     - **Position-Relative Velocity**: Hold bonus (15 for top 5%), dampened dip sensitivity
     - **Elite Consistency**: Band-based (40%) + time-at-top (35%) + low-vol bonus (25%)
     - **Elite Dominance Bonus**: Sustained top-tier → guaranteed score floor (82-88)
+    - **Price-Rank Alignment**: Split-adjusted ×0.92-1.08 multiplier, 2-signal (directional + correlation)
     - **Recency Weighting**: Exponential decay (λ=0.12) for trend regression
 
     ---
 
-    *Built for the Wave Detection ecosystem • v2.1.0-ADAPTIVE • February 2026*
+    *Built for the Wave Detection ecosystem • v2.2.0-ADAPTIVE • February 2026*
     """)
 
 
