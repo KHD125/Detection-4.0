@@ -57,7 +57,6 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================
 
-CSV_DIR = "CSV"
 MIN_WEEKS_DEFAULT = 3
 MAX_DISPLAY_DEFAULT = 100
 
@@ -223,27 +222,23 @@ def parse_date_from_filename(filename: str) -> Optional[datetime]:
     return datetime.strptime(match.group(1), '%Y-%m-%d') if match else None
 
 
-@st.cache_data(ttl=3600, show_spinner="📂 Loading weekly snapshots...")
-def load_and_compute(csv_dir: str) -> Tuple[Optional[pd.DataFrame], Optional[dict], Optional[list], Optional[dict]]:
+def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Optional[dict], Optional[list], Optional[dict]]:
     """
-    Master data pipeline: Load CSVs → Build histories → Compute trajectories.
+    Master data pipeline: Process uploaded CSVs → Build histories → Compute trajectories.
     Returns: (trajectory_df, histories, dates_iso, metadata)
     """
-    # ── Step 1: Load all CSVs ──
-    if not os.path.exists(csv_dir):
-        return None, None, None, None
-
-    csv_files = sorted([f for f in os.listdir(csv_dir) if f.lower().endswith('.csv')])
-    if not csv_files:
+    # ── Step 1: Parse uploaded CSVs ──
+    if not uploaded_files:
         return None, None, None, None
 
     weekly_data = {}
-    for filename in csv_files:
-        date = parse_date_from_filename(filename)
+    for ufile in uploaded_files:
+        date = parse_date_from_filename(ufile.name)
         if date is None:
             continue
         try:
-            df = pd.read_csv(os.path.join(csv_dir, filename))
+            ufile.seek(0)
+            df = pd.read_csv(ufile)
             if 'rank' in df.columns and 'ticker' in df.columns:
                 df['ticker'] = df['ticker'].astype(str).str.strip()
                 df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
@@ -251,7 +246,7 @@ def load_and_compute(csv_dir: str) -> Tuple[Optional[pd.DataFrame], Optional[dic
                 df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
                 weekly_data[date] = df
         except Exception as e:
-            logger.warning(f"Failed to load {filename}: {e}")
+            logger.warning(f"Failed to load {ufile.name}: {e}")
 
     if not weekly_data:
         return None, None, None, None
@@ -1473,18 +1468,39 @@ def main():
     st.markdown('<div class="sub-header">Professional Stock Rank Trajectory Analysis • Multi-Week Momentum Intelligence</div>',
                 unsafe_allow_html=True)
 
-    # ── Load Data ──
-    result = load_and_compute(CSV_DIR)
+    # ── Upload CSVs ──
+    uploaded_files = st.file_uploader(
+        "📂 Upload Weekly CSV Snapshots",
+        type=['csv'],
+        accept_multiple_files=True,
+        help="Upload your Wave Detection weekly CSV exports (Stocks_Weekly_YYYY-MM-DD_*.csv)"
+    )
+
+    if not uploaded_files:
+        st.info("👆 Upload your weekly CSV snapshots to begin trajectory analysis")
+        st.markdown("""
+        **How to use:**
+        1. Click **Browse files** or drag-and-drop your Wave Detection weekly CSV exports
+        2. Upload multiple weeks at once (select all CSVs together)
+        3. Files should be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year.csv`
+        4. Minimum **3 weeks** recommended for meaningful trajectory analysis
+        """)
+        return
+
+    st.caption(f"📁 {len(uploaded_files)} file{'s' if len(uploaded_files) != 1 else ''} uploaded")
+
+    # ── Session-state caching (recompute only when files change) ──
+    cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
+    if st.session_state.get('_traj_key') != cache_key:
+        with st.spinner("📊 Computing trajectories across all weeks..."):
+            result = load_and_compute(uploaded_files)
+        st.session_state['_traj_key'] = cache_key
+        st.session_state['_traj_result'] = result
+
+    result = st.session_state['_traj_result']
 
     if result[0] is None:
-        st.error(f"❌ No valid CSV files found in `{CSV_DIR}/` directory.")
-        st.markdown("""
-        **To get started:**
-        1. Create a `CSV/` folder in the same directory as this script
-        2. Place your Wave Detection weekly CSV exports there
-        3. Files should be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year.csv`
-        4. Refresh this page
-        """)
+        st.error("❌ No valid data found in uploaded files. Ensure CSVs contain `rank` and `ticker` columns.")
         return
 
     traj_df, histories, dates_iso, metadata = result
