@@ -1497,6 +1497,10 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ── Rankings Table ──
     st.markdown("##### 📋 Trajectory Rankings")
 
+    # Ensure price_tag column exists (defensive for edge cases)
+    if 'price_tag' not in display_df.columns:
+        display_df['price_tag'] = ''
+
     # Prepare display columns
     table_df = display_df[[
         't_rank', 'ticker', 'company_name', 'category',
