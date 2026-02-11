@@ -1668,10 +1668,6 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         # Min T-Score
         min_score = st.slider("Min Trajectory Score", 0, 100, 0, key='sb_score')
 
-        # Display count
-        display_n = st.select_slider("Show Top N", options=[25, 50, 100, 200, 500, 1000, 5000],
-                                      value=MAX_DISPLAY_DEFAULT, key='sb_topn')
-
         st.markdown("---")
         st.markdown("#### 📋 Quick Filters")
         quick_filter = st.radio("Preset", ['None', '🚀 Rockets Only', '🎯 Elite Only',
@@ -1688,7 +1684,6 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'sectors': selected_sectors,
         'min_weeks': min_weeks,
         'min_score': min_score,
-        'display_n': display_n,
         'quick_filter': quick_filter
     }
 
@@ -1736,10 +1731,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     elif qf == 'Positional > 80':
         df = df[df['positional'] > 80]
 
-    # Limit
-    df = df.head(filters['display_n'])
-
-    # Re-rank after filtering
+    # Re-rank after filtering (no display_n limit — applied per-tab where needed)
     df = df.reset_index(drop=True)
     df['t_rank'] = range(1, len(df) + 1)
 
@@ -1811,8 +1803,11 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ════════════════════════════════════════════
     st.markdown('<div class="sec-head">📋 Trajectory Rankings</div>', unsafe_allow_html=True)
 
-    # ── Control row: Sort | View | Export ──
-    ctl1, ctl2, ctl3 = st.columns([1.3, 1.3, 1.3])
+    # ── Control row: Show Top | Sort | View | Export ──
+    ctl0, ctl1, ctl2, ctl3 = st.columns([0.8, 1.3, 1.3, 1.0])
+    with ctl0:
+        display_n = st.selectbox("Show Top", [10, 20, 50, 100, 200, 500],
+                                  index=3, key='rank_topn')
     with ctl1:
         sort_by = st.selectbox("Sort by", [
             'Trajectory Score', 'Current Rank', 'Rank Change', 'TMI',
@@ -1825,6 +1820,12 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         ], key='rank_view', label_visibility='collapsed')
     with ctl3:
         export_btn = st.button("📥 Export CSV", key='rank_export', use_container_width=True)
+
+    # ── Apply Show Top limit ──
+    filtered_df = filtered_df.head(display_n).copy()
+    filtered_df = filtered_df.reset_index(drop=True)
+    filtered_df['t_rank'] = range(1, len(filtered_df) + 1)
+    shown = len(filtered_df)
 
     sort_map = {
         'Trajectory Score': ('trajectory_score', False),
@@ -2168,6 +2169,10 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         label_map[f"{row['ticker']} — {row['company_name'][:35]}"] = row['ticker']
     labels = sorted(label_map.keys())
 
+    # Clear stale selection if it no longer exists in filtered labels
+    if 'search_select' in st.session_state and st.session_state['search_select'] not in labels:
+        st.session_state['search_select'] = None
+
     selected_label = st.selectbox("🔍 Search Stock",
                                    labels, index=None,
                                    placeholder="Type ticker or company name...",
@@ -2178,7 +2183,11 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         return
 
     ticker = label_map[selected_label]
-    row = filtered_df[filtered_df['ticker'] == ticker].iloc[0]
+    matches = filtered_df[filtered_df['ticker'] == ticker]
+    if matches.empty:
+        st.warning("Stock not found in current filter selection")
+        return
+    row = matches.iloc[0]
     h = histories.get(ticker, {})
     if not h:
         st.warning("No history data available for this ticker")
