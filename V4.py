@@ -2427,9 +2427,10 @@ def _render_rank_chart(h: dict, ticker: str):
     pcts = ranks_to_percentiles(ranks, h['total_per_week'])
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        specs=[[{"secondary_y": True}], [{}]],
                         row_heights=[0.65, 0.35], vertical_spacing=0.06)
 
-    # ── Top: Rank (inverted) + Master Score ──
+    # ── Top: Rank (inverted) + Master Score on secondary y ──
     fig.add_trace(go.Scatter(
         x=dates, y=ranks,
         mode='lines+markers',
@@ -2439,7 +2440,7 @@ def _render_rank_chart(h: dict, ticker: str):
         fill='tozeroy',
         fillcolor='rgba(255,107,53,0.08)',
         hovertemplate='%{x}<br>Rank: #%{y}<extra></extra>'
-    ), row=1, col=1)
+    ), row=1, col=1, secondary_y=False)
 
     fig.add_trace(go.Scatter(
         x=dates, y=scores,
@@ -2448,9 +2449,8 @@ def _render_rank_chart(h: dict, ticker: str):
         line=dict(color='#58a6ff', width=2, dash='dot'),
         marker=dict(size=4),
         opacity=0.85,
-        yaxis='y3',
         hovertemplate='%{x}<br>M.Score: %{y:.1f}<extra></extra>'
-    ), row=1, col=1)
+    ), row=1, col=1, secondary_y=True)
 
     # Best rank annotation
     best_idx = int(np.argmin(ranks))
@@ -2483,12 +2483,13 @@ def _render_rank_chart(h: dict, ticker: str):
         margin=dict(t=10, b=50, l=50, r=50),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        yaxis3=dict(overlaying='y', side='right', showgrid=False,
-                    title='M.Score', titlefont=dict(color='#58a6ff', size=10),
-                    tickfont=dict(color='#58a6ff', size=9)),
     )
     fig.update_yaxes(title_text="Rank", autorange="reversed",
-                     gridcolor='rgba(255,255,255,0.04)', row=1, col=1)
+                     gridcolor='rgba(255,255,255,0.04)', row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="M.Score", showgrid=False,
+                     titlefont=dict(color='#58a6ff', size=10),
+                     tickfont=dict(color='#58a6ff', size=9),
+                     row=1, col=1, secondary_y=True)
     fig.update_yaxes(title_text="Pctl %", range=[0, 100],
                      gridcolor='rgba(255,255,255,0.04)', row=2, col=1)
     fig.update_xaxes(tickangle=-45, tickfont=dict(size=9), row=2, col=1)
