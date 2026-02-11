@@ -78,6 +78,38 @@ logger = logging.getLogger(__name__)
 MIN_WEEKS_DEFAULT = 3
 MAX_DISPLAY_DEFAULT = 100
 
+# ── Quantitative Enhancement Configuration (v3.0) ──
+
+# Bayesian Confidence Shrinkage — shrinks scores toward population mean
+# when data is insufficient. Prevents 4-week lucky stocks from ranking high.
+BAYESIAN_CONFIDENCE = {
+    'prior_mean': 45.0,          # Population prior (assume mediocre until proven)
+    'full_confidence_weeks': 16,  # Weeks needed for 100% data confidence
+    'min_confidence': 0.25,       # Minimum confidence even with 2 weeks
+}
+
+# Hurst Exponent — determines if rank series will PERSIST or REVERT
+# H > 0.5 = trending (current pattern likely continues)
+# H = 0.5 = random walk (no predictive power)
+# H < 0.5 = mean-reverting (current pattern likely reverses)
+HURST_CONFIG = {
+    'min_weeks': 6,               # Need at least 6 datapoints
+    'trend_persistence_h': 0.55,  # H above this = trending
+    'mean_revert_h': 0.42,        # H below this = mean-reverting
+    'max_boost': 1.06,            # Max multiplier for strong persistence
+    'max_penalty': 0.94,          # Max penalty for mean-reversion on uptrend
+}
+
+# Information Ratio — risk-adjusted consistency (replaces raw volatility)
+# IR = mean(excess_return) / std(excess_return)
+# High IR = consistently outperforming. Low IR = noisy, unreliable.
+INFO_RATIO_CONFIG = {
+    'benchmark_growth': 0.5,      # Assumed benchmark percentile growth/week
+    'excellent_ir': 0.8,          # IR above this = excellent consistency
+    'good_ir': 0.3,               # IR above this = good consistency
+    'poor_ir': -0.2,              # IR below this = inconsistent
+}
+
 # Trajectory Score Weights — v2.1 ADAPTIVE WEIGHT SYSTEM
 # Weights dynamically shift based on WHERE the stock sits (percentile tier)
 # Elite stocks: Position dominates (45%) — being at rank 5 IS the achievement
@@ -717,6 +749,8 @@ def _compute_single_trajectory(h: dict) -> dict:
         'acceleration': round(acceleration, 2),
         'consistency': round(consistency, 2),
         'resilience': round(resilience, 2),
+        'hurst': round(_estimate_hurst(pcts), 3) if n >= HURST_CONFIG['min_weeks'] else 0.5,
+        'confidence': round(confidence, 3),
         'grade': grade,
         'grade_emoji': grade_emoji,
         'pattern_key': pattern_key,
@@ -751,6 +785,7 @@ def _empty_trajectory(ranks, totals, pcts, n):
     return {
         'trajectory_score': 0, 'positional': 0, 'trend': 50, 'velocity': 50,
         'acceleration': 50, 'consistency': 50, 'resilience': 50,
+        'hurst': 0.5, 'confidence': BAYESIAN_CONFIDENCE['min_confidence'],
         'grade': 'F', 'grade_emoji': '📉',
         'pattern_key': 'new_entry', 'pattern': '💎 New Entry',
         'price_alignment': 50.0, 'price_multiplier': 1.0,
@@ -1188,6 +1223,114 @@ def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
     return multiplier, label, decay_score
 
 
+# ── Hurst Exponent Engine (v3.0) ──
+
+def _estimate_hurst(series: List[float]) -> float:
+    """
+    Estimate Hurst exponent using Rescaled Range (R/S) analysis.
+    
+    H > 0.5: Persistent (trending) — current direction likely continues
+    H = 0.5: Random walk — no predictive power
+    H < 0.5: Anti-persistent (mean-reverting) — current pattern likely reverses
+    
+    Uses simplified R/S method suitable for short series (6-25 weeks).
+    """
+    n = len(series)
+    if n < 6:
+        return 0.5  # Insufficient data → assume random walk
+    
+    arr = np.array(series, dtype=float)
+    
+    # Use multiple sub-series lengths for robust estimation
+    rs_values = []
+    lengths = []
+    
+    for seg_len in range(3, n // 2 + 1):
+        n_segs = n // seg_len
+        if n_segs < 1:
+            break
+        rs_seg = []
+        for i in range(n_segs):
+            seg = arr[i * seg_len:(i + 1) * seg_len]
+            mean_seg = np.mean(seg)
+            deviations = seg - mean_seg
+            cumulative = np.cumsum(deviations)
+            r = np.max(cumulative) - np.min(cumulative)  # Range
+            s = np.std(seg, ddof=1) if np.std(seg, ddof=1) > 0 else 1e-10  # Std dev
+            rs_seg.append(r / s)
+        
+        avg_rs = np.mean(rs_seg)
+        if avg_rs > 0:
+            rs_values.append(np.log(avg_rs))
+            lengths.append(np.log(seg_len))
+    
+    if len(rs_values) < 2:
+        return 0.5
+    
+    # Linear regression: log(R/S) = H * log(n) + c
+    # H is the slope
+    x = np.array(lengths)
+    y = np.array(rs_values)
+    n_pts = len(x)
+    slope = (n_pts * np.sum(x * y) - np.sum(x) * np.sum(y)) / \
+            max(n_pts * np.sum(x ** 2) - np.sum(x) ** 2, 1e-10)
+    
+    # Clamp to valid range [0.1, 0.9]
+    return float(np.clip(slope, 0.1, 0.9))
+
+
+def _calc_hurst_multiplier(pcts: List[float], trend_score: float) -> float:
+    """
+    Convert Hurst exponent to a trajectory score multiplier.
+    
+    LOGIC:
+    - Trending (H > 0.55) + uptrend (trend > 55) → BOOST (×1.01 to ×1.06)
+      The uptrend is likely to persist.
+    - Trending (H > 0.55) + downtrend (trend < 45) → PENALTY (×0.94 to ×0.99)
+      The downtrend is likely to persist.
+    - Mean-reverting (H < 0.42) + uptrend → mild penalty (×0.97 to ×1.00)
+      The uptrend is likely to reverse — don't trust it fully.
+    - Mean-reverting (H < 0.42) + downtrend → mild boost (×1.01 to ×1.03)
+      The downtrend is likely to reverse — recovery possible.
+    - Random walk (0.42-0.55) → no adjustment (×1.00)
+    """
+    cfg = HURST_CONFIG
+    n = len(pcts)
+    if n < cfg['min_weeks']:
+        return 1.0
+    
+    h = _estimate_hurst(pcts)
+    
+    is_uptrend = trend_score > 55
+    is_downtrend = trend_score < 45
+    
+    if h >= cfg['trend_persistence_h']:
+        # PERSISTENT series — current direction continues
+        strength = (h - cfg['trend_persistence_h']) / (0.9 - cfg['trend_persistence_h'])
+        strength = min(strength, 1.0)
+        if is_uptrend:
+            return 1.01 + strength * (cfg['max_boost'] - 1.01)
+        elif is_downtrend:
+            return 0.99 - strength * (0.99 - cfg['max_penalty'])
+        else:
+            return 1.0
+    
+    elif h <= cfg['mean_revert_h']:
+        # MEAN-REVERTING — current direction likely reverses
+        strength = (cfg['mean_revert_h'] - h) / (cfg['mean_revert_h'] - 0.1)
+        strength = min(strength, 1.0)
+        if is_uptrend:
+            return 1.0 - strength * 0.03   # Mild penalty: uptrend may reverse
+        elif is_downtrend:
+            return 1.01 + strength * 0.02  # Mild boost: downtrend may reverse
+        else:
+            return 1.0
+    
+    else:
+        # RANDOM WALK zone — no adjustment
+        return 1.0
+
+
 # ── Component Score Calculators (v2.1 Adaptive Engine) ──
 
 def _calc_positional_quality(pcts: List[float], n: int) -> float:
@@ -1355,16 +1498,12 @@ def _calc_acceleration(pcts: List[float], n: int, window: int = 3) -> float:
 
 def _calc_consistency_adaptive(pcts: List[float], n: int) -> float:
     """
-    Position-Aware Consistency.
+    Position-Aware Consistency + Information Ratio (v3.0).
     
-    THE FIX: A stock oscillating between rank 1 and rank 8 (pct 99.6-99.95)
-    has changes of [-0.35, +0.2, -0.15, +0.3...]. Old system sees these as
-    "bidirectional = inconsistent". But oscillating within the TOP 1% is
-    INCREDIBLE consistency!
-    
-    Solution: Measure consistency RELATIVE to position band.
-    - Elite stocks: Consistency = are they staying in their percentile band?
-    - Other stocks: Consistency = are they moving in a consistent DIRECTION?
+    UPGRADE: Blends position-aware band consistency with Information Ratio,
+    the quant-finance gold standard for risk-adjusted consistency.
+    IR = mean(excess_return) / std(excess_return)
+    High IR = reliably outperforming. Low IR = noisy, unreliable.
     """
     if n < 3:
         return 50.0
@@ -1374,39 +1513,50 @@ def _calc_consistency_adaptive(pcts: List[float], n: int) -> float:
     positive_ratio = np.sum(changes > 0) / len(changes)
     avg_pct = np.mean(pcts)
     current_pct = pcts[-1]
+
+    # === INFORMATION RATIO COMPONENT ===
+    ir_cfg = INFO_RATIO_CONFIG
+    benchmark = ir_cfg['benchmark_growth']  # Expected pct growth/week
+    excess = [c - benchmark for c in changes]  # Excess over benchmark
+    excess_mean = float(np.mean(excess))
+    excess_std = float(np.std(excess)) if len(excess) > 1 else 1.0
+    ir = excess_mean / max(excess_std, 0.01)  # Information Ratio
+
+    # Convert IR to 0-100 score
+    if ir >= ir_cfg['excellent_ir']:
+        ir_score = 85 + min((ir - ir_cfg['excellent_ir']) * 20, 15)  # 85-100
+    elif ir >= ir_cfg['good_ir']:
+        t = (ir - ir_cfg['good_ir']) / (ir_cfg['excellent_ir'] - ir_cfg['good_ir'])
+        ir_score = 55 + t * 30  # 55-85
+    elif ir >= ir_cfg['poor_ir']:
+        t = (ir - ir_cfg['poor_ir']) / (ir_cfg['good_ir'] - ir_cfg['poor_ir'])
+        ir_score = 30 + t * 25  # 30-55
+    else:
+        ir_score = max(10, 30 + (ir - ir_cfg['poor_ir']) * 20)  # 10-30
+    ir_score = float(np.clip(ir_score, 0, 100))
     
     # === POSITION-RELATIVE CONSISTENCY ===
     if avg_pct >= 85:
-        # ELITE CONSISTENCY: Staying within a tight band at the top
-        # Even if direction flips, small oscillations at 95-100% = very consistent
-        pct_range = max(pcts) - min(pcts)  # How wide is the band?
-        
-        # Band score: range of 0 = 100, range of 30 = 50, range of 60+ = 0
+        pct_range = max(pcts) - min(pcts)
         band_score = float(np.clip(100 - pct_range * 1.67, 0, 100))
-        
-        # Time-at-top: what % of weeks were they above 80th percentile?
         time_at_top = sum(1 for p in pcts if p >= 80) / len(pcts) * 100
-        
-        # Low absolute volatility bonus (std < 3 at elite = very stable)
         vol_bonus = float(np.clip(100 - std * 5, 0, 100))
-        
-        # Elite: 40% band tightness, 35% time at top, 25% low volatility
-        return 0.40 * band_score + 0.35 * time_at_top + 0.25 * vol_bonus
+        # Elite: 30% band, 25% time-at-top, 20% low-vol, 25% IR
+        return 0.30 * band_score + 0.25 * time_at_top + 0.20 * vol_bonus + 0.25 * ir_score
     
     elif avg_pct >= 60:
-        # STRONG STOCKS: Mix of band + direction
         stability = float(np.clip(100 - std * 2, 0, 100))
         direction = positive_ratio * 100
-        # Bonus: if currently higher than start, consistency gets a lift
-        trajectory_lift = min((pcts[-1] - pcts[0]) / 20.0 * 10, 15)  # max +15
-        base = 0.50 * stability + 0.50 * direction
+        trajectory_lift = min((pcts[-1] - pcts[0]) / 20.0 * 10, 15)
+        # Strong: 35% stability, 30% direction, 35% IR
+        base = 0.35 * stability + 0.30 * direction + 0.35 * ir_score
         return float(np.clip(base + trajectory_lift, 0, 100))
     
     else:
-        # LOWER STOCKS: Pure direction + stability (original formula)
         stability = float(np.clip(100 - std * 2, 0, 100))
         direction = positive_ratio * 100
-        return 0.55 * stability + 0.45 * direction
+        # Lower: 35% stability, 30% direction, 35% IR
+        return 0.35 * stability + 0.30 * direction + 0.35 * ir_score
 
 
 def _calc_resilience(pcts: List[float], n: int) -> float:
