@@ -2921,7 +2921,7 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
 # ============================================
 
 def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
-    """Render dedicated alerts tab — Trap warnings, Conviction picks, Top movers."""
+    """Alerts Tab v3.0 — Traps, Conviction, Divergent, Top Movers."""
 
     # ── Ensure columns ──
     for col, default in [('decay_label', ''), ('decay_multiplier', 1.0),
@@ -2934,35 +2934,61 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
 
     total = len(filtered_df)
 
-    # ── Quick summary strip ──
+    # ── Compute alert counts ──
     decay_high = int((filtered_df['decay_label'] == 'DECAY_HIGH').sum())
     decay_mod = int((filtered_df['decay_label'] == 'DECAY_MODERATE').sum())
-    conv_count = int((
+    conv_mask = (
         (filtered_df['grade'].isin(['S', 'A'])) &
         (~filtered_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE'])) &
         (filtered_df['weeks'] >= 4)
-    ).sum())
+    )
+    conv_count = int(conv_mask.sum())
     confirmed = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum())
     divergent = int((filtered_df['price_label'] == 'PRICE_DIVERGENT').sum())
+    gainers, decliners = get_top_movers(histories, n=15)
+    top_gainer_delta = int(gainers.iloc[0]['rank_change']) if not gainers.empty else 0
 
-    def _chip(val, lbl, cls=''):
-        return f'<div class="m-chip {cls}"><div class="m-val">{val}</div><div class="m-lbl">{lbl}</div></div>'
+    # ── Header ──
+    st.markdown(f"""
+    <div style="background:#0d1117; border-radius:14px; padding:18px 24px; margin-bottom:16px; border:1px solid #30363d;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div>
+                <span style="font-size:1.4rem; font-weight:800; color:#fff;">🚨 Alerts & Signals</span>
+                <div style="color:#8b949e; font-size:0.85rem; margin-top:2px;">Real-time warnings, conviction picks & market movers</div>
+            </div>
+            <div style="display:flex; gap:6px; align-items:center;">
+                <span style="background:{'#f8514922' if decay_high > 0 else '#21262d'}; color:{'#f85149' if decay_high > 0 else '#484f58'}; padding:4px 10px; border-radius:8px; font-size:0.75rem; font-weight:600;">{decay_high + decay_mod} Traps</span>
+                <span style="background:#3fb95022; color:#3fb950; padding:4px 10px; border-radius:8px; font-size:0.75rem; font-weight:600;">{conv_count} Conviction</span>
+                <span style="background:{'#d2992222' if divergent > 0 else '#21262d'}; color:{'#d29922' if divergent > 0 else '#484f58'}; padding:4px 10px; border-radius:8px; font-size:0.75rem; font-weight:600;">{divergent} Divergent</span>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    strip = ''.join([
-        _chip(f'{decay_high}', '🔻 Severe Traps', 'm-red' if decay_high > 0 else ''),
-        _chip(f'{decay_mod}', '⚠️ Moderate Decay', 'm-orange' if decay_mod > 0 else ''),
-        _chip(f'{conv_count}', '🏆 Conviction', 'm-green'),
-        _chip(f'{confirmed}', '💰 Confirmed', 'm-green'),
-        _chip(f'{divergent}', '📉 Divergent', 'm-red' if divergent > 0 else ''),
+    # ── Alert Summary Strip ──
+    alert_items = [
+        ('🔻 Severe', f'{decay_high}', 'traps', '#f85149'),
+        ('⚠️ Moderate', f'{decay_mod}', 'decay', '#d29922'),
+        ('🏆 Conviction', f'{conv_count}', 'picks', '#3fb950'),
+        ('💰 Confirmed', f'{confirmed}', 'price', '#3fb950'),
+        ('📉 Divergent', f'{divergent}', 'price', '#f85149' if divergent > 0 else '#484f58'),
+        ('🔥 Top Move', f'+{top_gainer_delta}', 'ranks', '#58a6ff'),
+    ]
+    alert_html = ''.join([
+        f'<div class="m-chip">'
+        f'<div style="font-size:0.6rem;color:#8b949e;text-transform:uppercase;">{label}</div>'
+        f'<div style="font-size:1.2rem;font-weight:800;color:{color};">{val}</div>'
+        f'<div style="font-size:0.55rem;color:#6e7681;">{sub}</div></div>'
+        for label, val, sub, color in alert_items
     ])
-    st.markdown(f'<div class="m-strip">{strip}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="m-strip">{alert_html}</div>', unsafe_allow_html=True)
+    st.markdown("")
 
     # ════════════════════════════════════════════
-    # 1 — TRAP ALERTS
+    # 1 — MOMENTUM DECAY TRAPS
     # ════════════════════════════════════════════
     st.markdown('<div class="sec-head">🚨 Momentum Decay Traps</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Stocks with strong trajectory scores but deteriorating price momentum — '
-                'the rank hasn\'t caught up yet. Exercise caution.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-cap">Strong trajectory scores but deteriorating price momentum — rank correction may follow</div>', unsafe_allow_html=True)
 
     high_traps = filtered_df[
         (filtered_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE'])) &
@@ -2970,12 +2996,13 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     ].sort_values('trajectory_score', ascending=False).head(12)
 
     if high_traps.empty:
-        st.success("✅ No momentum decay traps detected in the current universe.")
+        st.markdown('<div style="background:#161b22; border-radius:10px; padding:16px; text-align:center; border:1px solid #30363d;"><span style="color:#3fb950;">✅ No momentum decay traps detected</span></div>', unsafe_allow_html=True)
     else:
         trap_cols = st.columns(3)
         for idx, (_, tr) in enumerate(high_traps.iterrows()):
             with trap_cols[idx % 3]:
                 t_h = histories.get(tr['ticker'], {})
+                latest_price = t_h['prices'][-1] if t_h.get('prices') else 0
                 _r7 = [v for v in t_h.get('ret_7d', []) if v is not None and not (isinstance(v, float) and np.isnan(v))]
                 _r30 = [v for v in t_h.get('ret_30d', []) if v is not None and not (isinstance(v, float) and np.isnan(v))]
                 lr7 = f"{_r7[-1]:+.1f}%" if _r7 else '—'
@@ -2985,35 +3012,30 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
                 sev_label = 'SEVERE' if severity == 'DECAY_HIGH' else 'MODERATE'
                 st.markdown(f"""<div class="t-card t-card-danger">
                     <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <span class="t-hd" style="color:{sev_color};">{tr['ticker']}</span>
-                        <span class="t-badge" style="background:rgba(248,81,73,0.12);color:{sev_color};">{sev_label}</span>
+                        <div>
+                            <span class="t-hd" style="color:{sev_color};">{tr['ticker']}</span>
+                            <div class="t-sub">{str(tr.get('company_name',''))[:28]}</div>
+                        </div>
+                        <span class="t-badge" style="background:{sev_color}18;color:{sev_color};">{sev_label}</span>
                     </div>
-                    <div class="t-sub">{str(tr.get('company_name',''))[:28]}</div>
-                    <div class="t-row">
-                        <span style="color:#8b949e;">Rank #{int(tr['current_rank'])}</span>
-                        <span style="color:#e6edf3;font-weight:600;">Score {tr['trajectory_score']:.0f}</span>
-                    </div>
-                    <div class="t-row">
-                        <span style="color:{sev_color};">7d {lr7}</span>
-                        <span style="color:{sev_color};">30d {lr30}</span>
-                        <span style="color:#8b949e;">×{tr.get('decay_multiplier',1):.3f}</span>
+                    <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;">
+                        <div><span style="color:#6e7681;font-size:0.62rem;">Rank</span><br><span style="color:#e6edf3;font-weight:600;">#{int(tr['current_rank'])}</span></div>
+                        <div><span style="color:#6e7681;font-size:0.62rem;">T-Score</span><br><span style="color:#FF6B35;font-weight:600;">{tr['trajectory_score']:.0f}</span></div>
+                        <div><span style="color:#6e7681;font-size:0.62rem;">7d Ret</span><br><span style="color:{sev_color};font-weight:600;">{lr7}</span></div>
+                        <div><span style="color:#6e7681;font-size:0.62rem;">30d Ret</span><br><span style="color:{sev_color};font-weight:600;">{lr30}</span></div>
+                        <div><span style="color:#6e7681;font-size:0.62rem;">Decay ×</span><br><span style="color:{sev_color};font-weight:600;">{tr.get('decay_multiplier',1):.3f}</span></div>
+                        <div><span style="color:#6e7681;font-size:0.62rem;">Price</span><br><span style="color:#e6edf3;font-weight:600;">₹{latest_price:,.0f}</span></div>
                     </div>
                 </div>""", unsafe_allow_html=True)
 
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+    st.markdown("")
 
     # ════════════════════════════════════════════
     # 2 — CONVICTION SPOTLIGHT
     # ════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🏆 Top Conviction Picks</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Grade S/A · Clean momentum (no decay) · 4+ weeks tracked · '
-                'Price-confirmed preferred</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-head">🏆 Conviction Picks</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-cap">Grade S/A · Clean momentum · 4+ weeks · Price-confirmed preferred</div>', unsafe_allow_html=True)
 
-    conv_mask = (
-        (filtered_df['grade'].isin(['S', 'A'])) &
-        (~filtered_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE'])) &
-        (filtered_df['weeks'] >= 4)
-    )
     conv_pref = filtered_df[
         conv_mask & (filtered_df['price_label'] == 'PRICE_CONFIRMED')
     ].sort_values('trajectory_score', ascending=False).head(10)
@@ -3021,79 +3043,107 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
         conv_pref = filtered_df[conv_mask].sort_values('trajectory_score', ascending=False).head(10)
 
     if conv_pref.empty:
-        st.info("No conviction-grade stocks found with current filters. Try broadening filters.")
+        st.markdown('<div style="background:#161b22; border-radius:10px; padding:16px; text-align:center; border:1px solid #30363d;"><span style="color:#8b949e;">No conviction picks with current filters</span></div>', unsafe_allow_html=True)
     else:
-        cv_cols = st.columns(min(len(conv_pref), 5))
-        for idx, (_, cr) in enumerate(conv_pref.iterrows()):
-            with cv_cols[idx % min(len(conv_pref), 5)]:
-                gc = GRADE_COLORS.get(cr['grade'], '#8b949e')
-                pills_html = ''
-                if cr.get('sector_alpha_tag') == 'SECTOR_LEADER':
-                    pills_html += '<span class="pill p-gld">👑 Leader</span>'
-                elif cr.get('sector_alpha_tag') == 'SECTOR_OUTPERFORM':
-                    pills_html += '<span class="pill p-grn">Outperform</span>'
-                if cr.get('price_label') == 'PRICE_CONFIRMED':
-                    pills_html += '<span class="pill p-grn">💰 Confirmed</span>'
-                st.markdown(f"""<div class="t-card t-card-success">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <span class="t-hd">{cr['ticker']}</span>
-                        <span style="color:{gc};font-weight:800;font-size:1.1rem;">{cr.get('grade_emoji','')} {cr['trajectory_score']:.0f}</span>
-                    </div>
-                    <div class="t-sub">{str(cr.get('company_name',''))[:24]}</div>
-                    <div style="color:#8b949e;font-size:0.72rem;margin-top:4px;">Rank #{int(cr['current_rank'])} · {cr.get('pattern','')}</div>
-                    <div style="margin-top:5px;">{pills_html}</div>
-                </div>""", unsafe_allow_html=True)
+        num_cols = min(len(conv_pref), 4)
+        cv_rows = [conv_pref.iloc[i:i + num_cols] for i in range(0, len(conv_pref), num_cols)]
+        for row_chunk in cv_rows:
+            cv_cols = st.columns(num_cols)
+            for idx, (_, cr) in enumerate(row_chunk.iterrows()):
+                with cv_cols[idx]:
+                    gc = GRADE_COLORS.get(cr['grade'], '#8b949e')
+                    c_h = histories.get(cr['ticker'], {})
+                    latest_price = c_h['prices'][-1] if c_h.get('prices') else 0
+                    p_key = cr.get('pattern_key', 'neutral')
+                    p_emoji, p_name, _ = PATTERN_DEFS.get(p_key, ('➖', 'Neutral', ''))
+                    p_color = PATTERN_COLORS.get(p_key, '#8b949e')
 
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+                    pills_html = ''
+                    if cr.get('sector_alpha_tag') == 'SECTOR_LEADER':
+                        pills_html += '<span class="pill p-gld">👑 Leader</span> '
+                    elif cr.get('sector_alpha_tag') == 'SECTOR_OUTPERFORM':
+                        pills_html += '<span class="pill p-grn">Outperform</span> '
+                    if cr.get('price_label') == 'PRICE_CONFIRMED':
+                        pills_html += '<span class="pill p-grn">💰 Confirmed</span>'
+
+                    st.markdown(f"""<div class="t-card t-card-success">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                            <div>
+                                <span class="t-hd">{cr['ticker']}</span>
+                                <div class="t-sub">{str(cr.get('company_name',''))[:24]}</div>
+                            </div>
+                            <div style="text-align:right;">
+                                <div style="font-size:1.2rem;font-weight:800;color:{gc};">{cr['trajectory_score']:.0f}</div>
+                                <div style="font-size:0.6rem;color:#8b949e;">{cr.get('grade_emoji','')} {cr['grade']}</div>
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
+                            <div><span style="color:#6e7681;font-size:0.62rem;">Rank</span><br><span style="color:#e6edf3;font-weight:600;">#{int(cr['current_rank'])}</span></div>
+                            <div><span style="color:#6e7681;font-size:0.62rem;">Pattern</span><br><span style="color:{p_color};font-weight:600;">{p_emoji} {p_name[:10]}</span></div>
+                            <div><span style="color:#6e7681;font-size:0.62rem;">Price</span><br><span style="color:#e6edf3;font-weight:600;">₹{latest_price:,.0f}</span></div>
+                        </div>
+                        <div style="margin-top:6px;">{pills_html}</div>
+                    </div>""", unsafe_allow_html=True)
+
+    st.markdown("")
 
     # ════════════════════════════════════════════
-    # 3 — PRICE DIVERGENT STOCKS
+    # 3 — PRICE DIVERGENT
     # ════════════════════════════════════════════
-    st.markdown('<div class="sec-head">📉 Price Divergent</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Stocks where trajectory score is rising but price returns are '
-                'negative — potential rank correction ahead</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-head">📉 Price Divergent Stocks</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-cap">Trajectory score rising but price returns negative — potential rank correction ahead</div>', unsafe_allow_html=True)
 
     div_stocks = filtered_df[
         filtered_df['price_label'] == 'PRICE_DIVERGENT'
     ].sort_values('trajectory_score', ascending=False).head(12)
 
     if div_stocks.empty:
-        st.success("✅ No price-divergent stocks detected.")
+        st.markdown('<div style="background:#161b22; border-radius:10px; padding:16px; text-align:center; border:1px solid #30363d;"><span style="color:#3fb950;">✅ No price-divergent stocks detected</span></div>', unsafe_allow_html=True)
     else:
         div_cols = st.columns(3)
         for idx, (_, dv) in enumerate(div_stocks.iterrows()):
             with div_cols[idx % 3]:
                 gc = GRADE_COLORS.get(dv['grade'], '#8b949e')
+                d_h = histories.get(dv['ticker'], {})
+                latest_price = d_h['prices'][-1] if d_h.get('prices') else 0
+                _r7 = [v for v in d_h.get('ret_7d', []) if v is not None and not (isinstance(v, float) and np.isnan(v))]
+                lr7 = f"{_r7[-1]:+.1f}%" if _r7 else '—'
                 st.markdown(f"""<div class="t-card" style="border-color:rgba(210,153,34,0.4);">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <span class="t-hd">{dv['ticker']}</span>
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                        <div>
+                            <span class="t-hd">{dv['ticker']}</span>
+                            <div class="t-sub">{str(dv.get('company_name',''))[:28]}</div>
+                        </div>
                         <span style="color:{gc};font-weight:700;">{dv.get('grade_emoji','')} {dv['trajectory_score']:.0f}</span>
                     </div>
-                    <div class="t-sub">{str(dv.get('company_name',''))[:28]}</div>
-                    <div class="t-row">
-                        <span style="color:#8b949e;">Rank #{int(dv['current_rank'])}</span>
-                        <span class="pill p-red">Divergent</span>
+                    <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;">
+                        <div><span style="color:#6e7681;font-size:0.62rem;">Rank</span><br><span style="color:#e6edf3;font-weight:600;">#{int(dv['current_rank'])}</span></div>
+                        <div><span style="color:#6e7681;font-size:0.62rem;">7d Ret</span><br><span style="color:#d29922;font-weight:600;">{lr7}</span></div>
+                        <div><span style="color:#6e7681;font-size:0.62rem;">Price</span><br><span style="color:#e6edf3;font-weight:600;">₹{latest_price:,.0f}</span></div>
+                        <div><span style="color:#6e7681;font-size:0.62rem;">Status</span><br><span class="pill p-red" style="font-size:0.65rem;">Divergent</span></div>
                     </div>
                 </div>""", unsafe_allow_html=True)
 
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+    st.markdown("")
 
     # ════════════════════════════════════════════
     # 4 — TOP MOVERS
     # ════════════════════════════════════════════
     st.markdown('<div class="sec-head">🔥 Top Movers This Week</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-cap">Biggest rank changes in the latest weekly data</div>', unsafe_allow_html=True)
 
-    gainers, decliners = get_top_movers(histories, n=15)
     mv1, mv2 = st.columns(2)
-    for col_ref, df_mv, icon, label in [
-        (mv1, gainers, '⬆️', 'Biggest Climbers'),
-        (mv2, decliners, '⬇️', 'Biggest Decliners')
+    for col_ref, df_mv, icon, label, accent in [
+        (mv1, gainers, '⬆️', 'Biggest Climbers', '#3fb950'),
+        (mv2, decliners, '⬇️', 'Biggest Decliners', '#f85149')
     ]:
         with col_ref:
-            st.markdown(f"**{icon} {label}**")
+            st.markdown(f"""<div style="background:#161b22; border-radius:10px; padding:12px 14px; border:1px solid #30363d; margin-bottom:6px;">
+                <span style="font-size:0.85rem; font-weight:700; color:{accent};">{icon} {label}</span>
+            </div>""", unsafe_allow_html=True)
             if not df_mv.empty:
                 enriched = df_mv.merge(
-                    filtered_df[['ticker', 'trajectory_score', 'grade', 'signal_tags']].drop_duplicates('ticker'),
+                    filtered_df[['ticker', 'trajectory_score', 'grade']].drop_duplicates('ticker'),
                     on='ticker', how='left'
                 )
                 disp = enriched[['ticker', 'company_name', 'prev_rank', 'current_rank',
@@ -3103,7 +3153,7 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
                 st.dataframe(disp, column_config={
                     'Δ': st.column_config.NumberColumn(format="%+d"),
                     'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.0f"),
-                }, hide_index=True, use_container_width=True)
+                }, hide_index=True, use_container_width=True, height=420)
             else:
                 st.caption("No movers detected")
 
