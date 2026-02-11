@@ -167,7 +167,7 @@ SECTOR_ALPHA = {
 # Funnel Stage Defaults
 FUNNEL_DEFAULTS = {
     'stage1_score': 70,
-    'stage1_patterns': ['rocket', 'breakout'],
+    'stage1_patterns': ['rocket', 'breakout', 'momentum_building'],
     'stage2_tq': 60,
     'stage2_master_score': 50,
     'stage2_min_rules': 4,
@@ -188,28 +188,30 @@ GRADE_COLORS = {
 }
 
 # Pattern definitions: key -> (emoji, name, description)
+# v3.0 — 13 actionable patterns, no ghost entries, priority-ordered detection
 PATTERN_DEFS = {
-    'rocket':         ('🚀', 'Rocket',         'Rapid strong improvement across all dimensions'),
-    'breakout':       ('⚡', 'Breakout',        'Sudden significant rank jump beyond normal variance'),
-    'stable_elite':   ('🎯', 'Stable Elite',    'Consistently top-ranked with low volatility'),
-    'at_peak':        ('🏔️', 'At Peak',         'Currently at or near all-time best rank'),
-    'steady_climber': ('📈', 'Steady Climber',  'Gradual but consistent rank improvement'),
-    'recovery':       ('🔄', 'Recovery',        'Bouncing back from rank deterioration'),
-    'fading':         ('📉', 'Fading',          'Rank deteriorating from recent levels'),
-    'volatile':       ('🌊', 'Volatile',        'Large and unpredictable rank swings'),
-    'new_entry':      ('💎', 'New Entry',        'Recently appeared or insufficient history'),
-    'stagnant':       ('⏸️', 'Stagnant',        'No significant rank movement'),
-    'price_confirmed': ('💰', 'Price Confirmed', 'Price movement validates rank trajectory'),
-    'price_divergent': ('⚠️', 'Price Divergent', 'Price movement contradicts rank trajectory'),
-    'decay_warning':   ('🔻', 'Decay Warning',   'Good rank but negative recent returns — momentum fading')
+    'stable_elite':      ('🎯', 'Stable Elite',      'Consistently top-ranked with low volatility'),
+    'rocket':            ('🚀', 'Rocket',             'Rapid strong improvement across all dimensions'),
+    'breakout':          ('⚡', 'Breakout',            'Sudden significant rank jump beyond normal variance'),
+    'momentum_building': ('🔥', 'Momentum Building',  'Acceleration surging — early signal before full move'),
+    'at_peak':           ('🏔️', 'At Peak',            'At or near all-time best rank with sustained strength'),
+    'topping_out':       ('⛰️', 'Topping Out',        'Near peak but momentum fading — potential reversal'),
+    'steady_climber':    ('📈', 'Steady Climber',     'Gradual but consistent rank improvement'),
+    'recovery':          ('🔄', 'Recovery',           'Bouncing back from rank deterioration'),
+    'consolidating':     ('⏳', 'Consolidating',      'Tight range movement — potential breakout setup'),
+    'fading':            ('📉', 'Fading',             'Rank deteriorating from recent levels'),
+    'crash':             ('💥', 'Crash',              'Severe rapid rank collapse — high-risk warning'),
+    'volatile':          ('🌊', 'Volatile',           'Large and unpredictable rank swings'),
+    'new_entry':         ('💎', 'New Entry',           'Recently appeared or insufficient history'),
+    'neutral':           ('➖', 'Neutral',             'Average stock with no strong directional signal'),
 }
 
 PATTERN_COLORS = {
-    'rocket': '#FF4500', 'breakout': '#FFD700', 'stable_elite': '#8A2BE2',
-    'at_peak': '#FF69B4', 'steady_climber': '#32CD32', 'recovery': '#00BFFF',
-    'fading': '#808080', 'volatile': '#FF8C00', 'new_entry': '#00CED1',
-    'stagnant': '#A9A9A9', 'price_confirmed': '#00E676', 'price_divergent': '#FF1744',
-    'decay_warning': '#FF6347'
+    'stable_elite': '#8A2BE2', 'rocket': '#FF4500', 'breakout': '#FFD700',
+    'momentum_building': '#FF6347', 'at_peak': '#FF69B4', 'topping_out': '#CD853F',
+    'steady_climber': '#32CD32', 'recovery': '#00BFFF', 'consolidating': '#B8860B',
+    'fading': '#808080', 'crash': '#DC143C', 'volatile': '#FF8C00',
+    'new_entry': '#00CED1', 'neutral': '#A9A9A9',
 }
 
 # ============================================
@@ -1326,56 +1328,103 @@ def _calc_resilience(pcts: List[float], n: int) -> float:
     return float(np.clip(recovery_ratio * 100 * (1 - dd_penalty), 0, 100))
 
 
-# ── Pattern Detection ──
+# ── Pattern Detection (v3.0 — 13 patterns, 0 ghosts) ──
 
 def _detect_pattern(ranks, totals, pcts, positional, trend, velocity, acceleration, consistency) -> str:
-    """Classify trajectory into a pattern based on metrics and shape (v2.0 position-aware)"""
+    """Classify trajectory into one of 13 patterns using a priority cascade.
+    
+    v3.0 improvements over v2.0:
+    - Added: crash, topping_out, consolidating, momentum_building
+    - Removed 3 ghost patterns (price_confirmed, price_divergent, decay_warning)
+      — those are signal tags, not trajectory patterns
+    - At Peak now requires positive acceleration to avoid masking topping stocks
+    - Breakout works with n>=3 and uses adaptive threshold
+    - 'stagnant' replaced with 'neutral' for average stocks
+    - Crash catches severe collapses that 'fading' was too gentle for
+    """
     n = len(ranks)
     if n < MIN_WEEKS_DEFAULT:
         return 'new_entry'
 
     current_pct = pcts[-1]
-    avg_pct = np.mean(pcts)
+    avg_pct = float(np.mean(pcts))
     current_rank = ranks[-1]
     best_rank = min(ranks)
+    pct_diffs = np.diff(pcts)
 
-    # 🎯 Stable Elite - Consistently top-ranked (PRIORITIZED in v2.0)
-    # This MUST come before Rocket to prevent elite stocks from being misclassified
+    # ── TIER 1: CRITICAL SIGNALS (check first — safety & dominance) ──
+
+    # 💥 Crash — Severe rapid collapse (must be checked EARLY to warn users)
+    if n >= 3:
+        recent_drop = pcts[-1] - pcts[-3] if n >= 4 else pcts[-1] - pcts[-2]
+        if recent_drop < -25 and velocity < 30:
+            return 'crash'
+        # Also catch sustained multi-week collapse
+        if n >= 4 and all(d < -3 for d in pct_diffs[-3:]) and current_pct < 30:
+            return 'crash'
+
+    # 🎯 Stable Elite — Consistently top-ranked (MUST come before Rocket)
     if positional > 88 and consistency > 60 and current_pct > 85:
         return 'stable_elite'
 
-    # 🚀 Rocket - Strong improvement everywhere
+    # ── TIER 2: STRONG POSITIVE PATTERNS ──
+
+    # 🚀 Rocket — Strong improvement across all dimensions
     if trend > 78 and velocity > 72 and acceleration > 55:
         return 'rocket'
 
-    # ⚡ Breakout - Sudden jump beyond normal variance
-    if n >= 4:
-        recent_change = pcts[-1] - pcts[-3]
-        avg_abs_change = np.mean(np.abs(np.diff(pcts)))
-        if avg_abs_change > 0 and recent_change > 0 and recent_change > 2.8 * avg_abs_change:
+    # ⚡ Breakout — Sudden jump beyond normal variance (works with n>=3)
+    if n >= 3:
+        lookback = min(3, n - 1)
+        recent_change = pcts[-1] - pcts[-(lookback + 1)]
+        avg_abs_change = float(np.mean(np.abs(pct_diffs)))
+        # Adaptive threshold: 2.5× for volatile stocks, 2.0× for stable
+        breakout_mult = 2.5 if consistency > 50 else 2.0
+        if avg_abs_change > 0.5 and recent_change > 0 and recent_change > breakout_mult * avg_abs_change:
             return 'breakout'
 
-    # 🏔️ At Peak - Near best rank ever (position-aware)
-    if best_rank > 0 and current_rank <= best_rank * 1.12 and current_pct > 68:
-        return 'at_peak'
+    # 🔥 Momentum Building — Acceleration surging but trend/velocity haven't caught up yet
+    if acceleration > 68 and velocity > 50 and trend < 70 and current_pct > avg_pct:
+        return 'momentum_building'
 
-    # 📈 Steady Climber - Gradual consistent improvement
+    # ── TIER 3: POSITIONAL PATTERNS (where are they now?) ──
+
+    # ⛰️ Topping Out — Near peak but momentum fading (MUST be checked BEFORE At Peak)
+    if best_rank > 0 and current_rank <= best_rank * 1.15 and current_pct > 65:
+        if acceleration < 40 or velocity < 38:
+            return 'topping_out'
+
+    # 🏔️ At Peak — Near best rank with sustained strength
+    if best_rank > 0 and current_rank <= best_rank * 1.12 and current_pct > 68:
+        if acceleration >= 40 and velocity >= 38:  # Confirm momentum is healthy
+            return 'at_peak'
+
+    # ── TIER 4: DIRECTIONAL PATTERNS ──
+
+    # 📈 Steady Climber — Gradual consistent improvement
     if trend > 58 and consistency > 58 and velocity > 48:
         return 'steady_climber'
 
-    # 🔄 Recovery - Bouncing back
+    # 🔄 Recovery — Bouncing back from deterioration
     if velocity > 62 and current_pct > avg_pct and trend < 55:
         return 'recovery'
 
-    # 📉 Fading - Deteriorating
+    # 📉 Fading — Deteriorating (but not crashing)
     if velocity < 35 and trend < 40:
         return 'fading'
 
-    # 🌊 Volatile - Wild swings
+    # ── TIER 5: STRUCTURAL PATTERNS ──
+
+    # ⏳ Consolidating — Tight range, low movement (potential breakout setup)
+    if consistency > 65 and abs(trend - 50) < 12 and abs(velocity - 50) < 12:
+        return 'consolidating'
+
+    # 🌊 Volatile — Wild swings
     if consistency < 32:
         return 'volatile'
 
-    return 'stagnant'
+    # ➖ Neutral — Average stock, no strong signal
+    return 'neutral'
 
 
 # ============================================
@@ -1608,7 +1657,8 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         st.markdown("#### 📋 Quick Filters")
         quick_filter = st.radio("Preset", ['None', '🚀 Rockets Only', '🎯 Elite Only',
                                            '📈 Climbers', '⚡ Breakouts', '🏔️ At Peak',
-                                           'TMI > 70', 'Positional > 80'],
+                                           '🔥 Momentum', '💥 Crashes', '⛰️ Topping',
+                                           '⏳ Consolidating', 'TMI > 70', 'Positional > 80'],
                                 index=0, key='sb_quick')
 
         st.markdown("---")
@@ -1654,6 +1704,14 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         df = df[df['pattern_key'] == 'breakout']
     elif qf == '🏔️ At Peak':
         df = df[df['pattern_key'] == 'at_peak']
+    elif qf == '🔥 Momentum':
+        df = df[df['pattern_key'] == 'momentum_building']
+    elif qf == '💥 Crashes':
+        df = df[df['pattern_key'] == 'crash']
+    elif qf == '⛰️ Topping':
+        df = df[df['pattern_key'] == 'topping_out']
+    elif qf == '⏳ Consolidating':
+        df = df[df['pattern_key'] == 'consolidating']
     elif qf == 'TMI > 70':
         df = df[df['tmi'] > 70]
     elif qf == 'Positional > 80':
@@ -1684,7 +1742,8 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                          ('price_label', 'NEUTRAL'), ('price_alignment', 50),
                          ('price_multiplier', 1.0), ('pre_price_score', 0),
                          ('pre_decay_score', 0), ('grade_emoji', '📉'),
-                         ('pattern_key', 'neutral'), ('sector', ''),
+                         ('pattern_key', 'neutral'), ('pattern', '➖ Neutral'),
+                         ('sector', ''),
                          ('company_name', ''), ('category', ''), ('industry', '')]:
         if col not in all_df.columns:
             all_df[col] = default
@@ -2692,7 +2751,7 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     for col, default in [('decay_label', ''), ('decay_multiplier', 1.0),
                          ('price_label', 'NEUTRAL'), ('sector_alpha_tag', 'NEUTRAL'),
                          ('grade', 'F'), ('grade_emoji', '📉'),
-                         ('pattern_key', 'neutral'), ('pattern', ''),
+                         ('pattern_key', 'neutral'), ('pattern', '➖ Neutral'),
                          ('company_name', ''), ('sector', ''), ('weeks', 0)]:
         if col not in filtered_df.columns:
             filtered_df[col] = default
