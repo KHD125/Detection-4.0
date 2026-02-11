@@ -1436,7 +1436,8 @@ def _detect_pattern(ranks, totals, pcts, positional, trend, velocity, accelerati
 # TOP MOVERS CALCULATION
 # ============================================
 
-def get_top_movers(histories: dict, n: int = 10, weeks: int = 1) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
+                   tickers: set = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Get biggest rank gainers and decliners over *weeks* weeks.
 
     Args:
@@ -1444,9 +1445,12 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1) -> Tuple[pd.Dat
         n:         number of top movers to return per side.
         weeks:     look-back window in weeks (1 = last week vs now,
                    2 = 2 weeks ago vs now, etc.).
+        tickers:   optional set of tickers to restrict to (sidebar filters).
     """
     movers = []
     for ticker, h in histories.items():
+        if tickers is not None and ticker not in tickers:
+            continue
         rk = h['ranks']
         if len(rk) < weeks + 1:
             continue
@@ -2990,7 +2994,8 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     conv_count = int(conv_mask.sum())
     confirmed  = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum())
     divergent  = int((filtered_df['price_label'] == 'PRICE_DIVERGENT').sum())
-    gainers_1w, _ = get_top_movers(histories, n=1, weeks=1)
+    _filtered_tickers = set(filtered_df['ticker'].tolist())
+    gainers_1w, _ = get_top_movers(histories, n=1, weeks=1, tickers=_filtered_tickers)
     top_delta  = int(gainers_1w.iloc[0]['rank_change']) if not gainers_1w.empty else 0
     trap_total = decay_high + decay_mod
 
@@ -3229,7 +3234,7 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
             <span style="color:#8b949e;font-size:0.82rem;"> · Top 50 climbers &amp; 50 decliners</span>
         </div>""", unsafe_allow_html=True)
 
-    gainers, decliners = get_top_movers(histories, n=50, weeks=mv_weeks)
+    gainers, decliners = get_top_movers(histories, n=50, weeks=mv_weeks, tickers=_filtered_tickers)
 
     def _mover_table_html(df_mv: pd.DataFrame, accent: str, icon: str, label: str) -> str:
         """Build one mover panel as a single HTML string — fully styled."""
