@@ -2247,16 +2247,20 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
 
     st.markdown("")
 
-    # ── Charts: Rank + Price Trajectory (side-by-side dual-axis) ──
+    # ── Row 1: Rank Trajectory + Radar ──
     chart_c1, chart_c2 = st.columns([3, 2])
 
     with chart_c1:
-        st.markdown('<div class="sec-head">📈 Rank & Price Trajectory</div>', unsafe_allow_html=True)
-        _render_trajectory_chart_v3(h, ticker)
+        st.markdown('<div class="sec-head">📊 Rank Trajectory</div>', unsafe_allow_html=True)
+        _render_rank_chart(h, ticker)
 
     with chart_c2:
         st.markdown('<div class="sec-head">🎯 Component Breakdown</div>', unsafe_allow_html=True)
         _render_radar_chart(row)
+
+    # ── Row 2: Price Trajectory (full width) ──
+    st.markdown('<div class="sec-head">💰 Price Trajectory</div>', unsafe_allow_html=True)
+    _render_price_chart(h, ticker)
 
     # ── Score Pipeline Detail ──
     st.markdown('<div class="sec-head">🔬 Score Pipeline</div>', unsafe_allow_html=True)
@@ -2415,16 +2419,12 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
             _render_comparison_chart(ticker, compare_tickers, histories, traj_df)
 
 
-def _render_trajectory_chart_v3(h: dict, ticker: str):
-    """Rank + Price dual-axis trajectory chart (v3.0)"""
+def _render_rank_chart(h: dict, ticker: str):
+    """Rank percentile trajectory chart"""
     dates = h['dates']
-    ranks = h['ranks']
-    prices = h['prices']
-    pcts = ranks_to_percentiles(ranks, h['total_per_week'])
+    pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
 
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-    # Rank percentile (primary y — higher = better)
+    fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=dates, y=pcts,
         mode='lines+markers',
@@ -2434,18 +2434,7 @@ def _render_trajectory_chart_v3(h: dict, ticker: str):
         fill='tozeroy',
         fillcolor='rgba(255,107,53,0.08)',
         hovertemplate='%{x}<br>Rank Pctl: %{y:.1f}%<extra></extra>'
-    ), secondary_y=False)
-
-    # Price (secondary y)
-    fig.add_trace(go.Scatter(
-        x=dates, y=prices,
-        mode='lines+markers',
-        name='Price ₹',
-        line=dict(color='#00C853', width=2),
-        marker=dict(size=4),
-        opacity=0.85,
-        hovertemplate='%{x}<br>Price: ₹%{y:,.1f}<extra></extra>'
-    ), secondary_y=True)
+    ))
 
     # Best rank annotation
     best_idx = int(np.argmax(pcts))
@@ -2458,20 +2447,66 @@ def _render_trajectory_chart_v3(h: dict, ticker: str):
     )
 
     fig.update_layout(
-        height=380,
+        height=340,
         template='plotly_dark',
         hovermode='x unified',
-        legend=dict(orientation='h', y=-0.15, font=dict(size=10)),
-        margin=dict(t=10, b=55, l=50, r=50),
+        margin=dict(t=10, b=50, l=50, r=20),
         xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
+        yaxis=dict(title='Rank Pctl %', range=[0, 100], gridcolor='rgba(255,255,255,0.04)'),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
+        showlegend=False,
     )
-    fig.update_yaxes(title_text="Rank Pctl %", range=[0, 100],
-                     secondary_y=False, gridcolor='rgba(255,255,255,0.04)')
-    fig.update_yaxes(title_text="Price ₹",
-                     secondary_y=True, gridcolor='rgba(255,255,255,0.02)')
+    st.plotly_chart(fig, use_container_width=True)
 
+
+def _render_price_chart(h: dict, ticker: str):
+    """Price trajectory chart with min/max annotations"""
+    dates = h['dates']
+    prices = h['prices']
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=prices,
+        mode='lines+markers',
+        name='Price ₹',
+        line=dict(color='#00C853', width=2.5),
+        marker=dict(size=5),
+        fill='tozeroy',
+        fillcolor='rgba(0,200,83,0.06)',
+        hovertemplate='%{x}<br>₹%{y:,.1f}<extra></extra>'
+    ))
+
+    # High / Low annotations
+    hi_idx = int(np.argmax(prices))
+    lo_idx = int(np.argmin(prices))
+    fig.add_annotation(
+        x=dates[hi_idx], y=prices[hi_idx],
+        text=f"High: ₹{prices[hi_idx]:,.1f}",
+        showarrow=True, arrowhead=2,
+        font=dict(color='#00E676', size=10),
+        bgcolor='rgba(0,0,0,0.7)', bordercolor='#00E676'
+    )
+    if hi_idx != lo_idx:
+        fig.add_annotation(
+            x=dates[lo_idx], y=prices[lo_idx],
+            text=f"Low: ₹{prices[lo_idx]:,.1f}",
+            showarrow=True, arrowhead=2, ay=30,
+            font=dict(color='#FF5252', size=10),
+            bgcolor='rgba(0,0,0,0.7)', bordercolor='#FF5252'
+        )
+
+    fig.update_layout(
+        height=280,
+        template='plotly_dark',
+        hovermode='x unified',
+        margin=dict(t=10, b=50, l=50, r=20),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
+        yaxis=dict(title='Price ₹', gridcolor='rgba(255,255,255,0.04)'),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        showlegend=False,
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 
