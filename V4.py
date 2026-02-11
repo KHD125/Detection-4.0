@@ -2141,21 +2141,17 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
 # ============================================
 
 def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
-    """Render stock search and detailed analysis tab"""
+    """Search & Analyse — v3.0 (Price Trajectory, Pro Rank, Latest Price, Clean UI)"""
 
     # ── Search Input ──
-    ticker_options = sorted(traj_df['ticker'].unique().tolist())
-    # Build display labels: "TICKER - Company Name"
     label_map = {}
     for _, row in traj_df.iterrows():
-        label = f"{row['ticker']} — {row['company_name'][:35]}"
-        label_map[label] = row['ticker']
-
+        label_map[f"{row['ticker']} — {row['company_name'][:35]}"] = row['ticker']
     labels = sorted(label_map.keys())
 
-    selected_label = st.selectbox("🔍 Search Stock (type ticker or company name)",
+    selected_label = st.selectbox("🔍 Search Stock",
                                    labels, index=None,
-                                   placeholder="Start typing a ticker or company name...",
+                                   placeholder="Type ticker or company name...",
                                    key='search_select')
 
     if selected_label is None:
@@ -2165,210 +2161,242 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
     ticker = label_map[selected_label]
     row = traj_df[traj_df['ticker'] == ticker].iloc[0]
     h = histories.get(ticker, {})
-
     if not h:
         st.warning("No history data available for this ticker")
         return
 
-    # ── Stock Header Card ──
+    # ── Derived Data ──
+    latest_price = h['prices'][-1] if h.get('prices') else 0
+    pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
+    total_stocks = h['total_per_week'][-1] if h.get('total_per_week') else 0
+    pro_rank = int(traj_df[traj_df['ticker'] == ticker].index[0]) + 1 if ticker in traj_df['ticker'].values else 0
+    # Re-compute pro_rank based on T-Score sort
+    sorted_df = traj_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
+    pro_rank_idx = sorted_df[sorted_df['ticker'] == ticker].index
+    pro_rank = int(pro_rank_idx[0]) + 1 if len(pro_rank_idx) > 0 else 0
+
+    pattern_key = row.get('pattern_key', 'neutral')
+    p_emoji, p_name, p_desc = PATTERN_DEFS.get(pattern_key, ('➖', 'Neutral', ''))
+    p_color = PATTERN_COLORS.get(pattern_key, '#8b949e')
+    grade_color = {'S': '#FFD700', 'A': '#3fb950', 'B': '#58a6ff', 'C': '#d29922', 'D': '#FF5722', 'F': '#f85149'}.get(row['grade'], '#888')
+
+    # ── Header Card ──
     st.markdown(f"""
-    <div class="stock-card">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-            <div>
-                <h2 style="margin:0; color:#fff;">{row['ticker']}</h2>
-                <p style="margin:2px 0; color:#aaa; font-size:1.1rem;">{row['company_name']}</p>
-                <p style="margin:0; color:#666;">{row['category']} • {row['sector']} • {row['industry']}</p>
+    <div style="background:#0d1117; border-radius:14px; padding:20px 24px; margin-bottom:16px; border:1px solid #30363d;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
+            <div style="flex:1; min-width:200px;">
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">
+                    <span style="font-size:1.6rem; font-weight:800; color:#fff;">{ticker}</span>
+                    <span style="background:{p_color}22; color:{p_color}; padding:3px 10px; border-radius:12px; font-size:0.75rem; border:1px solid {p_color}44;">{p_emoji} {p_name}</span>
+                </div>
+                <div style="color:#8b949e; font-size:0.95rem; margin-bottom:2px;">{row['company_name']}</div>
+                <div style="color:#484f58; font-size:0.8rem;">{row['category']} • {row.get('sector', '')} • {row.get('industry', '')}</div>
             </div>
-            <div style="text-align:center;">
-                <div class="grade-{row['grade']}">{row['grade_emoji']} Grade {row['grade']}</div>
-                <div style="font-size:2rem; font-weight:800; color:#FF6B35;">{row['trajectory_score']}</div>
-                <div style="color:#888; font-size:0.8rem;">TRAJECTORY SCORE</div>
+            <div style="display:flex; gap:20px; align-items:center;">
+                <div style="text-align:center;">
+                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Pro Rank</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:#58a6ff;">#{pro_rank}</div>
+                    <div style="font-size:0.65rem; color:#484f58;">of {total_stocks}</div>
+                </div>
+                <div style="width:1px; height:50px; background:#30363d;"></div>
+                <div style="text-align:center;">
+                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">T-Score</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:#FF6B35;">{row['trajectory_score']:.1f}</div>
+                    <div style="font-size:0.65rem; color:#484f58;">/ 100</div>
+                </div>
+                <div style="width:1px; height:50px; background:#30363d;"></div>
+                <div style="text-align:center;">
+                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Grade</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{grade_color};">{row['grade']}</div>
+                    <div style="font-size:0.65rem; color:#484f58;">{row['grade_emoji']}</div>
+                </div>
+                <div style="width:1px; height:50px; background:#30363d;"></div>
+                <div style="text-align:center;">
+                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Price</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:#e6edf3;">₹{latest_price:,.1f}</div>
+                    <div style="font-size:0.65rem; color:#484f58;">Latest</div>
+                </div>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── KPI Row ──
-    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
-    k1.metric("Current Rank", f"#{row['current_rank']}", f"{row['last_week_change']:+d} this week")
-    k2.metric("Best Rank", f"#{row['best_rank']}")
-    k3.metric("Total Δ Rank", f"{row['rank_change']:+d}", "improved" if row['rank_change'] > 0 else "declined")
-    k4.metric("TMI", f"{row['tmi']:.0f}")
-    k5.metric("Streak", f"{row['streak']} weeks")
+    # ── Compact KPI Strip ──
     price_label_display = row.get('price_label', 'NEUTRAL')
-    price_icon = '💰' if price_label_display == 'PRICE_CONFIRMED' else '⚠️' if price_label_display == 'PRICE_DIVERGENT' else '➖'
-    k6.metric("Price Align", f"{price_icon} {row.get('price_alignment', 50):.0f}")
     decay_lbl = row.get('decay_label', '')
-    decay_icon = '🔻' if decay_lbl == 'DECAY_HIGH' else '⚡' if decay_lbl == 'DECAY_MODERATE' else '~' if decay_lbl == 'DECAY_MILD' else '✅'
-    k7.metric("Decay Check", f"{decay_icon} {row.get('decay_score', 0)}")
+    sa_tag = row.get('sector_alpha_tag', 'NEUTRAL')
+    sa_icons = {'SECTOR_LEADER': '👑', 'SECTOR_OUTPERFORM': '⬆️', 'SECTOR_ALIGNED': '➖', 'SECTOR_BETA': '🏷️', 'SECTOR_LAGGARD': '📉'}
 
-    st.markdown("---")
+    kpi_items = [
+        ('CSV Rank', f"#{row['current_rank']}", f"{row['last_week_change']:+d}w"),
+        ('Best Rank', f"#{row['best_rank']}", ''),
+        ('Total Δ', f"{row['rank_change']:+d}", 'pos' if row['rank_change'] > 0 else ''),
+        ('TMI', f"{row['tmi']:.0f}", ''),
+        ('Streak', f"{row['streak']}w", ''),
+        ('Price Align', f"{'💰' if price_label_display == 'PRICE_CONFIRMED' else '⚠️' if price_label_display == 'PRICE_DIVERGENT' else '➖'} {row.get('price_alignment', 50):.0f}", ''),
+        ('Decay', f"{'🔻' if decay_lbl == 'DECAY_HIGH' else '⚡' if decay_lbl == 'DECAY_MODERATE' else '✅'} {row.get('decay_score', 0)}", ''),
+        ('Sector', f"{sa_icons.get(sa_tag, '➖')}", sa_tag.split('_')[-1].title() if sa_tag != 'NEUTRAL' else 'Neutral'),
+    ]
+    kpi_html = ''.join([
+        f'<div class="m-chip"><div style="font-size:0.62rem;color:#8b949e;text-transform:uppercase;">{label}</div>'
+        f'<div style="font-size:0.95rem;font-weight:700;color:#e6edf3;">{val}</div>'
+        f'<div style="font-size:0.6rem;color:#6e7681;">{sub}</div></div>'
+        for label, val, sub in kpi_items
+    ])
+    st.markdown(f'<div class="m-strip">{kpi_html}</div>', unsafe_allow_html=True)
 
-    # ── Charts ──
-    chart_c1, chart_c2 = st.columns([2, 1])
+    st.markdown("")
+
+    # ── Charts: Rank + Price Trajectory (side-by-side dual-axis) ──
+    chart_c1, chart_c2 = st.columns([3, 2])
 
     with chart_c1:
-        st.markdown("##### 📈 Rank Trajectory Over Time")
-        _render_trajectory_chart(h, ticker)
+        st.markdown('<div class="sec-head">📈 Rank & Price Trajectory</div>', unsafe_allow_html=True)
+        _render_trajectory_chart_v3(h, ticker)
 
     with chart_c2:
-        st.markdown("##### 🎯 Component Breakdown")
+        st.markdown('<div class="sec-head">🎯 Component Breakdown</div>', unsafe_allow_html=True)
         _render_radar_chart(row)
 
-    st.markdown("---")
+    # ── Score Pipeline Detail ──
+    st.markdown('<div class="sec-head">🔬 Score Pipeline</div>', unsafe_allow_html=True)
+    sc1, sc2, sc3 = st.columns(3)
 
-    # ── Detailed Stats ──
-    stat_c1, stat_c2 = st.columns(2)
-
-    with stat_c1:
-        st.markdown("##### 📊 Trajectory Statistics")
-        stats_data = {
-            'Metric': [
-                'Trajectory Score', 'Grade', 'Pattern', 'TMI',
-                'Current Rank', 'Best Rank', 'Worst Rank', 'Avg Rank',
-                'Total Rank Change', 'Last Week Change',
-                'Improvement Streak', 'Weeks of Data', 'Rank Volatility'
-            ],
-            'Value': [
-                f"{row['trajectory_score']:.1f} / 100",
-                f"{row['grade_emoji']} {row['grade']}",
-                row['pattern'],
-                f"{row['tmi']:.0f} / 100",
-                f"#{row['current_rank']}",
-                f"#{row['best_rank']}",
-                f"#{row['worst_rank']}",
-                f"#{row['avg_rank']}",
-                f"{row['rank_change']:+d} positions",
-                f"{row['last_week_change']:+d} positions",
-                f"{row['streak']} consecutive weeks",
-                f"{row['weeks']} weeks",
-                f"{row['rank_volatility']:.1f}"
-            ]
-        }
-        st.dataframe(pd.DataFrame(stats_data), hide_index=True, use_container_width=True)
-
-    with stat_c2:
-        st.markdown("##### 🧩 Component Scores")
-        # Get adaptive weights for this stock's percentile tier
-        avg_pct_val = float(np.mean(histories.get(ticker, {}).get('ranks', [500])))
-        total_wk = histories.get(ticker, {}).get('total_per_week', [2000])
+    with sc1:
+        # Component Scores Table
+        avg_pct_val = float(np.mean(h.get('ranks', [500])))
+        total_wk = h.get('total_per_week', [2000])
         avg_total = float(np.mean(total_wk)) if total_wk else 2000
         stock_avg_pct = (1 - avg_pct_val / max(avg_total, 1)) * 100
         adp_w = _get_adaptive_weights(stock_avg_pct)
         comp_data = {
             'Component': ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience'],
-            'Weight': [f"{adp_w['positional']*100:.0f}%", f"{adp_w['trend']*100:.0f}%",
-                       f"{adp_w['velocity']*100:.0f}%", f"{adp_w['acceleration']*100:.0f}%",
-                       f"{adp_w['consistency']*100:.0f}%", f"{adp_w['resilience']*100:.0f}%"],
-            'Score': [row['positional'], row['trend'], row['velocity'], row['acceleration'],
-                      row['consistency'], row['resilience']],
-            'Contribution': [
-                round(row['positional'] * adp_w['positional'], 1),
-                round(row['trend'] * adp_w['trend'], 1),
-                round(row['velocity'] * adp_w['velocity'], 1),
-                round(row['acceleration'] * adp_w['acceleration'], 1),
-                round(row['consistency'] * adp_w['consistency'], 1),
-                round(row['resilience'] * adp_w['resilience'], 1)
-            ]
+            'Wt': [f"{adp_w[k]*100:.0f}%" for k in ['positional','trend','velocity','acceleration','consistency','resilience']],
+            'Score': [row['positional'], row['trend'], row['velocity'], row['acceleration'], row['consistency'], row['resilience']],
+            'Contrib': [round(row[k] * adp_w[k], 1) for k in ['positional','trend','velocity','acceleration','consistency','resilience']]
         }
-        comp_df = pd.DataFrame(comp_data)
-        st.dataframe(comp_df, column_config={
+        st.dataframe(pd.DataFrame(comp_data), column_config={
             'Score': st.column_config.ProgressColumn('Score', min_value=0, max_value=100, format="%.1f")
-        }, hide_index=True, use_container_width=True)
+        }, hide_index=True, use_container_width=True, height=248)
 
-        # Price-Rank Alignment detail (v2.3 — return-based)
-        pa_score = row.get('price_alignment', 50)
-        pa_mult = row.get('price_multiplier', 1.0)
+    with sc2:
+        # Price Alignment + Momentum Decay
         pa_label = row.get('price_label', 'NEUTRAL')
-        pre_price = row.get('pre_price_score', row['trajectory_score'])
-        pa_color = '#00E676' if pa_label == 'PRICE_CONFIRMED' else '#FF1744' if pa_label == 'PRICE_DIVERGENT' else '#888'
-        st.markdown(f"""
-        ##### 💰 Return-Based Price Alignment
-        <div style="background:#1e1e2e; border-radius:10px; padding:12px; border:1px solid {pa_color};">
-            <div style="display:flex; justify-content:space-between;">
-                <div><span style="color:#aaa;">Alignment Score:</span> <b style="color:{pa_color};">{pa_score:.0f}/100</b></div>
-                <div><span style="color:#aaa;">Multiplier:</span> <b style="color:{pa_color};">×{pa_mult:.3f}</b></div>
-            </div>
-            <div style="margin-top:6px;"><span style="color:#aaa;">Status:</span> <b style="color:{pa_color};">{pa_label}</b></div>
-            <div style="margin-top:4px; color:#666; font-size:0.8rem;">Pre-price: {pre_price:.1f} → Post-price: {row.get('pre_decay_score', row['trajectory_score']):.1f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Momentum Decay Warning detail (v2.3)
-        d_score = row.get('decay_score', 0)
-        d_mult = row.get('decay_multiplier', 1.0)
+        pa_color = '#00E676' if pa_label == 'PRICE_CONFIRMED' else '#FF1744' if pa_label == 'PRICE_DIVERGENT' else '#484f58'
         d_label = row.get('decay_label', '')
-        pre_decay = row.get('pre_decay_score', row['trajectory_score'])
-        d_color = '#FF1744' if d_label == 'DECAY_HIGH' else '#FF9800' if d_label == 'DECAY_MODERATE' else '#FFD700' if d_label == 'DECAY_MILD' else '#00E676'
-        d_status = d_label if d_label else 'CLEAN ✅'
+        d_color = '#FF1744' if d_label == 'DECAY_HIGH' else '#FF9800' if d_label == 'DECAY_MODERATE' else '#FFD700' if d_label == 'DECAY_MILD' else '#3fb950'
         st.markdown(f"""
-        ##### 🔻 Momentum Decay Check
-        <div style="background:#1e1e2e; border-radius:10px; padding:12px; border:1px solid {d_color};">
-            <div style="display:flex; justify-content:space-between;">
-                <div><span style="color:#aaa;">Decay Score:</span> <b style="color:{d_color};">{d_score}/100</b></div>
-                <div><span style="color:#aaa;">Multiplier:</span> <b style="color:{d_color};">×{d_mult:.3f}</b></div>
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d; margin-bottom:10px;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">💰 Price Alignment</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Score</span>
+                <span style="color:{pa_color}; font-weight:700;">{row.get('price_alignment', 50):.0f}/100</span>
             </div>
-            <div style="margin-top:6px;"><span style="color:#aaa;">Status:</span> <b style="color:{d_color};">{d_status}</b></div>
-            <div style="margin-top:4px; color:#666; font-size:0.8rem;">Pre-decay: {pre_decay:.1f} → Final: {row['trajectory_score']:.1f}</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Multiplier</span>
+                <span style="color:{pa_color}; font-weight:600;">×{row.get('price_multiplier', 1.0):.3f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">Status</span>
+                <span style="color:{pa_color}; font-weight:700;">{pa_label.replace('_', ' ')}</span>
+            </div>
+            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Pre: {row.get('pre_price_score', row['trajectory_score']):.1f} → Post: {row.get('pre_decay_score', row['trajectory_score']):.1f}</div>
+        </div>
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🔻 Momentum Decay</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Score</span>
+                <span style="color:{d_color}; font-weight:700;">{row.get('decay_score', 0)}/100</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Multiplier</span>
+                <span style="color:{d_color}; font-weight:600;">×{row.get('decay_multiplier', 1.0):.3f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">Status</span>
+                <span style="color:{d_color}; font-weight:700;">{d_label if d_label else 'CLEAN ✅'}</span>
+            </div>
+            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Pre: {row.get('pre_decay_score', row['trajectory_score']):.1f} → Final: {row['trajectory_score']:.1f}</div>
         </div>
         """, unsafe_allow_html=True)
 
-        # Sector Alpha detail (v2.3)
-        sa_tag = row.get('sector_alpha_tag', 'NEUTRAL')
+    with sc3:
+        # Sector Alpha + Trajectory Stats
         sa_val = row.get('sector_alpha_value', 0)
-        sa_colors = {'SECTOR_LEADER': '#FFD700', 'SECTOR_OUTPERFORM': '#00E676',
-                     'SECTOR_ALIGNED': '#888', 'SECTOR_BETA': '#FF9800', 'SECTOR_LAGGARD': '#FF1744'}
-        sa_icons = {'SECTOR_LEADER': '👑', 'SECTOR_OUTPERFORM': '⬆️',
-                    'SECTOR_ALIGNED': '➖', 'SECTOR_BETA': '🏷️', 'SECTOR_LAGGARD': '📉'}
-        sa_color = sa_colors.get(sa_tag, '#888')
-        sa_icon = sa_icons.get(sa_tag, '➖')
+        sa_colors_map = {'SECTOR_LEADER': '#FFD700', 'SECTOR_OUTPERFORM': '#3fb950', 'SECTOR_ALIGNED': '#484f58', 'SECTOR_BETA': '#FF9800', 'SECTOR_LAGGARD': '#FF1744'}
+        sa_color = sa_colors_map.get(sa_tag, '#484f58')
         st.markdown(f"""
-        ##### 🏛️ Sector Alpha
-        <div style="background:#1e1e2e; border-radius:10px; padding:12px; border:1px solid {sa_color};">
-            <div style="display:flex; justify-content:space-between;">
-                <div><span style="color:#aaa;">Sector:</span> <b style="color:#fff;">{row.get('sector', 'N/A')}</b></div>
-                <div><span style="color:#aaa;">Alpha:</span> <b style="color:{sa_color};">{sa_val:+.1f}</b></div>
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d; margin-bottom:10px;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🏛️ Sector Alpha</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Sector</span>
+                <span style="color:#e6edf3; font-weight:600;">{row.get('sector', 'N/A')}</span>
             </div>
-            <div style="margin-top:6px;"><span style="color:#aaa;">Classification:</span> <b style="color:{sa_color};">{sa_icon} {sa_tag}</b></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Alpha</span>
+                <span style="color:{sa_color}; font-weight:700;">{sa_val:+.1f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">Tag</span>
+                <span style="color:{sa_color}; font-weight:700;">{sa_icons.get(sa_tag, '➖')} {sa_tag.replace('SECTOR_', '').title()}</span>
+            </div>
+        </div>
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">📊 Trajectory Stats</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Worst Rank</span>
+                <span style="color:#e6edf3;">#{row['worst_rank']}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Avg Rank</span>
+                <span style="color:#e6edf3;">#{row['avg_rank']}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Rank Volatility</span>
+                <span style="color:#e6edf3;">{row['rank_volatility']:.1f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">Weeks</span>
+                <span style="color:#e6edf3;">{row['weeks']}</span>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # Latest patterns from Wave Detection
-        if row.get('latest_patterns', ''):
-            st.markdown("##### 🏷️ Latest Wave Detection Patterns")
-            st.markdown(f"<div class='pattern-tag'>{row['latest_patterns']}</div>", unsafe_allow_html=True)
+    # Latest Wave Detection Patterns
+    if row.get('latest_patterns', ''):
+        st.markdown(f'<div style="margin-top:8px;"><span style="color:#8b949e; font-size:0.72rem; text-transform:uppercase;">Wave Patterns:</span> <span class="pattern-tag">{row["latest_patterns"]}</span></div>', unsafe_allow_html=True)
 
-    # ── Week-by-Week Table ──
-    with st.expander("📅 Week-by-Week Rank History", expanded=False):
+    st.markdown("")
+
+    # ── Week-by-Week History ──
+    with st.expander("📅 Week-by-Week History", expanded=False):
         week_data = {
             'Date': h['dates'],
             'Rank': [int(r) for r in h['ranks']],
-            'Master Score': [round(s, 1) for s in h['scores']],
-            'Price': [round(p, 1) for p in h['prices']],
-            'Total Stocks': h['total_per_week']
+            'Pctl': [round(p, 1) for p in pcts],
+            'Price ₹': [round(p, 1) for p in h['prices']],
+            'M.Score': [round(s, 1) for s in h['scores']],
+            'Stocks': h['total_per_week'],
         }
-        # Add percentile column
-        week_data['Percentile'] = [
-            round((1 - r / max(t, 1)) * 100, 1)
-            for r, t in zip(h['ranks'], h['total_per_week'])
-        ]
-        # Add week-over-week change
         wk_changes = [0] + [int(h['ranks'][i - 1] - h['ranks'][i]) for i in range(1, len(h['ranks']))]
         week_data['Δ Rank'] = wk_changes
+        # Price changes
+        price_changes = [0] + [round(h['prices'][i] - h['prices'][i-1], 1) for i in range(1, len(h['prices']))]
+        week_data['Δ Price'] = price_changes
 
-        # v2.3: Add return data
         def _safe_round(lst, decimals=1):
             return [round(v, decimals) if v is not None and not np.isnan(v) else None for v in lst]
-        if 'ret_7d' in h and h['ret_7d']:
+        if h.get('ret_7d'):
             week_data['Ret 7d%'] = _safe_round(h['ret_7d'])
-        if 'ret_30d' in h and h['ret_30d']:
+        if h.get('ret_30d'):
             week_data['Ret 30d%'] = _safe_round(h['ret_30d'])
 
-        wk_df = pd.DataFrame(week_data)
-        wk_df = wk_df.iloc[::-1]  # Latest first
+        wk_df = pd.DataFrame(week_data).iloc[::-1]  # Latest first
         wk_col_config = {
             'Δ Rank': st.column_config.NumberColumn(format="%+d"),
-            'Percentile': st.column_config.ProgressColumn('Percentile', min_value=0, max_value=100, format="%.1f")
+            'Pctl': st.column_config.ProgressColumn('Pctl', min_value=0, max_value=100, format="%.1f"),
+            'Price ₹': st.column_config.NumberColumn(format="₹%.1f"),
+            'Δ Price': st.column_config.NumberColumn(format="%+.1f"),
         }
         if 'Ret 7d%' in wk_df.columns:
             wk_col_config['Ret 7d%'] = st.column_config.NumberColumn(format="%.1f%%")
@@ -2376,10 +2404,10 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
             wk_col_config['Ret 30d%'] = st.column_config.NumberColumn(format="%.1f%%")
         st.dataframe(wk_df, column_config=wk_col_config, hide_index=True, use_container_width=True)
 
-    # ── Comparison Mode ──
-    with st.expander("⚖️ Compare with Other Stocks", expanded=False):
+    # ── Compare ──
+    with st.expander("⚖️ Compare Stocks", expanded=False):
         compare_labels = [l for l in labels if l != selected_label]
-        compare_selections = st.multiselect("Select stocks to compare (max 4)",
+        compare_selections = st.multiselect("Select up to 4 stocks",
                                              compare_labels, max_selections=4,
                                              key='compare_select')
         if compare_selections:
@@ -2387,60 +2415,62 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
             _render_comparison_chart(ticker, compare_tickers, histories, traj_df)
 
 
-def _render_trajectory_chart(h: dict, ticker: str):
-    """Render main trajectory chart with rank (inverted) + master score"""
+def _render_trajectory_chart_v3(h: dict, ticker: str):
+    """Rank + Price dual-axis trajectory chart (v3.0)"""
     dates = h['dates']
     ranks = h['ranks']
-    scores = h['scores']
     prices = h['prices']
+    pcts = ranks_to_percentiles(ranks, h['total_per_week'])
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # Rank line (inverted y-axis: lower rank = higher on chart)
+    # Rank percentile (primary y — higher = better)
     fig.add_trace(go.Scatter(
-        x=dates, y=ranks,
+        x=dates, y=pcts,
         mode='lines+markers',
-        name='Rank',
+        name='Rank Percentile',
         line=dict(color='#FF6B35', width=3),
-        marker=dict(size=7),
+        marker=dict(size=6),
         fill='tozeroy',
-        fillcolor='rgba(255,107,53,0.1)',
-        hovertemplate='Date: %{x}<br>Rank: #%{y}<extra></extra>'
+        fillcolor='rgba(255,107,53,0.08)',
+        hovertemplate='%{x}<br>Rank Pctl: %{y:.1f}%<extra></extra>'
     ), secondary_y=False)
 
-    # Master score overlay
+    # Price (secondary y)
     fig.add_trace(go.Scatter(
-        x=dates, y=scores,
+        x=dates, y=prices,
         mode='lines+markers',
-        name='Master Score',
-        line=dict(color='#00C853', width=2, dash='dot'),
-        marker=dict(size=5),
-        opacity=0.7,
-        hovertemplate='Date: %{x}<br>Score: %{y:.1f}<extra></extra>'
+        name='Price ₹',
+        line=dict(color='#00C853', width=2),
+        marker=dict(size=4),
+        opacity=0.85,
+        hovertemplate='%{x}<br>Price: ₹%{y:,.1f}<extra></extra>'
     ), secondary_y=True)
 
     # Best rank annotation
-    best_idx = int(np.argmin(ranks))
+    best_idx = int(np.argmax(pcts))
     fig.add_annotation(
-        x=dates[best_idx], y=ranks[best_idx],
-        text=f"Best: #{int(ranks[best_idx])}",
+        x=dates[best_idx], y=pcts[best_idx],
+        text=f"Peak: {pcts[best_idx]:.0f}%",
         showarrow=True, arrowhead=2,
-        font=dict(color='#FFD700', size=11),
+        font=dict(color='#FFD700', size=10),
         bgcolor='rgba(0,0,0,0.7)', bordercolor='#FFD700'
     )
 
     fig.update_layout(
-        height=400,
+        height=380,
         template='plotly_dark',
         hovermode='x unified',
-        legend=dict(orientation='h', y=-0.15),
-        margin=dict(t=20, b=60, l=60, r=60),
-        xaxis=dict(title='Week', tickangle=-45)
+        legend=dict(orientation='h', y=-0.15, font=dict(size=10)),
+        margin=dict(t=10, b=55, l=50, r=50),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
     )
-    fig.update_yaxes(title_text="Rank (lower = better)", autorange="reversed",
-                     secondary_y=False, gridcolor='rgba(255,255,255,0.05)')
-    fig.update_yaxes(title_text="Master Score", secondary_y=True,
-                     gridcolor='rgba(255,255,255,0.03)')
+    fig.update_yaxes(title_text="Rank Pctl %", range=[0, 100],
+                     secondary_y=False, gridcolor='rgba(255,255,255,0.04)')
+    fig.update_yaxes(title_text="Price ₹",
+                     secondary_y=True, gridcolor='rgba(255,255,255,0.02)')
 
     st.plotly_chart(fig, use_container_width=True)
 
