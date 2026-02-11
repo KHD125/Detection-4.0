@@ -2487,7 +2487,7 @@ def _render_rank_chart(h: dict, ticker: str):
     fig.update_yaxes(title_text="Rank", autorange="reversed",
                      gridcolor='rgba(255,255,255,0.04)', row=1, col=1, secondary_y=False)
     fig.update_yaxes(title_text="M.Score", showgrid=False,
-                     titlefont=dict(color='#58a6ff', size=10),
+                     title_font=dict(color='#58a6ff', size=10),
                      tickfont=dict(color='#58a6ff', size=9),
                      row=1, col=1, secondary_y=True)
     fig.update_yaxes(title_text="Pctl %", range=[0, 100],
