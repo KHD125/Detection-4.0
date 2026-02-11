@@ -2470,7 +2470,10 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
                                      'resilience', 'sector', 'industry', 'streak',
                                      'last_week_change', 'avg_rank', 'rank_volatility']
     full_cols = standard_cols + ['worst_rank', 'market_state', 'latest_patterns',
-                                  'grade_emoji', 'pattern_key']
+                                  'grade_emoji', 'pattern_key',
+                                  'price_alignment', 'price_multiplier', 'price_label',
+                                  'decay_score', 'decay_multiplier', 'decay_label',
+                                  'sector_alpha_tag', 'sector_alpha_value', 'signal_tags']
 
     if detail == 'Compact':
         cols = [c for c in compact_cols if c in export_df.columns]
