@@ -1,14 +1,17 @@
 """
-Rank Trajectory Engine v2.2 — Adaptive Intelligence + Price-Rank Alignment
-=================================================================
+Rank Trajectory Engine v2.3 — Return-Based Intelligence + Momentum Decay + Sector Alpha
+========================================================================================
 Professional Stock Rank Trajectory Analysis System
-with Adaptive Weight Intelligence, Price-Rank Alignment Multiplier,
-and Multi-Stage Selection Funnel.
+with Adaptive Weight Intelligence, Return-Based Alignment, Momentum Decay Warning,
+Sector Alpha Detection, and Multi-Stage Selection Funnel.
 
 CORE ARCHITECTURE:
   6-Component Adaptive Scoring → Elite Dominance Bonus → Price-Rank Multiplier
+    → Momentum Decay Penalty → Sector Alpha Tag
   Weights shift dynamically by position tier (elite/strong/mid/bottom).
-  Price alignment confirms or flags trajectory via ×0.92 to ×1.08 multiplier.
+  Returns (ret_7d/ret_30d) confirm or flag trajectory via ×0.92 to ×1.08 multiplier.
+  Momentum decay detects 11.4% trap stocks with good rank but negative returns.
+  Sector alpha separates genuine leaders from sector-beta riders.
 
 3-STAGE FUNNEL:
   Stage 1: Discovery  — Trajectory Score ≥70 or Rocket/Breakout → 50-100 candidates
@@ -21,13 +24,15 @@ Components: Adaptive Weights by Tier
   Mid (40-70):     Pos 18% | Trend 22% | Vel 20% | Acc 12% | Con 14% | Res 14%
   Bottom (<40):    Pos 10% | Trend 20% | Vel 25% | Acc 18% | Con 12% | Res 15%
 
-Price-Rank Alignment Multiplier: ×0.92 (divergent) to ×1.08 (confirmed)
-  - Auto-detects stock splits/bonus (price crashes + rank stable = split)
-  - Directional agreement (55%): week-to-week co-movement
-  - Trend correlation (45%): overall shape similarity
-  - PRICE_CONFIRMED / PRICE_DIVERGENT pattern tags
+v2.3 Upgrades:
+  1. Return-Based Alignment: Uses CSV ret_7d/ret_30d (split-adjusted by provider)
+     instead of raw prices. No split detection needed — cleaner, more accurate.
+  2. Momentum Decay Warning: Catches stocks with good rank but negative recent
+     returns (11.4% of top-10% are traps). Penalty ×0.93 to ×1.0.
+  3. Sector Alpha Check: Separates SECTOR_LEADER from SECTOR_BETA stocks.
+     Stocks riding hot sectors get flagged; true alpha gets rewarded.
 
-Version: 2.2.0
+Version: 2.3.0
 Last Updated: February 2026
 """
 
@@ -121,18 +126,42 @@ ELITE_BONUS = {
     'top20_sustained': {'pct_threshold': 80, 'history_ratio': 0.50, 'floor': 68}
 }
 
-# Price-Rank Alignment Configuration
+# Return-Based Price-Rank Alignment Configuration (v2.3 — uses ret_7d/ret_30d)
 PRICE_ALIGNMENT = {
-    'split_threshold': -0.35,        # Week-to-week price drop that triggers split detection
-    'split_rank_tolerance': 20,      # Max percentile rank drop to still be considered a split
     'noise_band_stable': 2.0,        # Ignore rank moves < this for stable stocks
     'noise_band_normal': 1.0,        # Ignore rank moves < this for normal stocks
-    'stability_threshold': 3.0,      # Pct std below which a stock is "stable"
     'min_weeks': 4,                  # Minimum weeks needed for alignment calculation
     'multiplier_max_boost': 1.08,    # Maximum upward multiplier
     'multiplier_max_penalty': 0.92,  # Maximum downward multiplier
     'confirmed_threshold': 72,       # Alignment score above this = PRICE_CONFIRMED
     'divergent_threshold': 35,       # Alignment score below this = PRICE_DIVERGENT
+}
+
+# Momentum Decay Warning Configuration (v2.3)
+MOMENTUM_DECAY = {
+    'min_pct_tier': 40,              # Only check stocks above this avg percentile
+    'r7_severe': -5,                 # Weekly return below this triggers severe signal
+    'r7_moderate': -2,               # Weekly return below this triggers moderate signal
+    'r30_severe_high': -15,          # 30d return for top-ranked stocks: TRAP threshold
+    'r30_moderate_high': -5,         # 30d return moderate warning for top stocks
+    'r30_severe_mid': -10,           # 30d return severe for mid-ranked stocks
+    'from_high_severe': -20,         # Far from high — significant correction
+    'from_high_moderate': -15,       # Moderate correction from high
+    'high_decay_multiplier': 0.93,   # Severe decay penalty
+    'moderate_decay_multiplier': 0.96,  # Moderate decay penalty
+    'mild_decay_multiplier': 0.98,   # Mild decay warning
+    'severe_threshold': 60,          # Decay score above this = severe
+    'moderate_threshold': 35,        # Decay score above this = moderate
+    'mild_threshold': 15,            # Decay score above this = mild
+}
+
+# Sector Alpha Configuration (v2.3)
+SECTOR_ALPHA = {
+    'min_sector_stocks': 3,          # Minimum stocks in sector for alpha calc
+    'leader_z': 1.5,                 # Z-score above this = sector leader
+    'outperform_z': 0.5,             # Z-score above this = outperforming sector
+    'aligned_z': -0.5,              # Z-score above this = aligned with sector
+    'beta_sector_min': 60,           # Sector avg must be > this for beta detection
 }
 
 # Funnel Stage Defaults
@@ -171,14 +200,16 @@ PATTERN_DEFS = {
     'new_entry':      ('💎', 'New Entry',        'Recently appeared or insufficient history'),
     'stagnant':       ('⏸️', 'Stagnant',        'No significant rank movement'),
     'price_confirmed': ('💰', 'Price Confirmed', 'Price movement validates rank trajectory'),
-    'price_divergent': ('⚠️', 'Price Divergent', 'Price movement contradicts rank trajectory')
+    'price_divergent': ('⚠️', 'Price Divergent', 'Price movement contradicts rank trajectory'),
+    'decay_warning':   ('🔻', 'Decay Warning',   'Good rank but negative recent returns — momentum fading')
 }
 
 PATTERN_COLORS = {
     'rocket': '#FF4500', 'breakout': '#FFD700', 'stable_elite': '#8A2BE2',
     'at_peak': '#FF69B4', 'steady_climber': '#32CD32', 'recovery': '#00BFFF',
     'fading': '#808080', 'volatile': '#FF8C00', 'new_entry': '#00CED1',
-    'stagnant': '#A9A9A9', 'price_confirmed': '#00E676', 'price_divergent': '#FF1744'
+    'stagnant': '#A9A9A9', 'price_confirmed': '#00E676', 'price_divergent': '#FF1744',
+    'decay_warning': '#FF6347'
 }
 
 # ============================================
@@ -375,6 +406,12 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                     'trend_qualities': [],    # TQ per week for funnel
                     'market_states': [],      # Market state per week for funnel
                     'pattern_history': [],    # Patterns per week for funnel
+                    'ret_7d': [],             # v2.3: Weekly returns (split-adjusted)
+                    'ret_30d': [],            # v2.3: 30-day returns
+                    'ret_3m': [],             # v2.3: 3-month returns
+                    'from_high_pct': [],      # v2.3: Distance from 52w high
+                    'momentum_score': [],     # v2.3: Wave engine momentum score
+                    'volume_score': [],       # v2.3: Wave engine volume score
                     'company_name': '', 'category': '', 'sector': '',
                     'industry': '', 'market_state': '', 'patterns': ''
                 }
@@ -393,6 +430,21 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
             h['market_states'].append(str(ms_val).strip() if pd.notna(ms_val) else '')
             pat_val = row.get('patterns', '')
             h['pattern_history'].append(str(pat_val).strip() if pd.notna(pat_val) else '')
+
+            # v2.3: Track return & fundamental data per week
+            for col_name, hist_key in [
+                ('ret_7d', 'ret_7d'), ('ret_30d', 'ret_30d'), ('ret_3m', 'ret_3m'),
+                ('from_high_pct', 'from_high_pct'), ('momentum_score', 'momentum_score'),
+                ('volume_score', 'volume_score')
+            ]:
+                col_val = row.get(col_name, None)
+                if col_val is not None and pd.notna(col_val):
+                    try:
+                        h[hist_key].append(float(col_val))
+                    except (ValueError, TypeError):
+                        h[hist_key].append(float('nan'))
+                else:
+                    h[hist_key].append(float('nan'))
 
             # Always keep latest info
             for fld in ['company_name', 'category', 'sector', 'industry', 'market_state', 'patterns']:
@@ -417,6 +469,57 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     traj_df = pd.DataFrame(results)
     traj_df = traj_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
     traj_df.insert(0, 't_rank', range(1, len(traj_df) + 1))
+
+    # ── Step 4: Sector Alpha Post-Processing (v2.3) ──
+    # Compare each stock's trajectory to its sector average to detect
+    # SECTOR_LEADER vs SECTOR_BETA stocks
+    sa_cfg = SECTOR_ALPHA
+    sector_stats = traj_df[traj_df['weeks'] >= MIN_WEEKS_DEFAULT].groupby('sector')['trajectory_score'].agg(
+        ['mean', 'count', 'std']
+    )
+
+    def _calc_sector_alpha(row):
+        sector = row.get('sector', '')
+        if not sector or sector not in sector_stats.index:
+            return 'NEUTRAL', 0.0
+        stats = sector_stats.loc[sector]
+        if stats['count'] < sa_cfg['min_sector_stocks']:
+            return 'NEUTRAL', 0.0
+
+        sect_mean = float(stats['mean'])
+        sect_std = max(float(stats['std']), 1.0)
+        stock_score = float(row['trajectory_score'])
+        alpha = stock_score - sect_mean
+        z = alpha / sect_std
+
+        if z > sa_cfg['leader_z']:
+            return 'SECTOR_LEADER', round(alpha, 1)
+        elif z > sa_cfg['outperform_z']:
+            return 'SECTOR_OUTPERFORM', round(alpha, 1)
+        elif z > sa_cfg['aligned_z']:
+            return 'SECTOR_ALIGNED', round(alpha, 1)
+        elif z > -1.0 and sect_mean > sa_cfg['beta_sector_min']:
+            return 'SECTOR_BETA', round(alpha, 1)
+        else:
+            return 'SECTOR_LAGGARD', round(alpha, 1)
+
+    alpha_results = traj_df.apply(_calc_sector_alpha, axis=1, result_type='expand')
+    traj_df['sector_alpha_tag'] = alpha_results[0]
+    traj_df['sector_alpha_value'] = alpha_results[1]
+
+    # Add sector alpha icon to signal_tags
+    def _add_alpha_signal(row):
+        existing = str(row.get('signal_tags', ''))
+        tag = row.get('sector_alpha_tag', 'NEUTRAL')
+        if tag == 'SECTOR_LEADER':
+            return existing + '👑'
+        elif tag == 'SECTOR_BETA':
+            return existing + '🏷️'
+        elif tag == 'SECTOR_LAGGARD':
+            return existing + '📉'
+        return existing
+
+    traj_df['signal_tags'] = traj_df.apply(_add_alpha_signal, axis=1)
 
     # Metadata
     metadata = {
@@ -475,12 +578,20 @@ def _compute_single_trajectory(h: dict) -> dict:
     # Sustained top-tier presence guarantees a minimum score floor
     trajectory_score = _apply_elite_bonus(trajectory_score, pcts, n)
 
-    # ── Price-Rank Alignment Multiplier ──
-    # Price confirms or flags the trajectory score
-    prices = h.get('prices', [])
-    price_multiplier, price_label, price_alignment = _calc_price_alignment(prices, pcts, avg_pct)
+    # ── Price-Rank Alignment Multiplier (v2.3 — return-based) ──
+    # Uses CSV ret_7d/ret_30d instead of raw prices — no split detection needed
+    ret_7d = h.get('ret_7d', [])
+    ret_30d = h.get('ret_30d', [])
+    price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct)
     pre_price_score = trajectory_score
     trajectory_score = float(np.clip(trajectory_score * price_multiplier, 0, 100))
+
+    # ── Momentum Decay Warning (v2.3) ──
+    # Catches stocks with good rank but deteriorating returns
+    from_high = h.get('from_high_pct', [])
+    decay_multiplier, decay_label, decay_score = _calc_momentum_decay(ret_7d, ret_30d, from_high, pcts, avg_pct)
+    pre_decay_score = trajectory_score
+    trajectory_score = float(np.clip(trajectory_score * decay_multiplier, 0, 100))
 
     # ── Grade ──
     grade, grade_emoji = get_grade(trajectory_score)
@@ -526,6 +637,23 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif price_label == 'PRICE_DIVERGENT':
         price_tag = '⚠️'
 
+    # Build momentum decay tag (v2.3)
+    decay_tag = ''
+    if decay_label == 'DECAY_HIGH':
+        decay_tag = '🔻'
+    elif decay_label == 'DECAY_MODERATE':
+        decay_tag = '⚡'
+    elif decay_label == 'DECAY_MILD':
+        decay_tag = '~'
+
+    # Build signal tags column (combined indicator)
+    signal_parts = []
+    if price_tag:
+        signal_parts.append(price_tag)
+    if decay_tag:
+        signal_parts.append(decay_tag)
+    signal_tags = ''.join(signal_parts)
+
     return {
         'trajectory_score': round(trajectory_score, 2),
         'positional': round(positional, 2),
@@ -543,6 +671,12 @@ def _compute_single_trajectory(h: dict) -> dict:
         'price_label': price_label,
         'price_tag': price_tag,
         'pre_price_score': round(pre_price_score, 2),
+        'decay_score': decay_score,
+        'decay_multiplier': round(decay_multiplier, 3),
+        'decay_label': decay_label,
+        'decay_tag': decay_tag,
+        'pre_decay_score': round(pre_decay_score, 2),
+        'signal_tags': signal_tags,
         'current_rank': current_rank,
         'best_rank': best_rank,
         'worst_rank': worst_rank,
@@ -567,6 +701,11 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'price_alignment': 50.0, 'price_multiplier': 1.0,
         'price_label': 'NEUTRAL', 'price_tag': '',
         'pre_price_score': 0,
+        'decay_score': 0, 'decay_multiplier': 1.0,
+        'decay_label': '', 'decay_tag': '',
+        'pre_decay_score': 0,
+        'signal_tags': '',
+        'sector_alpha_tag': 'NEUTRAL', 'sector_alpha_value': 0,
         'current_rank': int(ranks[-1]) if ranks else 0,
         'best_rank': int(min(ranks)) if ranks else 0,
         'worst_rank': int(max(ranks)) if ranks else 0,
@@ -640,157 +779,127 @@ def _apply_elite_bonus(score: float, pcts: List[float], n: int) -> float:
     return min(score, 100.0)
 
 
-# ── Price-Rank Alignment Engine ──
+# ── Return-Based Price-Rank Alignment Engine (v2.3) ──
 
-def _detect_splits(prices: List[float], pcts: List[float]) -> List[float]:
+def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
+                          pcts: List[float], avg_pct: float) -> Tuple[float, str, float]:
     """
-    Auto-detect stock splits/bonus shares and adjust historical prices.
-    
-    INSIGHT: A stock split causes price to drop 50-80% in one week while
-    rank stays the same or improves. A genuine crash would cause both
-    price AND rank to plummet. This asymmetry is the detection signal.
-    
-    MCX example: Price ₹11,050 → ₹2,219 (-80%), Rank 38 → 3 (improved!)
-    That's a 5:1 stock split, not a crash. Adjust all prior prices ×0.2.
-    
-    Returns: Split-adjusted price series (same length as input).
-    """
-    cfg = PRICE_ALIGNMENT
-    adjusted = list(prices)
-    n = len(adjusted)
+    Return-Based Price-Rank Alignment Multiplier (v2.3).
 
-    for i in range(1, n):
-        prev_p = adjusted[i - 1]
-        curr_p = adjusted[i]
+    Uses CSV-provided ret_7d and ret_30d which are ALREADY split-adjusted by the
+    data provider. No manual split detection needed — cleaner and more accurate.
 
-        # Skip invalid prices
-        if prev_p is None or curr_p is None or prev_p <= 0 or curr_p <= 0:
-            continue
-
-        price_change = (curr_p - prev_p) / prev_p
-
-        if price_change < cfg['split_threshold']:
-            # Price crashed — but did rank crash too?
-            rank_drop = pcts[i - 1] - pcts[i]  # Positive = rank worsened
-
-            if rank_drop < cfg['split_rank_tolerance']:
-                # Rank DIDN'T drop proportionally → this is a SPLIT
-                ratio = curr_p / prev_p  # e.g., 0.2 for 5:1 split
-                for j in range(i):
-                    if adjusted[j] is not None and adjusted[j] > 0:
-                        adjusted[j] *= ratio
-
-    return adjusted
-
-
-def _calc_price_alignment(prices: List[float], pcts: List[float], avg_pct: float) -> Tuple[float, str, float]:
-    """
-    Price-Rank Alignment Multiplier.
-    
-    PHILOSOPHY: Rank is the technical opinion. Price is the market's verdict.
-    When they agree → HIGH CONVICTION (boost score up to ×1.08)
-    When they disagree → SKEPTICISM (penalize score down to ×0.92)
-    
     TWO CLEAN SIGNALS:
-    
-    Signal 1 — Directional Agreement (55%):
-      For each week, did price and rank move in the same direction?
-      Uses a wider noise band for stable elite stocks (small oscillations
-      at rank 1-8 are noise, not signal).
-      Handles the case where a stable elite has tiny rank moves but
-      meaningful price moves by falling back to cumulative return check.
-    
-    Signal 2 — Trend Correlation (45%):
-      Pearson correlation between cumulative price returns and rank
-      percentile series. Captures "same shape over time" — did the
-      price trajectory mirror the rank trajectory?
-      Falls back to simple directional check when variance is too low.
-    
+
+    Signal 1 — Return-Rank Directional Agreement (55%):
+      For each week, does the sign of ret_7d match the direction of rank change?
+      Positive ret_7d + improving rank = agreement.
+      Uses wider noise band for stable elite stocks.
+
+    Signal 2 — Return Quality Confirmation (45%):
+      For highly ranked stocks, are recent returns positive (confirming value)?
+      Uses avg of recent ret_30d values. A stock at rank 5 with -22% monthly
+      return is a TRAP — this signal catches it.
+
     MULTIPLIER RANGE: ×0.92 (strong divergence) to ×1.08 (strong confirmation)
-      - Conservative enough to not override the 6-component engine
-      - Impactful enough to differentiate (turns 88 → 95 or 72 → 66)
-    
-    SPLIT SAFETY: Prices are auto-adjusted before alignment calculation.
-    Invalid/missing price data → neutral multiplier (×1.00).
-    
+
     Returns: (multiplier, label, alignment_score)
     """
     cfg = PRICE_ALIGNMENT
+    n = len(pcts)
 
-    # ── Guard: Need valid price data ──
-    valid_pairs = [(p, r) for p, r in zip(prices, pcts)
-                   if p is not None and p > 0 and r is not None]
-    if len(valid_pairs) < cfg['min_weeks']:
+    # ── Guard: Need valid return data ──
+    valid_ret7 = [r for r in ret_7d if r is not None and not np.isnan(r)]
+    if len(valid_ret7) < cfg['min_weeks'] or n < cfg['min_weeks']:
         return 1.0, 'NEUTRAL', 50.0
 
-    ps = [p for p, _ in valid_pairs]
-    rs = [r for _, r in valid_pairs]
-    n = len(ps)
+    # Build aligned triplets: (ret_7d, ret_30d, percentile)
+    pairs = []
+    for i in range(n):
+        r7 = ret_7d[i] if i < len(ret_7d) else float('nan')
+        r30 = ret_30d[i] if i < len(ret_30d) else float('nan')
+        if r7 is not None and not np.isnan(r7):
+            pairs.append((r7, r30, pcts[i]))
 
-    # ── Step 1: Split-adjust prices ──
-    adjusted = _detect_splits(ps, rs)
+    if len(pairs) < cfg['min_weeks']:
+        return 1.0, 'NEUTRAL', 50.0
 
-    # ── Step 2: Compute series characteristics ──
-    rank_std = float(np.std(rs))
-    is_stable = rank_std < cfg['stability_threshold']
-
-    # ── Signal 1: Directional Agreement (55%) ──
+    # ── Signal 1: Return-Rank Directional Agreement (55%) ──
     agree = 0
     counted = 0
-    noise_band = cfg['noise_band_stable'] if is_stable else cfg['noise_band_normal']
+    noise_band = cfg['noise_band_stable'] if avg_pct > 80 else cfg['noise_band_normal']
 
-    for i in range(1, n):
-        p_chg = (adjusted[i] - adjusted[i - 1]) / max(adjusted[i - 1], 0.01) * 100
-        r_chg = rs[i] - rs[i - 1]
+    for i in range(1, len(pairs)):
+        r7 = pairs[i][0]
+        r_chg = pairs[i][2] - pairs[i - 1][2]  # Percentile change
 
-        # Skip if rank move is within noise band (especially for elite stocks)
-        if abs(r_chg) < noise_band:
+        # Skip noise — tiny rank moves for elite stocks
+        if abs(r_chg) < noise_band and abs(r7) < 1.0:
             continue
 
         counted += 1
-        if p_chg * r_chg > 0:
-            # Same direction — strong agreement
-            agree += 1.0
-        elif abs(p_chg) < 1.0:
-            # Price flat — not really disagreeing (price can lag rank by a week)
-            agree += 0.3
+        # Positive ret_7d should align with improving percentile
+        if r7 > 0 and r_chg > 0:
+            agree += 1.0   # Both positive — strong agreement
+        elif r7 < -1.0 and r_chg < -1.0:
+            agree += 0.8   # Both negative — at least consistent
+        elif abs(r7) < 1.0:
+            agree += 0.3   # Return near zero — not really disagreeing
         else:
-            # Opposite direction — disagreement (mild penalty, not harsh)
-            agree -= 0.3
+            agree -= 0.3   # Divergent direction
 
     if counted > 0:
         dir_score = float(np.clip((agree / counted) * 50 + 50, 0, 100))
     else:
-        # No significant rank moves → stable stock, use cumulative return check
-        total_ret = (adjusted[-1] / max(adjusted[0], 0.01) - 1) * 100
-        if avg_pct >= 80 and total_ret >= 0:
-            dir_score = 72.0   # Elite + positive return = confirmed
-        elif avg_pct >= 80 and total_ret >= -10:
-            dir_score = 55.0   # Elite + small negative = neutral
+        # No significant rank moves — check cumulative using latest ret_30d
+        latest_r30 = float('nan')
+        for _, r30, _ in reversed(pairs):
+            if r30 is not None and not np.isnan(r30):
+                latest_r30 = r30
+                break
+
+        if np.isnan(latest_r30):
+            dir_score = 55.0
+        elif avg_pct >= 80 and latest_r30 >= 0:
+            dir_score = 72.0
+        elif avg_pct >= 80 and latest_r30 >= -10:
+            dir_score = 55.0
         elif avg_pct >= 80:
-            dir_score = 35.0   # Elite + falling price = concerning
+            dir_score = 35.0
         else:
-            dir_score = 55.0   # Non-elite stable = neutral
+            dir_score = 55.0
 
-    # ── Signal 2: Trend Correlation (45%) ──
-    cum_ret = [(adjusted[i] / max(adjusted[0], 0.01) - 1) * 100 for i in range(n)]
+    # ── Signal 2: Return Quality Confirmation (45%) ──
+    # Recent ret_30d tells us if the stock is actually making money
+    recent_window = min(6, len(pairs))
+    recent_r30 = [p[1] for p in pairs[-recent_window:]
+                  if p[1] is not None and not np.isnan(p[1])]
+    recent_r7 = [p[0] for p in pairs[-recent_window:]]
 
-    if n >= 4 and np.std(cum_ret) > 0.01 and np.std(rs) > 0.01:
-        corr_matrix = np.corrcoef(cum_ret, rs)
-        corr = corr_matrix[0, 1]
-        if np.isnan(corr):
-            corr = 0.0
-        trend_score = (corr + 1) / 2 * 100  # Map -1..+1 → 0..100
+    if recent_r30:
+        avg_r30 = float(np.mean(recent_r30))
+        if avg_pct >= 70:
+            # High-ranked stocks SHOULD have positive returns
+            if avg_r30 > 10:
+                trend_score = 85.0
+            elif avg_r30 > 0:
+                trend_score = 65.0
+            elif avg_r30 > -10:
+                trend_score = 45.0
+            else:
+                trend_score = 20.0   # TRAP: rank high but returns very negative
+        else:
+            # Lower-ranked stocks — any positive returns are a bonus
+            if avg_r30 > 20:
+                trend_score = 80.0
+            elif avg_r30 > 5:
+                trend_score = 60.0
+            elif avg_r30 > -5:
+                trend_score = 50.0
+            else:
+                trend_score = 35.0
     else:
-        # Can't compute meaningful correlation — fallback to direction match
-        total_ret = cum_ret[-1] if cum_ret else 0
-        total_rank = rs[-1] - rs[0] if len(rs) >= 2 else 0
-        if (total_ret > 2 and total_rank > 2) or (total_ret < -2 and total_rank < -2):
-            trend_score = 75.0   # Same direction
-        elif abs(total_ret) < 5 and abs(total_rank) < 5:
-            trend_score = 55.0   # Both stagnant
-        else:
-            trend_score = 35.0   # Opposite or inconclusive
+        trend_score = 50.0
 
     # ── Composite Alignment Score ──
     alignment = 0.55 * dir_score + 0.45 * trend_score
@@ -803,27 +912,126 @@ def _calc_price_alignment(prices: List[float], pcts: List[float], avg_pct: float
     max_pen = cfg['multiplier_max_penalty']
 
     if alignment >= conf_thresh:
-        # Confirmed: 1.03 → max_boost (1.08)
         t = (alignment - conf_thresh) / (100 - conf_thresh)
         multiplier = 1.03 + t * (max_boost - 1.03)
         label = 'PRICE_CONFIRMED'
     elif alignment >= 50:
-        # Mildly positive: 1.00 → 1.03
         t = (alignment - 50) / (conf_thresh - 50)
         multiplier = 1.00 + t * 0.03
         label = 'NEUTRAL'
     elif alignment >= div_thresh:
-        # Mildly negative: max_pen_soft → 1.00
         t = (alignment - div_thresh) / (50 - div_thresh)
         multiplier = 0.97 + t * 0.03
         label = 'NEUTRAL'
     else:
-        # Divergent: max_pen → 0.97
         t = alignment / div_thresh
         multiplier = max_pen + t * (0.97 - max_pen)
         label = 'PRICE_DIVERGENT'
 
     return float(multiplier), label, float(alignment)
+
+
+# ── Momentum Decay Warning Engine (v2.3) ──
+
+def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
+                         from_high: List[float], pcts: List[float],
+                         avg_pct: float) -> Tuple[float, str, int]:
+    """
+    Momentum Decay Warning — catches stocks with good rank but deteriorating returns.
+
+    TRAP DETECTION: Deep audit found 11.4% of top-10% stocks have negative 30d returns.
+    These stocks ranked well based on PAST momentum that has now faded.
+    The rank hasn't dropped yet because ranking is lagging.
+
+    Example: Stock at rank 151 (top 7%) with ret_30d = -22.49% → DECAY_HIGH
+
+    SIGNALS:
+      1. Weekly return (ret_7d) negative → short-term momentum loss
+      2. 30-day return (ret_30d) negative on ranked stock → THE TRAP
+      3. Far from 52-week high (from_high_pct) → correction underway
+      4. Consecutive negative weekly returns → sustained decay
+
+    Returns: (penalty_multiplier, warning_label, decay_score)
+    """
+    cfg = MOMENTUM_DECAY
+    n = len(pcts)
+    if n < 3:
+        return 1.0, '', 0
+
+    # Only check stocks above the minimum percentile tier
+    if avg_pct < cfg['min_pct_tier']:
+        return 1.0, '', 0
+
+    # Get latest available values
+    def _get_latest(lst):
+        for val in reversed(lst):
+            if val is not None and not np.isnan(val):
+                return val
+        return None
+
+    latest_r7 = _get_latest(ret_7d)
+    latest_r30 = _get_latest(ret_30d)
+    latest_from_high = _get_latest(from_high)
+
+    if latest_r7 is None and latest_r30 is None:
+        return 1.0, '', 0
+
+    r7 = latest_r7 if latest_r7 is not None else 0
+    r30 = latest_r30 if latest_r30 is not None else 0
+    fh = latest_from_high if latest_from_high is not None else 0
+
+    decay_score = 0
+
+    # Signal 1: Recent weekly return negative
+    if r7 < cfg['r7_severe']:
+        decay_score += 30
+    elif r7 < cfg['r7_moderate']:
+        decay_score += 15
+    elif r7 < 0:
+        decay_score += 5
+
+    # Signal 2: 30-day return negative on a highly ranked stock (THE TRAP!)
+    if avg_pct >= 70 and r30 < cfg['r30_severe_high']:
+        decay_score += 40   # Severe — high rank but deeply negative 30d
+    elif avg_pct >= 70 and r30 < cfg['r30_moderate_high']:
+        decay_score += 25
+    elif avg_pct >= 60 and r30 < cfg['r30_severe_mid']:
+        decay_score += 20
+    elif r30 < -20:
+        decay_score += 15
+
+    # Signal 3: Far from high — stock has corrected significantly
+    if fh < cfg['from_high_severe'] and avg_pct >= 60:
+        decay_score += 20
+    elif fh < cfg['from_high_moderate'] and avg_pct >= 60:
+        decay_score += 10
+
+    # Signal 4: Consecutive negative weekly returns
+    recent_r7 = [r for r in ret_7d[-4:] if r is not None and not np.isnan(r)]
+    if len(recent_r7) >= 2:
+        neg_count = sum(1 for r in recent_r7 if r < -1)
+        if neg_count >= 3:
+            decay_score += 15
+        elif neg_count >= 2:
+            decay_score += 8
+
+    decay_score = min(decay_score, 100)
+
+    # Convert to penalty multiplier
+    if decay_score >= cfg['severe_threshold']:
+        multiplier = cfg['high_decay_multiplier']
+        label = 'DECAY_HIGH'
+    elif decay_score >= cfg['moderate_threshold']:
+        multiplier = cfg['moderate_decay_multiplier']
+        label = 'DECAY_MODERATE'
+    elif decay_score >= cfg['mild_threshold']:
+        multiplier = cfg['mild_decay_multiplier']
+        label = 'DECAY_MILD'
+    else:
+        multiplier = 1.0
+        label = ''
+
+    return multiplier, label, decay_score
 
 
 # ── Component Score Calculators (v2.1 Adaptive Engine) ──
@@ -1497,21 +1705,23 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ── Rankings Table ──
     st.markdown("##### 📋 Trajectory Rankings")
 
-    # Ensure price_tag column exists (defensive for edge cases)
-    if 'price_tag' not in display_df.columns:
-        display_df['price_tag'] = ''
+    # Ensure required columns exist (defensive for edge cases / deployment)
+    for col, default in [('price_tag', ''), ('signal_tags', ''), ('decay_tag', ''),
+                         ('sector_alpha_tag', 'NEUTRAL'), ('sector_alpha_value', 0)]:
+        if col not in display_df.columns:
+            display_df[col] = default
 
     # Prepare display columns
     table_df = display_df[[
         't_rank', 'ticker', 'company_name', 'category',
-        'trajectory_score', 'grade', 'pattern', 'price_tag', 'tmi',
+        'trajectory_score', 'grade', 'pattern', 'signal_tags', 'tmi',
         'current_rank', 'best_rank', 'rank_change', 'last_week_change',
         'streak', 'weeks', 'sparkline'
     ]].copy()
 
     table_df.columns = [
         '#', 'Ticker', 'Company', 'Category',
-        'T-Score', 'Grade', 'Pattern', '💰', 'TMI',
+        'T-Score', 'Grade', 'Pattern', 'Signals', 'TMI',
         'Rank Now', 'Best', 'Δ Total', 'Δ Week',
         'Streak', 'Weeks', 'Trajectory'
     ]
@@ -1663,7 +1873,7 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
     """, unsafe_allow_html=True)
 
     # ── KPI Row ──
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
     k1.metric("Current Rank", f"#{row['current_rank']}", f"{row['last_week_change']:+d} this week")
     k2.metric("Best Rank", f"#{row['best_rank']}")
     k3.metric("Total Δ Rank", f"{row['rank_change']:+d}", "improved" if row['rank_change'] > 0 else "declined")
@@ -1671,7 +1881,10 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
     k5.metric("Streak", f"{row['streak']} weeks")
     price_label_display = row.get('price_label', 'NEUTRAL')
     price_icon = '💰' if price_label_display == 'PRICE_CONFIRMED' else '⚠️' if price_label_display == 'PRICE_DIVERGENT' else '➖'
-    k6.metric("Price Alignment", f"{price_icon} {row.get('price_alignment', 50):.0f}")
+    k6.metric("Price Align", f"{price_icon} {row.get('price_alignment', 50):.0f}")
+    decay_lbl = row.get('decay_label', '')
+    decay_icon = '🔻' if decay_lbl == 'DECAY_HIGH' else '⚡' if decay_lbl == 'DECAY_MODERATE' else '~' if decay_lbl == 'DECAY_MILD' else '✅'
+    k7.metric("Decay Check", f"{decay_icon} {row.get('decay_score', 0)}")
 
     st.markdown("---")
 
@@ -1747,21 +1960,60 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
             'Score': st.column_config.ProgressColumn('Score', min_value=0, max_value=100, format="%.1f")
         }, hide_index=True, use_container_width=True)
 
-        # Price-Rank Alignment detail
+        # Price-Rank Alignment detail (v2.3 — return-based)
         pa_score = row.get('price_alignment', 50)
         pa_mult = row.get('price_multiplier', 1.0)
         pa_label = row.get('price_label', 'NEUTRAL')
         pre_price = row.get('pre_price_score', row['trajectory_score'])
         pa_color = '#00E676' if pa_label == 'PRICE_CONFIRMED' else '#FF1744' if pa_label == 'PRICE_DIVERGENT' else '#888'
         st.markdown(f"""
-        ##### 💰 Price-Rank Alignment
+        ##### 💰 Return-Based Price Alignment
         <div style="background:#1e1e2e; border-radius:10px; padding:12px; border:1px solid {pa_color};">
             <div style="display:flex; justify-content:space-between;">
                 <div><span style="color:#aaa;">Alignment Score:</span> <b style="color:{pa_color};">{pa_score:.0f}/100</b></div>
                 <div><span style="color:#aaa;">Multiplier:</span> <b style="color:{pa_color};">×{pa_mult:.3f}</b></div>
             </div>
             <div style="margin-top:6px;"><span style="color:#aaa;">Status:</span> <b style="color:{pa_color};">{pa_label}</b></div>
-            <div style="margin-top:4px; color:#666; font-size:0.8rem;">Pre-price score: {pre_price:.1f} → Final: {row['trajectory_score']:.1f}</div>
+            <div style="margin-top:4px; color:#666; font-size:0.8rem;">Pre-price: {pre_price:.1f} → Post-price: {row.get('pre_decay_score', row['trajectory_score']):.1f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Momentum Decay Warning detail (v2.3)
+        d_score = row.get('decay_score', 0)
+        d_mult = row.get('decay_multiplier', 1.0)
+        d_label = row.get('decay_label', '')
+        pre_decay = row.get('pre_decay_score', row['trajectory_score'])
+        d_color = '#FF1744' if d_label == 'DECAY_HIGH' else '#FF9800' if d_label == 'DECAY_MODERATE' else '#FFD700' if d_label == 'DECAY_MILD' else '#00E676'
+        d_status = d_label if d_label else 'CLEAN ✅'
+        st.markdown(f"""
+        ##### 🔻 Momentum Decay Check
+        <div style="background:#1e1e2e; border-radius:10px; padding:12px; border:1px solid {d_color};">
+            <div style="display:flex; justify-content:space-between;">
+                <div><span style="color:#aaa;">Decay Score:</span> <b style="color:{d_color};">{d_score}/100</b></div>
+                <div><span style="color:#aaa;">Multiplier:</span> <b style="color:{d_color};">×{d_mult:.3f}</b></div>
+            </div>
+            <div style="margin-top:6px;"><span style="color:#aaa;">Status:</span> <b style="color:{d_color};">{d_status}</b></div>
+            <div style="margin-top:4px; color:#666; font-size:0.8rem;">Pre-decay: {pre_decay:.1f} → Final: {row['trajectory_score']:.1f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Sector Alpha detail (v2.3)
+        sa_tag = row.get('sector_alpha_tag', 'NEUTRAL')
+        sa_val = row.get('sector_alpha_value', 0)
+        sa_colors = {'SECTOR_LEADER': '#FFD700', 'SECTOR_OUTPERFORM': '#00E676',
+                     'SECTOR_ALIGNED': '#888', 'SECTOR_BETA': '#FF9800', 'SECTOR_LAGGARD': '#FF1744'}
+        sa_icons = {'SECTOR_LEADER': '👑', 'SECTOR_OUTPERFORM': '⬆️',
+                    'SECTOR_ALIGNED': '➖', 'SECTOR_BETA': '🏷️', 'SECTOR_LAGGARD': '📉'}
+        sa_color = sa_colors.get(sa_tag, '#888')
+        sa_icon = sa_icons.get(sa_tag, '➖')
+        st.markdown(f"""
+        ##### 🏛️ Sector Alpha
+        <div style="background:#1e1e2e; border-radius:10px; padding:12px; border:1px solid {sa_color};">
+            <div style="display:flex; justify-content:space-between;">
+                <div><span style="color:#aaa;">Sector:</span> <b style="color:#fff;">{row.get('sector', 'N/A')}</b></div>
+                <div><span style="color:#aaa;">Alpha:</span> <b style="color:{sa_color};">{sa_val:+.1f}</b></div>
+            </div>
+            <div style="margin-top:6px;"><span style="color:#aaa;">Classification:</span> <b style="color:{sa_color};">{sa_icon} {sa_tag}</b></div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1788,12 +2040,25 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
         wk_changes = [0] + [int(h['ranks'][i - 1] - h['ranks'][i]) for i in range(1, len(h['ranks']))]
         week_data['Δ Rank'] = wk_changes
 
+        # v2.3: Add return data
+        def _safe_round(lst, decimals=1):
+            return [round(v, decimals) if v is not None and not np.isnan(v) else None for v in lst]
+        if 'ret_7d' in h and h['ret_7d']:
+            week_data['Ret 7d%'] = _safe_round(h['ret_7d'])
+        if 'ret_30d' in h and h['ret_30d']:
+            week_data['Ret 30d%'] = _safe_round(h['ret_30d'])
+
         wk_df = pd.DataFrame(week_data)
         wk_df = wk_df.iloc[::-1]  # Latest first
-        st.dataframe(wk_df, column_config={
+        wk_col_config = {
             'Δ Rank': st.column_config.NumberColumn(format="%+d"),
             'Percentile': st.column_config.ProgressColumn('Percentile', min_value=0, max_value=100, format="%.1f")
-        }, hide_index=True, use_container_width=True)
+        }
+        if 'Ret 7d%' in wk_df.columns:
+            wk_col_config['Ret 7d%'] = st.column_config.NumberColumn(format="%.1f%%")
+        if 'Ret 30d%' in wk_df.columns:
+            wk_col_config['Ret 30d%'] = st.column_config.NumberColumn(format="%.1f%%")
+        st.dataframe(wk_df, column_config=wk_col_config, hide_index=True, use_container_width=True)
 
     # ── Comparison Mode ──
     with st.expander("⚖️ Compare with Other Stocks", expanded=False):
@@ -2288,61 +2553,102 @@ def render_about_tab():
     """Render about/documentation tab"""
 
     st.markdown("""
-    ## 📊 Rank Trajectory Engine v2.2 — Adaptive Intelligence + Price-Rank Alignment
+    ## 📊 Rank Trajectory Engine v2.3 — Return-Based Intelligence + Momentum Decay + Sector Alpha
 
-    A professional stock rank trajectory analysis system with **adaptive weight intelligence**
-    and **price-rank alignment verification** — the cleanest, smartest scoring engine for
-    tracking how stocks evolve across weekly snapshots.
+    The **ALL TIME BEST** stock rank trajectory analysis system with **adaptive weight intelligence**,
+    **return-based alignment**, **momentum decay warning**, and **sector alpha detection** — the
+    cleanest, smartest, most comprehensive scoring engine for the Wave Detection ecosystem.
 
     ---
 
-    ### 🧠 The Architecture: 3-Layer Pipeline
+    ### 🧠 The Architecture: 5-Layer Pipeline
 
     ```
-    6-Component Adaptive Scoring → Elite Dominance Bonus → Price-Rank Multiplier
+    6-Component Adaptive Scoring → Elite Dominance Bonus → Return-Based Alignment
+        → Momentum Decay Penalty → Sector Alpha Tag
     ```
 
     | Layer | What It Does | Impact |
     |---|---|---|
     | **Adaptive Weights** | Weight profile shifts by position tier | Elite: Position=45%. Bottom: Velocity=25% |
     | **Elite Bonus** | Sustained top-tier → guaranteed score floor | Top 3% for 60% weeks → floor 88 |
-    | **Price Alignment** | Market confirms or flags trajectory | ×0.92 (divergent) to ×1.08 (confirmed) |
+    | **Return Alignment** | CSV ret_7d/ret_30d confirms or flags trajectory | ×0.92 (divergent) to ×1.08 (confirmed) |
+    | **Momentum Decay** | Catches stocks with good rank but negative returns | ×0.93 (severe) to ×1.0 (clean) |
+    | **Sector Alpha** | Separates leaders from sector-beta riders | Tag: LEADER / BETA / LAGGARD |
 
     ---
 
-    ### 💰 Price-Rank Alignment (v2.2 NEW)
+    ### 💰 Return-Based Price Alignment (v2.3 UPGRADE)
 
-    **Core Insight:** Rank is the **technical opinion**. Price is the **market's verdict.**
-    When they agree, conviction is 10× higher. When they disagree, something is suspicious.
+    **v2.2 Problem:** Raw price alignment required complex split detection logic.
+    MCX showed ₹11,050→₹2,219 (5:1 split) — needed manual detection.
+
+    **v2.3 Solution:** Uses `ret_7d` and `ret_30d` from CSV — **already split-adjusted
+    by the data provider**. No split detection needed. Cleaner, more accurate.
 
     #### How It Works
 
     | Signal | Weight | What It Measures |
     |--------|--------|------------------|
-    | **Directional Agreement** | 55% | Each week: did price and rank move the same way? |
-    | **Trend Correlation** | 45% | Pearson correlation between cumulative price returns and rank percentile |
+    | **Return-Rank Direction** | 55% | Does ret_7d sign match rank percentile change? |
+    | **Return Quality** | 45% | Are recent ret_30d values positive for high-ranked stocks? |
 
     #### Multiplier Range
 
     | Alignment Score | Multiplier | Label | Meaning |
     |----------------|-----------|-------|---------|
-    | **75-100** | ×1.03 — ×1.08 | 💰 CONFIRMED | Price validates rank trajectory |
+    | **72-100** | ×1.03 — ×1.08 | 💰 CONFIRMED | Returns validate rank trajectory |
     | **50-72** | ×1.00 — ×1.03 | NEUTRAL | Inconclusive |
     | **35-50** | ×0.97 — ×1.00 | NEUTRAL | Mild concern |
-    | **0-35** | ×0.92 — ×0.97 | ⚠️ DIVERGENT | Price contradicts rank |
+    | **0-35** | ×0.92 — ×0.97 | ⚠️ DIVERGENT | Returns contradict rank |
 
-    #### Stock Split Auto-Detection
-    Price drops >35% in one week, but rank stays stable or improves?
-    → **Split detected** — all prior prices auto-adjusted. No false divergence.
+    ---
 
-    #### Example Impact
+    ### 🔻 Momentum Decay Warning (v2.3 NEW)
 
-    | Stock | Pre-Price Score | Alignment | Multiplier | Final Score |
-    |-------|----------------|-----------|------------|-------------|
-    | 513599 (rank #1, +200% price) | 88 | 92 | ×1.07 | **94** |
-    | 530843 (top 3%, +134% price) | 88 | 85 | ×1.06 | **93** |
-    | MCX (split: ₹11K→₹2.5K, rank 3) | 85 | 78 | ×1.05 | **89** ✔️ |
-    | Fake climber (rank up, price flat) | 72 | 30 | ×0.94 | **68** |
+    **The Problem:** Deep audit found **11.4% of top-10% stocks have negative 30-day returns**.
+    These are TRAP stocks — ranked well based on PAST momentum that has now faded.
+    The rank hasn't dropped yet because ranking lags reality.
+
+    **Example:** Stock at rank 151 (top 7%) with ret_30d = -22.49% → **DECAY_HIGH** (×0.93 penalty)
+
+    #### 4 Decay Signals
+
+    | Signal | What It Checks | Max Points |
+    |--------|---------------|------------|
+    | **Weekly Return** | ret_7d < -5% → 30 pts, < -2% → 15 pts | 30 |
+    | **30-Day Return** | Top stock + ret_30d < -15% → 40 pts (THE TRAP!) | 40 |
+    | **From High** | from_high_pct < -20% on ranked stock → 20 pts | 20 |
+    | **Consecutive Negative** | 3+ weeks of ret_7d < -1% → 15 pts | 15 |
+
+    #### Decay Penalty
+
+    | Decay Score | Multiplier | Label |
+    |------------|-----------|-------|
+    | **≥ 60** | ×0.93 | 🔻 DECAY_HIGH |
+    | **35-59** | ×0.96 | ⚡ DECAY_MODERATE |
+    | **15-34** | ×0.98 | ~ DECAY_MILD |
+    | **< 15** | ×1.00 | ✅ CLEAN |
+
+    ---
+
+    ### 🏛️ Sector Alpha Check (v2.3 NEW)
+
+    **The Problem:** 46% of top-50 stocks came from just 2 sectors (Capital Goods 26% + Metals 20%).
+    When a sector rotates out, ALL these stocks drop together. A stock with score 75 in a sector
+    averaging 72 is just riding the sector wave — NOT genuine alpha.
+
+    #### How It Works
+    - Compares each stock's trajectory score to its sector's mean and standard deviation
+    - Calculates Z-score: `(stock_score - sector_mean) / sector_std`
+
+    | Z-Score | Classification | Icon | Meaning |
+    |---------|---------------|------|---------|
+    | **> 1.5** | SECTOR_LEADER | 👑 | Genuine alpha — outperforms sector significantly |
+    | **0.5 - 1.5** | SECTOR_OUTPERFORM | ⬆️ | Above sector average |
+    | **-0.5 - 0.5** | SECTOR_ALIGNED | ➖ | Moving with sector |
+    | **-1.0 - -0.5** (hot sector) | SECTOR_BETA | 🏷️ | Riding sector wave, not genuine alpha |
+    | **< -1.0** | SECTOR_LAGGARD | 📉 | Below sector average |
 
     ---
 
@@ -2418,6 +2724,22 @@ def render_about_tab():
     st.markdown("""
     ---
 
+    ### 📡 Signal Tags (v2.3)
+
+    The **Signals** column in rankings combines multiple indicators:
+
+    | Icon | Signal | Meaning |
+    |------|--------|---------|
+    | 💰 | Price Confirmed | Returns validate rank trajectory |
+    | ⚠️ | Price Divergent | Returns contradict rank |
+    | 🔻 | Decay High | Good rank but severely negative returns — TRAP! |
+    | ⚡ | Decay Moderate | Moderate momentum decay warning |
+    | 👑 | Sector Leader | Genuine alpha — significantly above sector average |
+    | 🏷️ | Sector Beta | Riding hot sector, not genuine alpha |
+    | 📉 | Sector Laggard | Below sector average |
+
+    ---
+
     ### 🎓 Grades
 
     | Grade | Score Range | Meaning |
@@ -2439,12 +2761,14 @@ def render_about_tab():
     - **Position-Relative Velocity**: Hold bonus (15 for top 5%), dampened dip sensitivity
     - **Elite Consistency**: Band-based (40%) + time-at-top (35%) + low-vol bonus (25%)
     - **Elite Dominance Bonus**: Sustained top-tier → guaranteed score floor (82-88)
-    - **Price-Rank Alignment**: Split-adjusted ×0.92-1.08 multiplier, 2-signal (directional + correlation)
+    - **Return-Based Alignment**: Uses ret_7d/ret_30d from CSV (split-adjusted by provider)
+    - **Momentum Decay**: 4-signal trap detection (ret_7d, ret_30d, from_high, consecutive)
+    - **Sector Alpha**: Z-score based sector-relative performance classification
     - **Recency Weighting**: Exponential decay (λ=0.12) for trend regression
 
     ---
 
-    *Built for the Wave Detection ecosystem • v2.2.0-ADAPTIVE • February 2026*
+    *Built for the Wave Detection ecosystem • v2.3.0-ULTIMATE • February 2026*
     """)
 
 
