@@ -1857,6 +1857,11 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     filtered_df['t_rank'] = range(1, len(filtered_df) + 1)
     shown = len(filtered_df)
 
+    # ── Pro Rank = rank within full universe (stable, never changes with filters) ──
+    pro_rank_sorted = all_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
+    pro_rank_map = {t: i + 1 for i, t in enumerate(pro_rank_sorted['ticker'])}
+    filtered_df['pro_rank'] = filtered_df['ticker'].map(pro_rank_map).fillna(0).astype(int)
+
     sort_map = {
         'Trajectory Score': ('trajectory_score', False),
         'Positional Quality': ('positional', False),
@@ -1885,7 +1890,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ── Column definitions for each view ──
     # Each: (df_col, display_name, tooltip, column_config_or_None)
     COL_DEFS = {
-        'Pro Rank': ('t_rank', 'Pro Rank', 'System-generated rank based on trajectory score',
+        'Pro Rank': ('pro_rank', 'Pro Rank', 'Rank in full universe (all stocks, unfiltered)',
                      st.column_config.NumberColumn(width="small")),
         'Ticker':   ('ticker', 'Ticker', 'NSE ticker symbol', None),
         'Company':  ('company_name', 'Company', 'Company name (truncated)', None),
