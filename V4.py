@@ -1662,6 +1662,14 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         sectors = ['All'] + sorted(top_sectors)
         selected_sectors = st.multiselect("Sector", sectors, default=['All'], key='sb_sector')
 
+        # Price Alignment filter
+        pa_options = ['All', '💰 Confirmed', '⚠️ Divergent', '➖ Neutral']
+        selected_pa = st.selectbox("Price Alignment", pa_options, index=0, key='sb_pa')
+
+        # Momentum Decay filter
+        md_options = ['All', '✅ No Decay', '🔻 High Decay', '⚡ Moderate Decay', '~ Mild Decay']
+        selected_md = st.selectbox("Momentum Decay", md_options, index=0, key='sb_md')
+
         # Min weeks
         min_weeks = st.slider("Min Weeks of Data", 2, metadata['total_weeks'], MIN_WEEKS_DEFAULT, key='sb_weeks')
 
@@ -1682,6 +1690,8 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
     return {
         'categories': selected_cats,
         'sectors': selected_sectors,
+        'price_alignment': selected_pa,
+        'momentum_decay': selected_md,
         'min_weeks': min_weeks,
         'min_score': min_score,
         'quick_filter': quick_filter
@@ -1699,6 +1709,26 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     # Sector
     if 'All' not in filters['sectors']:
         df = df[df['sector'].isin(filters['sectors'])]
+
+    # Price Alignment
+    pa = filters.get('price_alignment', 'All')
+    if pa == '💰 Confirmed':
+        df = df[df['price_label'] == 'PRICE_CONFIRMED']
+    elif pa == '⚠️ Divergent':
+        df = df[df['price_label'] == 'PRICE_DIVERGENT']
+    elif pa == '➖ Neutral':
+        df = df[df['price_label'] == 'NEUTRAL']
+
+    # Momentum Decay
+    md = filters.get('momentum_decay', 'All')
+    if md == '🔻 High Decay':
+        df = df[df['decay_label'] == 'DECAY_HIGH']
+    elif md == '⚡ Moderate Decay':
+        df = df[df['decay_label'] == 'DECAY_MODERATE']
+    elif md == '~ Mild Decay':
+        df = df[df['decay_label'] == 'DECAY_MILD']
+    elif md == '✅ No Decay':
+        df = df[~df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE', 'DECAY_MILD'])]
 
     # Min weeks
     df = df[df['weeks'] >= filters['min_weeks']]
