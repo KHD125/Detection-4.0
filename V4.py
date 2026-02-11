@@ -2251,8 +2251,10 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
     chart_c1, chart_c2 = st.columns([3, 2])
 
     with chart_c1:
-        st.markdown('<div class="sec-head">📊 Rank Trajectory</div>', unsafe_allow_html=True)
-        _render_rank_chart(h, ticker)
+        _rc1, _rc2 = st.columns([4, 1])
+        _rc1.markdown('<div class="sec-head">📊 Rank Trajectory</div>', unsafe_allow_html=True)
+        show_pctl = _rc2.toggle('Percentile', value=False, key='rank_pctl_toggle')
+        _render_rank_chart(h, ticker, show_pctl=show_pctl)
 
     with chart_c2:
         st.markdown('<div class="sec-head">🎯 Component Breakdown</div>', unsafe_allow_html=True)
@@ -2419,8 +2421,8 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
             _render_comparison_chart(ticker, compare_tickers, histories, traj_df)
 
 
-def _render_rank_chart(h: dict, ticker: str):
-    """Rank + Master Score dual-axis trajectory chart"""
+def _render_rank_chart(h: dict, ticker: str, show_pctl: bool = False):
+    """Rank + Master Score dual-axis trajectory chart, optional percentile overlay"""
     dates = h['dates']
     ranks = h['ranks']
     scores = h['scores']
@@ -2450,6 +2452,17 @@ def _render_rank_chart(h: dict, ticker: str):
         hovertemplate='%{x}<br>M.Score: %{y:.1f}<extra></extra>'
     ), secondary_y=True)
 
+    # Optional: Rank Percentile bar overlay
+    if show_pctl:
+        pcts = ranks_to_percentiles(ranks, h['total_per_week'])
+        fig.add_trace(go.Bar(
+            x=dates, y=pcts,
+            name='Rank Pctl %',
+            marker_color='rgba(255,107,53,0.15)',
+            hovertemplate='%{x}<br>Pctl: %{y:.1f}%<extra></extra>',
+            yaxis='y3'
+        ))
+
     # Best rank annotation
     best_idx = int(np.argmin(ranks))
     fig.add_annotation(
@@ -2460,7 +2473,7 @@ def _render_rank_chart(h: dict, ticker: str):
         bgcolor='rgba(0,0,0,0.7)', bordercolor='#FFD700'
     )
 
-    fig.update_layout(
+    layout_kwargs = dict(
         height=340,
         template='plotly_dark',
         hovermode='x unified',
@@ -2470,6 +2483,12 @@ def _render_rank_chart(h: dict, ticker: str):
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
     )
+    if show_pctl:
+        layout_kwargs['yaxis3'] = dict(
+            overlaying='y', side='left', range=[0, 100],
+            showticklabels=False, showgrid=False
+        )
+    fig.update_layout(**layout_kwargs)
     fig.update_yaxes(title_text="Rank", autorange="reversed",
                      secondary_y=False, gridcolor='rgba(255,255,255,0.04)')
     fig.update_yaxes(title_text="Master Score",
