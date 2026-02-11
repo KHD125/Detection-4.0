@@ -2420,17 +2420,14 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
 
 
 def _render_rank_chart(h: dict, ticker: str):
-    """Rank + Master Score + Rank Percentile trajectory chart"""
+    """Rank + Master Score dual-axis trajectory chart"""
     dates = h['dates']
     ranks = h['ranks']
     scores = h['scores']
-    pcts = ranks_to_percentiles(ranks, h['total_per_week'])
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        specs=[[{"secondary_y": True}], [{}]],
-                        row_heights=[0.65, 0.35], vertical_spacing=0.06)
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    # ── Top: Rank (inverted) + Master Score on secondary y ──
+    # Rank (primary y — inverted so lower rank = higher on chart)
     fig.add_trace(go.Scatter(
         x=dates, y=ranks,
         mode='lines+markers',
@@ -2440,8 +2437,9 @@ def _render_rank_chart(h: dict, ticker: str):
         fill='tozeroy',
         fillcolor='rgba(255,107,53,0.08)',
         hovertemplate='%{x}<br>Rank: #%{y}<extra></extra>'
-    ), row=1, col=1, secondary_y=False)
+    ), secondary_y=False)
 
+    # Master Score (secondary y)
     fig.add_trace(go.Scatter(
         x=dates, y=scores,
         mode='lines+markers',
@@ -2450,7 +2448,7 @@ def _render_rank_chart(h: dict, ticker: str):
         marker=dict(size=4),
         opacity=0.85,
         hovertemplate='%{x}<br>M.Score: %{y:.1f}<extra></extra>'
-    ), row=1, col=1, secondary_y=True)
+    ), secondary_y=True)
 
     # Best rank annotation
     best_idx = int(np.argmin(ranks))
@@ -2459,40 +2457,23 @@ def _render_rank_chart(h: dict, ticker: str):
         text=f"Best: #{int(ranks[best_idx])}",
         showarrow=True, arrowhead=2,
         font=dict(color='#FFD700', size=10),
-        bgcolor='rgba(0,0,0,0.7)', bordercolor='#FFD700',
-        row=1, col=1
+        bgcolor='rgba(0,0,0,0.7)', bordercolor='#FFD700'
     )
 
-    # ── Bottom: Rank Percentile ──
-    fig.add_trace(go.Scatter(
-        x=dates, y=pcts,
-        mode='lines+markers',
-        name='Rank Pctl %',
-        line=dict(color='#3fb950', width=2),
-        marker=dict(size=4),
-        fill='tozeroy',
-        fillcolor='rgba(63,185,80,0.08)',
-        hovertemplate='%{x}<br>Pctl: %{y:.1f}%<extra></extra>'
-    ), row=2, col=1)
-
     fig.update_layout(
-        height=420,
+        height=340,
         template='plotly_dark',
         hovermode='x unified',
-        legend=dict(orientation='h', y=-0.12, font=dict(size=10)),
-        margin=dict(t=10, b=50, l=50, r=50),
+        legend=dict(orientation='h', y=-0.18, font=dict(size=10)),
+        margin=dict(t=10, b=55, l=50, r=50),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=9)),
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
     )
     fig.update_yaxes(title_text="Rank", autorange="reversed",
-                     gridcolor='rgba(255,255,255,0.04)', row=1, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="M.Score", showgrid=False,
-                     title_font=dict(color='#58a6ff', size=10),
-                     tickfont=dict(color='#58a6ff', size=9),
-                     row=1, col=1, secondary_y=True)
-    fig.update_yaxes(title_text="Pctl %", range=[0, 100],
-                     gridcolor='rgba(255,255,255,0.04)', row=2, col=1)
-    fig.update_xaxes(tickangle=-45, tickfont=dict(size=9), row=2, col=1)
+                     secondary_y=False, gridcolor='rgba(255,255,255,0.04)')
+    fig.update_yaxes(title_text="Master Score",
+                     secondary_y=True, gridcolor='rgba(255,255,255,0.02)')
 
     st.plotly_chart(fig, use_container_width=True)
 
