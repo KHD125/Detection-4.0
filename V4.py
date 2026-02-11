@@ -1023,8 +1023,40 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
     else:
         conviction_score = 50.0  # No data — neutral, don't penalize
 
-    # ── Composite Alignment Score (3 signals) ──
-    alignment = 0.40 * dir_score + 0.30 * quality_score + 0.30 * conviction_score
+    # ── Signal 3b: Conviction Momentum (direction of ret_3m trend) ──
+    # A stock going ret_3m: -5% → +8% (recovering) is better than +15% → +10% (fading)
+    # Uses last 3 valid ret_3m values to detect building vs fading momentum
+    all_r3m = [q[2] for q in quads if q[2] is not None and not np.isnan(q[2])]
+    if len(all_r3m) >= 3:
+        tail = all_r3m[-3:]
+        r3m_delta = tail[-1] - tail[0]   # Positive = 3m return improving
+        if r3m_delta > 10:
+            conviction_momentum = 15.0    # Strong building
+        elif r3m_delta > 3:
+            conviction_momentum = 8.0     # Mildly building
+        elif r3m_delta > -3:
+            conviction_momentum = 0.0     # Flat
+        elif r3m_delta > -10:
+            conviction_momentum = -8.0    # Mildly fading
+        else:
+            conviction_momentum = -15.0   # Strongly fading
+        # Blend into conviction_score (capped 0-100)
+        conviction_score = float(np.clip(conviction_score + conviction_momentum, 0, 100))
+
+    # ── Signal Disagreement Penalty ──
+    # When signals contradict each other strongly, confidence is LOW → pull score down
+    # E.g., Signal1=80, Signal2=20, Signal3=50 → signals are unreliable
+    signals = [dir_score, quality_score, conviction_score]
+    signal_spread = max(signals) - min(signals)
+    if signal_spread > 50:
+        disagreement_penalty = 6.0   # Strong contradiction
+    elif signal_spread > 30:
+        disagreement_penalty = 3.0   # Moderate contradiction
+    else:
+        disagreement_penalty = 0.0   # Signals agree — no penalty
+
+    # ── Composite Alignment Score (3 signals + penalties) ──
+    alignment = 0.40 * dir_score + 0.30 * quality_score + 0.30 * conviction_score - disagreement_penalty
     alignment = float(np.clip(alignment, 0, 100))
 
     # ── Convert to Multiplier (wider range: ×0.85 to ×1.12) ──
