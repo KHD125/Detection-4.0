@@ -1436,27 +1436,37 @@ def _detect_pattern(ranks, totals, pcts, positional, trend, velocity, accelerati
 # TOP MOVERS CALCULATION
 # ============================================
 
-def get_top_movers(histories: dict, n: int = 10) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Get biggest rank gainers and decliners in the latest week"""
+def get_top_movers(histories: dict, n: int = 10, weeks: int = 1) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Get biggest rank gainers and decliners over *weeks* weeks.
+
+    Args:
+        histories: ticker → history dict (must have 'ranks' list).
+        n:         number of top movers to return per side.
+        weeks:     look-back window in weeks (1 = last week vs now,
+                   2 = 2 weeks ago vs now, etc.).
+    """
     movers = []
     for ticker, h in histories.items():
-        if len(h['ranks']) < 2:
+        rk = h['ranks']
+        if len(rk) < weeks + 1:
             continue
-        change = int(h['ranks'][-2] - h['ranks'][-1])  # Positive = improved
+        prev = int(rk[-(weeks + 1)])
+        curr = int(rk[-1])
+        change = prev - curr            # Positive = improved
         movers.append({
             'ticker': ticker,
             'company_name': h['company_name'],
             'category': h['category'],
-            'prev_rank': int(h['ranks'][-2]),
-            'current_rank': int(h['ranks'][-1]),
-            'rank_change': change
+            'prev_rank': prev,
+            'current_rank': curr,
+            'rank_change': change,
         })
 
     mover_df = pd.DataFrame(movers)
     if mover_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    gainers = mover_df.nlargest(n, 'rank_change')
+    gainers   = mover_df.nlargest(n, 'rank_change')
     decliners = mover_df.nsmallest(n, 'rank_change')
     return gainers, decliners
 
@@ -2921,11 +2931,11 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
 # ============================================
 
 def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
-    """Alerts Tab v4.0 — Ultimate Edition.
+    """Alerts Tab v5.0 — Ultimate Edition.
 
-    Architecture: batch-rendered CSS-grid HTML per section (one st.markdown
-    call each) for zero-flicker, pixel-perfect layout. Color-coded left
-    borders, inline score bars, consistent metric blocks.
+    - Readable font sizes (no sub-0.7 rem)
+    - Batch CSS-grid HTML per section
+    - Top Movers: 50 per side, multi-week filter (1w / 2w / 4w / 8w / All)
     """
 
     # ── Ensure columns ──────────────────────────────────────────────────
@@ -2950,9 +2960,9 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
         return h['prices'][-1] if h.get('prices') else 0
 
     def _metric(label: str, value: str, color: str = '#e6edf3') -> str:
-        return (f'<div style="min-width:42px;">'
-                f'<div style="color:#6e7681;font-size:0.58rem;text-transform:uppercase;letter-spacing:0.3px;">{label}</div>'
-                f'<div style="color:{color};font-weight:700;font-size:0.85rem;margin-top:1px;">{value}</div></div>')
+        return (f'<div style="min-width:44px;">'
+                f'<div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.3px;">{label}</div>'
+                f'<div style="color:{color};font-weight:700;font-size:0.88rem;margin-top:2px;">{value}</div></div>')
 
     def _score_bar(pct: float, color: str) -> str:
         w = min(max(pct, 0), 100)
@@ -2971,26 +2981,26 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     conv_count = int(conv_mask.sum())
     confirmed  = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum())
     divergent  = int((filtered_df['price_label'] == 'PRICE_DIVERGENT').sum())
-    gainers, decliners = get_top_movers(histories, n=10)
-    top_delta  = int(gainers.iloc[0]['rank_change']) if not gainers.empty else 0
+    gainers_1w, _ = get_top_movers(histories, n=1, weeks=1)
+    top_delta  = int(gainers_1w.iloc[0]['rank_change']) if not gainers_1w.empty else 0
     trap_total = decay_high + decay_mod
 
     # ── Header Card ─────────────────────────────────────────────────────
-    trap_bg  = '#f8514918' if trap_total > 0 else '#21262d'
-    trap_fg  = '#f85149'   if trap_total > 0 else '#484f58'
-    div_bg   = '#d2992218' if divergent > 0 else '#21262d'
-    div_fg   = '#d29922'   if divergent > 0 else '#484f58'
+    trap_bg = '#f8514918' if trap_total > 0 else '#21262d'
+    trap_fg = '#f85149'   if trap_total > 0 else '#484f58'
+    div_bg  = '#d2992218' if divergent > 0 else '#21262d'
+    div_fg  = '#d29922'   if divergent > 0 else '#484f58'
     st.markdown(f"""
     <div style="background:#0d1117;border-radius:14px;padding:18px 24px;margin-bottom:16px;border:1px solid #30363d;">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <div>
           <span style="font-size:1.4rem;font-weight:800;color:#fff;">🚨 Alerts &amp; Signals</span>
-          <div style="color:#8b949e;font-size:0.85rem;margin-top:2px;">Real-time warnings · conviction picks · market movers</div>
+          <div style="color:#8b949e;font-size:0.88rem;margin-top:2px;">Real-time warnings · conviction picks · market movers</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center;">
-          <span style="background:{trap_bg};color:{trap_fg};padding:4px 10px;border-radius:8px;font-size:0.75rem;font-weight:600;">{trap_total} Traps</span>
-          <span style="background:#3fb95018;color:#3fb950;padding:4px 10px;border-radius:8px;font-size:0.75rem;font-weight:600;">{conv_count} Conviction</span>
-          <span style="background:{div_bg};color:{div_fg};padding:4px 10px;border-radius:8px;font-size:0.75rem;font-weight:600;">{divergent} Divergent</span>
+          <span style="background:{trap_bg};color:{trap_fg};padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">{trap_total} Traps</span>
+          <span style="background:#3fb95018;color:#3fb950;padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">{conv_count} Conviction</span>
+          <span style="background:{div_bg};color:{div_fg};padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">{divergent} Divergent</span>
         </div>
       </div>
     </div>""", unsafe_allow_html=True)
@@ -3006,9 +3016,9 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     ]
     chip_html = ''.join(
         f'<div class="m-chip">'
-        f'<div style="font-size:0.6rem;color:#8b949e;text-transform:uppercase;">{lbl}</div>'
+        f'<div style="font-size:0.7rem;color:#8b949e;text-transform:uppercase;">{lbl}</div>'
         f'<div style="font-size:1.2rem;font-weight:800;color:{clr};">{val}</div>'
-        f'<div style="font-size:0.55rem;color:#6e7681;">{sub}</div></div>'
+        f'<div style="font-size:0.68rem;color:#6e7681;">{sub}</div></div>'
         for lbl, val, sub, clr in chips
     )
     st.markdown(f'<div class="m-strip">{chip_html}</div>', unsafe_allow_html=True)
@@ -3028,7 +3038,7 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     if high_traps.empty:
         st.markdown(
             '<div style="background:#161b22;border-radius:10px;padding:18px;text-align:center;'
-            'border:1px solid #30363d;"><span style="color:#3fb950;font-weight:600;">'
+            'border:1px solid #30363d;"><span style="color:#3fb950;font-weight:600;font-size:0.9rem;">'
             '✅ No momentum decay traps detected</span></div>', unsafe_allow_html=True)
     else:
         cards = []
@@ -3050,15 +3060,15 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'border-left:3px solid {sc};">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;">'
                 f'<div><span style="font-weight:700;font-size:0.95rem;color:#e6edf3;">{tr["ticker"]}</span>'
-                f'<span style="color:#6e7681;font-size:0.7rem;margin-left:6px;">{str(tr.get("company_name",""))[:22]}</span></div>'
+                f'<span style="color:#8b949e;font-size:0.78rem;margin-left:8px;">{str(tr.get("company_name",""))[:22]}</span></div>'
                 f'<span style="background:{sc}18;color:{sc};padding:2px 8px;border-radius:8px;'
-                f'font-size:0.62rem;font-weight:700;">{tag}</span></div>'
-                f'<div style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;">'
-                f'{_metric("Rank", f"#{int(tr['current_rank'])}")}'
+                f'font-size:0.72rem;font-weight:700;">{tag}</span></div>'
+                f'<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;">'
+                f'{_metric("Rank", f"#{int(tr["current_rank"])}")}'
                 f'{_metric("Score", f"{score:.0f}", "#FF6B35")}'
                 f'{_metric("7d", lr7, sc)}'
                 f'{_metric("30d", lr30, sc)}'
-                f'{_metric("Decay", f"×{dm:.3f}", sc)}'
+                f'{_metric("Decay", f"x{dm:.3f}", sc)}'
                 f'{_metric("Price", f"₹{price:,.0f}")}'
                 f'</div>{_score_bar(score, sc)}</div>'
             )
@@ -3084,7 +3094,7 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     if conv_df.empty:
         st.markdown(
             '<div style="background:#161b22;border-radius:10px;padding:18px;text-align:center;'
-            'border:1px solid #30363d;"><span style="color:#8b949e;">'
+            'border:1px solid #30363d;"><span style="color:#8b949e;font-size:0.9rem;">'
             'No conviction picks with current filters</span></div>', unsafe_allow_html=True)
     else:
         cards = []
@@ -3112,12 +3122,12 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'border-radius:12px;padding:14px;border-left:3px solid #3fb950;">'
                 f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
                 f'<div><span style="font-weight:700;font-size:0.95rem;color:#e6edf3;">{cr["ticker"]}</span>'
-                f'<div style="color:#6e7681;font-size:0.7rem;margin-top:1px;">{str(cr.get("company_name",""))[:24]}</div></div>'
+                f'<div style="color:#8b949e;font-size:0.78rem;margin-top:1px;">{str(cr.get("company_name",""))[:24]}</div></div>'
                 f'<div style="text-align:right;">'
                 f'<div style="font-size:1.3rem;font-weight:800;color:{gc};">{score:.0f}</div>'
-                f'<div style="font-size:0.58rem;color:#8b949e;">{cr.get("grade_emoji","")} {cr["grade"]}</div></div></div>'
-                f'<div style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;">'
-                f'{_metric("Rank", f"#{int(cr['current_rank'])}")}'
+                f'<div style="font-size:0.72rem;color:#8b949e;">{cr.get("grade_emoji","")} {cr["grade"]}</div></div></div>'
+                f'<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;">'
+                f'{_metric("Rank", f"#{int(cr["current_rank"])}")}'
                 f'{_metric("Pattern", f"{p_emoji} {p_name[:12]}", p_color)}'
                 f'{_metric("7d", lr7, "#3fb950")}'
                 f'{_metric("Price", f"₹{price:,.0f}")}'
@@ -3145,7 +3155,7 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     if div_stocks.empty:
         st.markdown(
             '<div style="background:#161b22;border-radius:10px;padding:18px;text-align:center;'
-            'border:1px solid #30363d;"><span style="color:#3fb950;font-weight:600;">'
+            'border:1px solid #30363d;"><span style="color:#3fb950;font-weight:600;font-size:0.9rem;">'
             '✅ No price-divergent stocks detected</span></div>', unsafe_allow_html=True)
     else:
         cards = []
@@ -3162,15 +3172,15 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'border-radius:12px;padding:14px;border-left:3px solid #d29922;">'
                 f'<div style="display:flex;justify-content:space-between;align-items:center;">'
                 f'<div><span style="font-weight:700;font-size:0.95rem;color:#e6edf3;">{dv["ticker"]}</span>'
-                f'<span style="color:#6e7681;font-size:0.7rem;margin-left:6px;">{str(dv.get("company_name",""))[:22]}</span></div>'
+                f'<span style="color:#8b949e;font-size:0.78rem;margin-left:8px;">{str(dv.get("company_name",""))[:22]}</span></div>'
                 f'<span style="color:{gc};font-weight:700;font-size:0.95rem;">{dv.get("grade_emoji","")} {score:.0f}</span></div>'
-                f'<div style="display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;">'
-                f'{_metric("Rank", f"#{int(dv['current_rank'])}")}'
+                f'<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;">'
+                f'{_metric("Rank", f"#{int(dv["current_rank"])}")}'
                 f'{_metric("7d", lr7, "#d29922")}'
                 f'{_metric("30d", lr30, "#d29922")}'
                 f'{_metric("Price", f"₹{price:,.0f}")}'
-                f'<div style="min-width:42px;"><div style="color:#6e7681;font-size:0.58rem;text-transform:uppercase;letter-spacing:0.3px;">Status</div>'
-                f'<div style="margin-top:1px;"><span class="pill p-red" style="font-size:0.6rem;">Divergent</span></div></div>'
+                f'<div style="min-width:44px;"><div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.3px;">Status</div>'
+                f'<div style="margin-top:2px;"><span class="pill p-red" style="font-size:0.72rem;">Divergent</span></div></div>'
                 f'</div>{_score_bar(score, "#d29922")}</div>'
             )
 
@@ -3181,27 +3191,68 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
     # ════════════════════════════════════════════════════════════════════
-    # § 4  TOP MOVERS
+    # § 4  TOP MOVERS — 50 per side, multi-week filter
     # ════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🔥 Top Movers This Week</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Biggest rank changes in the latest weekly data</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-head">🔥 Top Movers</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sec-cap">Biggest rank changes — filter by time window</div>', unsafe_allow_html=True)
 
-    def _mover_panel(df_mv: pd.DataFrame, accent: str, icon: str, label: str) -> str:
-        """Build one mover panel as a single HTML string."""
+    # -- Determine max available weeks from histories --
+    max_hist_len = max((len(h['ranks']) for h in histories.values()), default=2) - 1
+    week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len]
+    if not week_options:
+        week_options = [1]
+    week_labels = {1: '1 Week', 2: '2 Weeks', 4: '4 Weeks', 8: '8 Weeks', 12: '12 Weeks'}
+
+    sel_col, info_col = st.columns([1, 3])
+    with sel_col:
+        mv_weeks = st.selectbox(
+            'Time Window',
+            options=week_options,
+            format_func=lambda x: week_labels.get(x, f'{x} Weeks'),
+            index=0,
+            key='alert_mover_weeks',
+        )
+    with info_col:
+        st.markdown(f"""
+        <div style="background:#161b22;border-radius:10px;padding:10px 16px;margin-top:6px;border:1px solid #30363d;">
+            <span style="color:#8b949e;font-size:0.82rem;">Showing rank change over </span>
+            <span style="color:#58a6ff;font-weight:700;font-size:0.88rem;">{week_labels.get(mv_weeks, f"{mv_weeks}w")}</span>
+            <span style="color:#8b949e;font-size:0.82rem;"> · Top 50 climbers &amp; 50 decliners</span>
+        </div>""", unsafe_allow_html=True)
+
+    gainers, decliners = get_top_movers(histories, n=50, weeks=mv_weeks)
+
+    def _mover_table_html(df_mv: pd.DataFrame, accent: str, icon: str, label: str) -> str:
+        """Build one mover panel as a single HTML string — fully styled."""
+        count = len(df_mv)
         hdr = (f'<div style="background:#161b22;border-radius:10px 10px 0 0;padding:12px 16px;'
-               f'border:1px solid #30363d;border-bottom:2px solid {accent};">'
-               f'<span style="font-size:0.85rem;font-weight:700;color:{accent};">{icon} {label}</span>'
-               f'<span style="color:#6e7681;font-size:0.7rem;margin-left:8px;">({len(df_mv)})</span></div>')
+               f'border:1px solid #30363d;border-bottom:2px solid {accent};display:flex;'
+               f'justify-content:space-between;align-items:center;">'
+               f'<span style="font-size:0.88rem;font-weight:700;color:{accent};">{icon} {label}</span>'
+               f'<span style="color:#6e7681;font-size:0.78rem;">{count} stocks</span></div>')
 
         if df_mv.empty:
-            return (hdr + '<div style="background:#0d1117;border-radius:0 0 10px 10px;padding:14px;'
-                    'border:1px solid #30363d;border-top:0;text-align:center;color:#6e7681;">No data</div>')
+            return (hdr + '<div style="background:#0d1117;border-radius:0 0 10px 10px;padding:18px;'
+                    'border:1px solid #30363d;border-top:0;text-align:center;color:#6e7681;font-size:0.85rem;'
+                    '">No movers detected</div>')
 
         enriched = df_mv.merge(
             filtered_df[['ticker', 'trajectory_score', 'grade']].drop_duplicates('ticker'),
             on='ticker', how='left')
 
-        rows_html = []
+        # Column header row
+        col_hdr = (
+            '<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
+            'background:#161b22;border-bottom:1px solid #30363d;font-size:0.72rem;color:#6e7681;'
+            'text-transform:uppercase;letter-spacing:0.5px;">'
+            '<span style="min-width:44px;text-align:right;">Chg</span>'
+            '<span style="flex:1;">Stock</span>'
+            '<span style="min-width:80px;text-align:center;">Prev → Now</span>'
+            '<span style="min-width:36px;text-align:center;">Grd</span>'
+            '<span style="min-width:36px;text-align:right;">Score</span></div>'
+        )
+
+        rows_html = [col_hdr]
         for i, (_, m) in enumerate(enriched.iterrows()):
             rc = int(m['rank_change'])
             ts = m.get('trajectory_score', 0)
@@ -3211,28 +3262,29 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
             gc = GRADE_COLORS.get(gr, '#8b949e')
             stripe = 'rgba(22,27,34,0.5)' if i % 2 else 'transparent'
             chg_c = '#3fb950' if rc > 0 else '#f85149'
+            chg_sign = '+' if rc > 0 else ''
 
             rows_html.append(
-                f'<div style="display:flex;align-items:center;padding:7px 14px;gap:8px;background:{stripe};'
+                f'<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;background:{stripe};'
                 f'border-bottom:1px solid #21262d;">'
-                f'<span style="color:{chg_c};font-weight:800;font-size:0.88rem;min-width:42px;text-align:right;'
-                f'font-variant-numeric:tabular-nums;">{"+" if rc > 0 else ""}{rc}</span>'
-                f'<div style="flex:1;overflow:hidden;">'
-                f'<span style="color:#e6edf3;font-weight:600;font-size:0.82rem;">{m["ticker"]}</span>'
-                f'<span style="color:#6e7681;font-size:0.65rem;margin-left:6px;">'
-                f'{str(m.get("company_name",""))[:18]}</span></div>'
-                f'<span style="color:#8b949e;font-size:0.72rem;min-width:60px;text-align:center;'
+                f'<span style="color:{chg_c};font-weight:800;font-size:0.88rem;min-width:44px;text-align:right;'
+                f'font-variant-numeric:tabular-nums;">{chg_sign}{rc}</span>'
+                f'<div style="flex:1;overflow:hidden;white-space:nowrap;">'
+                f'<span style="color:#e6edf3;font-weight:600;font-size:0.85rem;">{m["ticker"]}</span>'
+                f'<span style="color:#8b949e;font-size:0.75rem;margin-left:6px;">'
+                f'{str(m.get("company_name",""))[:20]}</span></div>'
+                f'<span style="color:#8b949e;font-size:0.8rem;min-width:80px;text-align:center;'
                 f'font-variant-numeric:tabular-nums;">{int(m["prev_rank"])} → {int(m["current_rank"])}</span>'
-                f'<span style="color:{gc};font-weight:700;font-size:0.78rem;min-width:20px;text-align:center;">{gr}</span>'
-                f'<span style="color:#FF6B35;font-weight:600;font-size:0.78rem;min-width:28px;text-align:right;'
+                f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:36px;text-align:center;">{gr}</span>'
+                f'<span style="color:#FF6B35;font-weight:600;font-size:0.82rem;min-width:36px;text-align:right;'
                 f'font-variant-numeric:tabular-nums;">{ts:.0f}</span></div>')
 
         body = (f'<div style="background:#0d1117;border-radius:0 0 10px 10px;border:1px solid #30363d;'
-                f'border-top:0;overflow:hidden;max-height:420px;overflow-y:auto;">{"".join(rows_html)}</div>')
+                f'border-top:0;overflow:hidden;max-height:580px;overflow-y:auto;">{"".join(rows_html)}</div>')
         return hdr + body
 
-    g_html = _mover_panel(gainers,   '#3fb950', '⬆️', 'Biggest Climbers')
-    d_html = _mover_panel(decliners, '#f85149', '⬇️', 'Biggest Decliners')
+    g_html = _mover_table_html(gainers,   '#3fb950', '⬆️', 'Biggest Climbers')
+    d_html = _mover_table_html(decliners, '#f85149', '⬇️', 'Biggest Decliners')
     st.markdown(
         f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
         f'<div>{g_html}</div><div>{d_html}</div></div>', unsafe_allow_html=True)
