@@ -1374,13 +1374,18 @@ def _detect_pattern(ranks, totals, pcts, positional, trend, velocity, accelerati
         return 'rocket'
 
     # ⚡ Breakout — Sudden jump beyond normal variance (works with n>=3)
+    # v3.0: requires the LATEST change to be sharp, not just cumulative
     if n >= 3:
         lookback = min(3, n - 1)
         recent_change = pcts[-1] - pcts[-(lookback + 1)]
         avg_abs_change = float(np.mean(np.abs(pct_diffs)))
-        # Adaptive threshold: 2.5× for volatile stocks, 2.0× for stable
+        latest_change = pcts[-1] - pcts[-2]
+        prev_avg_change = float(np.mean(np.abs(pct_diffs[:-1]))) if len(pct_diffs) > 1 else avg_abs_change
+        # Adaptive threshold: 2.5× for stable stocks, 2.0× for volatile
         breakout_mult = 2.5 if consistency > 50 else 2.0
-        if avg_abs_change > 0.5 and recent_change > 0 and recent_change > breakout_mult * avg_abs_change:
+        if (avg_abs_change > 0.5 and recent_change > 0 and
+                recent_change > breakout_mult * avg_abs_change and
+                latest_change > 1.5 * prev_avg_change):  # Latest must be SHARP, not gradual
             return 'breakout'
 
     # 🔥 Momentum Building — Acceleration surging but trend/velocity haven't caught up yet
@@ -1390,12 +1395,12 @@ def _detect_pattern(ranks, totals, pcts, positional, trend, velocity, accelerati
     # ── TIER 3: POSITIONAL PATTERNS (where are they now?) ──
 
     # ⛰️ Topping Out — Near peak but momentum fading (MUST be checked BEFORE At Peak)
-    if best_rank > 0 and current_rank <= best_rank * 1.15 and current_pct > 65:
+    if best_rank > 0 and current_rank <= best_rank * 1.15 and current_pct > 75:
         if acceleration < 40 or velocity < 38:
             return 'topping_out'
 
     # 🏔️ At Peak — Near best rank with sustained strength
-    if best_rank > 0 and current_rank <= best_rank * 1.12 and current_pct > 68:
+    if best_rank > 0 and current_rank <= best_rank * 1.12 and current_pct > 78:
         if acceleration >= 40 and velocity >= 38:  # Confirm momentum is healthy
             return 'at_peak'
 
@@ -2565,7 +2570,7 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
             s1_score = st.number_input("Min Trajectory Score", 30, 100, FUNNEL_DEFAULTS['stage1_score'], key='f_s1')
             s1_patterns = st.multiselect(
                 "Include Patterns (OR condition)",
-                ['rocket', 'breakout', 'stable_elite', 'at_peak', 'steady_climber'],
+                ['rocket', 'breakout', 'momentum_building', 'stable_elite', 'at_peak', 'steady_climber', 'recovery'],
                 default=FUNNEL_DEFAULTS['stage1_patterns'], key='f_s1_pat'
             )
         with fc2:
