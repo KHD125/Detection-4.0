@@ -1776,8 +1776,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ── Column definitions for each view ──
     # Each: (df_col, display_name, tooltip, column_config_or_None)
     COL_DEFS = {
-        '#':        ('t_rank', '#', 'Display rank after sorting', st.column_config.NumberColumn(width="small")),
-        'Pro Rank': ('current_rank', 'Pro Rank', 'System-assigned rank in the universe',
+        'Pro Rank': ('t_rank', 'Pro Rank', 'System-generated rank based on trajectory score',
                      st.column_config.NumberColumn(width="small")),
         'Ticker':   ('ticker', 'Ticker', 'NSE ticker symbol', None),
         'Company':  ('company_name', 'Company', 'Company name (truncated)', None),
@@ -1792,7 +1791,6 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Signals':  ('signal_tags', 'Signals', 'All signal tags combined', None),
         'TMI':      ('tmi', 'TMI', 'Trajectory Momentum Index (0-100)',
                      st.column_config.ProgressColumn('TMI', min_value=0, max_value=100, format="%.0f")),
-        'Rank':     ('current_rank', 'Rank', 'Current rank in universe (same as Pro Rank)', None),
         'Best':     ('best_rank', 'Best', 'Best rank ever achieved', None),
         'Δ Total':  ('rank_change', 'Δ Total', 'Total rank change (first → now)',
                      st.column_config.NumberColumn(format="%+d")),
@@ -1813,13 +1811,13 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     }
 
     VIEW_PRESETS = {
-        'Compact':  ['#', 'Pro Rank', 'Ticker', '₹ Price', 'T-Score', 'Grade', 'Pattern',
+        'Compact':  ['Pro Rank', 'Ticker', '₹ Price', 'T-Score', 'Grade', 'Pattern',
                      'Δ Total', 'Streak', 'Trajectory'],
-        'Standard': ['#', 'Pro Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
+        'Standard': ['Pro Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks', 'Trajectory'],
-        'Signals':  ['#', 'Pro Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
+        'Signals':  ['Pro Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
-        'Complete': ['#', 'Pro Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
+        'Complete': ['Pro Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
                      'Grade', 'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Trend', 'Velocity', 'Consistency', 'Positional', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
     }
