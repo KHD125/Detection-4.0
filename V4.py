@@ -2748,54 +2748,58 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
         st.plotly_chart(fig_funnel, use_container_width=True)
 
     with fc_right:
-        # Stage flow breakdown
-        st.markdown(f"""
-        <div style="background:#161b22; border-radius:12px; padding:16px; border:1px solid #30363d;">
-            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:12px;">Pipeline Flow</div>
+        # Stage flow breakdown — built as separate calls for reliability
+        st.markdown('<div style="background:#161b22; border-radius:12px; padding:16px; border:1px solid #30363d;">', unsafe_allow_html=True)
+        st.markdown('<div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:12px;">Pipeline Flow</div>', unsafe_allow_html=True)
 
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-                <div style="width:8px; height:8px; border-radius:50%; background:#58a6ff;"></div>
-                <div style="flex:1;">
-                    <div style="display:flex; justify-content:space-between;">
-                        <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 1 — Discovery</span>
-                        <span style="color:#58a6ff; font-weight:700;">{s1_count} stocks</span>
-                    </div>
-                    <div style="color:#6e7681; font-size:0.75rem;">T-Score ≥ {s1_score} OR pattern ∈ {{{', '.join(s1_patterns[:3])}{'...' if len(s1_patterns) > 3 else ''}}}</div>
-                    <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
-                        <div style="background:#58a6ff; height:6px; border-radius:4px; width:{min(s1_pct, 100)}%;"></div>
-                    </div>
+        pat_list = ', '.join(s1_patterns[:3]) + ('...' if len(s1_patterns) > 3 else '')
+        s1_bar_w = min(s1_pct, 100)
+        st.markdown(f"""<div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+            <div style="width:8px; height:8px; border-radius:50%; background:#58a6ff; flex-shrink:0;"></div>
+            <div style="flex:1;">
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 1 — Discovery</span>
+                    <span style="color:#58a6ff; font-weight:700;">{s1_count} stocks</span>
+                </div>
+                <div style="color:#6e7681; font-size:0.75rem;">T-Score ≥ {s1_score} OR pattern in [{pat_list}]</div>
+                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
+                    <div style="background:#58a6ff; height:6px; border-radius:4px; width:{s1_bar_w}%;"></div>
                 </div>
             </div>
+        </div>""", unsafe_allow_html=True)
 
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-                <div style="width:8px; height:8px; border-radius:50%; background:#d29922;"></div>
-                <div style="flex:1;">
-                    <div style="display:flex; justify-content:space-between;">
-                        <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 2 — Validation</span>
-                        <span style="color:#d29922; font-weight:700;">{s2_pass} passed</span>
-                    </div>
-                    <div style="color:#6e7681; font-size:0.75rem;">5 rules: TQ≥{s2_tq} | No Downtrend | MS≥{s2_ms} | Δ≥-20 | Volume — need {s2_rules}/5</div>
-                    <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
-                        <div style="background:#d29922; height:6px; border-radius:4px; width:{min(s2_pct, 100)}%;"></div>
-                    </div>
+        s2_bar_w = min(s2_pct, 100)
+        leader_text = 'Leader required' if s3_leader else 'Leader optional'
+        st.markdown(f"""<div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+            <div style="width:8px; height:8px; border-radius:50%; background:#d29922; flex-shrink:0;"></div>
+            <div style="flex:1;">
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 2 — Validation</span>
+                    <span style="color:#d29922; font-weight:700;">{s2_pass} passed</span>
+                </div>
+                <div style="color:#6e7681; font-size:0.75rem;">5 rules: TQ≥{s2_tq} | No Downtrend | MS≥{s2_ms} | Δ≥-20 | Volume — need {s2_rules}/5</div>
+                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
+                    <div style="background:#d29922; height:6px; border-radius:4px; width:{s2_bar_w}%;"></div>
                 </div>
             </div>
+        </div>""", unsafe_allow_html=True)
 
-            <div style="display:flex; align-items:center; gap:10px;">
-                <div style="width:8px; height:8px; border-radius:50%; background:#3fb950;"></div>
-                <div style="flex:1;">
-                    <div style="display:flex; justify-content:space-between;">
-                        <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 3 — Final Buys</span>
-                        <span style="color:#3fb950; font-weight:700;">{s3_pass} selected</span>
-                    </div>
-                    <div style="color:#6e7681; font-size:0.75rem;">TQ≥{s3_tq} | {'Leader required' if s3_leader else 'Leader optional'} | No downtrend last {s3_dt}w</div>
-                    <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
-                        <div style="background:#3fb950; height:6px; border-radius:4px; width:{min(s3_pct, 100)}%;"></div>
-                    </div>
+        s3_bar_w = min(s3_pct, 100)
+        st.markdown(f"""<div style="display:flex; align-items:center; gap:10px;">
+            <div style="width:8px; height:8px; border-radius:50%; background:#3fb950; flex-shrink:0;"></div>
+            <div style="flex:1;">
+                <div style="display:flex; justify-content:space-between;">
+                    <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 3 — Final Buys</span>
+                    <span style="color:#3fb950; font-weight:700;">{s3_pass} selected</span>
+                </div>
+                <div style="color:#6e7681; font-size:0.75rem;">TQ≥{s3_tq} | {leader_text} | No downtrend last {s3_dt}w</div>
+                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
+                    <div style="background:#3fb950; height:6px; border-radius:4px; width:{s3_bar_w}%;"></div>
                 </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("")
 
