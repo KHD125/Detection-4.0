@@ -665,6 +665,19 @@ def _compute_single_trajectory(h: dict) -> dict:
     # Sustained top-tier presence guarantees a minimum score floor
     trajectory_score = _apply_elite_bonus(trajectory_score, pcts, n)
 
+    # ── Bayesian Confidence Shrinkage (v3.0) ──
+    # Shrinks score toward population mean when data is insufficient.
+    # 4-week lucky streak ≠ 16-week proven performer. This ensures that.
+    bc = BAYESIAN_CONFIDENCE
+    confidence = min(1.0, max(bc['min_confidence'], n / bc['full_confidence_weeks']))
+    trajectory_score = confidence * trajectory_score + (1 - confidence) * bc['prior_mean']
+
+    # ── Hurst Exponent Persistence Multiplier (v3.0) ──
+    # Determines if the rank trend will PERSIST or REVERT.
+    # H > 0.55: trending → boost. H < 0.42: mean-reverting → penalize uptrends.
+    hurst_multiplier = _calc_hurst_multiplier(pcts, trend)
+    trajectory_score = float(np.clip(trajectory_score * hurst_multiplier, 0, 100))
+
     # ── Price-Rank Alignment Multiplier (v3.0 — EMA-smoothed, 3-signal) ──
     ret_7d = h.get('ret_7d', [])
     ret_30d = h.get('ret_30d', [])
