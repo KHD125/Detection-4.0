@@ -126,15 +126,17 @@ ELITE_BONUS = {
     'top20_sustained': {'pct_threshold': 80, 'history_ratio': 0.50, 'floor': 68}
 }
 
-# Return-Based Price-Rank Alignment Configuration (v2.3 — uses ret_7d/ret_30d)
+# Return-Based Price-Rank Alignment Configuration (v3.0 — EMA-smoothed, 3-signal, recency-weighted)
 PRICE_ALIGNMENT = {
     'noise_band_stable': 2.0,        # Ignore rank moves < this for stable stocks
     'noise_band_normal': 1.0,        # Ignore rank moves < this for normal stocks
     'min_weeks': 4,                  # Minimum weeks needed for alignment calculation
-    'multiplier_max_boost': 1.08,    # Maximum upward multiplier
-    'multiplier_max_penalty': 0.92,  # Maximum downward multiplier
+    'multiplier_max_boost': 1.12,    # Maximum upward multiplier (widened from 1.08)
+    'multiplier_max_penalty': 0.85,  # Maximum downward multiplier (widened from 0.92)
     'confirmed_threshold': 72,       # Alignment score above this = PRICE_CONFIRMED
     'divergent_threshold': 35,       # Alignment score below this = PRICE_DIVERGENT
+    'ema_span': 3,                   # EMA span for smoothing ret_7d (3-week)
+    'recency_window': 4,             # Recent N weeks get 2× weight in directional signal
 }
 
 # Momentum Decay Warning Configuration (v2.3)
@@ -631,11 +633,11 @@ def _compute_single_trajectory(h: dict) -> dict:
     # Sustained top-tier presence guarantees a minimum score floor
     trajectory_score = _apply_elite_bonus(trajectory_score, pcts, n)
 
-    # ── Price-Rank Alignment Multiplier (v2.3 — return-based) ──
-    # Uses CSV ret_7d/ret_30d instead of raw prices — no split detection needed
+    # ── Price-Rank Alignment Multiplier (v3.0 — EMA-smoothed, 3-signal) ──
     ret_7d = h.get('ret_7d', [])
     ret_30d = h.get('ret_30d', [])
-    price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct)
+    ret_3m = h.get('ret_3m', [])
+    price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct, ret_3m)
     pre_price_score = trajectory_score
     trajectory_score = float(np.clip(trajectory_score * price_multiplier, 0, 100))
 
@@ -832,81 +834,118 @@ def _apply_elite_bonus(score: float, pcts: List[float], n: int) -> float:
     return min(score, 100.0)
 
 
-# ── Return-Based Price-Rank Alignment Engine (v2.3) ──
+# ── Return-Based Price-Rank Alignment Engine (v3.0) ──
+
+def _ema_smooth(values: List[float], span: int = 3) -> List[float]:
+    """Exponential Moving Average smoothing for return series. NaN-safe."""
+    if not values:
+        return []
+    alpha = 2.0 / (span + 1)
+    smoothed = []
+    prev = None
+    for v in values:
+        if v is None or np.isnan(v):
+            smoothed.append(prev if prev is not None else float('nan'))
+        elif prev is None:
+            prev = v
+            smoothed.append(v)
+        else:
+            prev = alpha * v + (1 - alpha) * prev
+            smoothed.append(prev)
+    return smoothed
+
 
 def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
-                          pcts: List[float], avg_pct: float) -> Tuple[float, str, float]:
+                          pcts: List[float], avg_pct: float,
+                          ret_3m: Optional[List[float]] = None) -> Tuple[float, str, float]:
     """
-    Return-Based Price-Rank Alignment Multiplier (v2.3).
+    Return-Based Price-Rank Alignment Multiplier (v3.0).
 
-    Uses CSV-provided ret_7d and ret_30d which are ALREADY split-adjusted by the
-    data provider. No manual split detection needed — cleaner and more accurate.
+    UPGRADES from v2.3:
+      • EMA-smoothed ret_7d (3-week) — eliminates single-week noise spikes
+      • Recency weighting — last 4 weeks count 2× in directional agreement
+      • Signal 3: ret_3m conviction — 3-month return confirms sustained trend
+      • Wider multiplier range — ×0.85 to ×1.12 for stronger signal impact
 
-    TWO CLEAN SIGNALS:
+    THREE SIGNALS:
 
-    Signal 1 — Return-Rank Directional Agreement (55%):
-      For each week, does the sign of ret_7d match the direction of rank change?
-      Positive ret_7d + improving rank = agreement.
-      Uses wider noise band for stable elite stocks.
+    Signal 1 — EMA-Smoothed Directional Agreement (40%):
+      Does EMA(ret_7d, 3) direction match rank percentile movement?
+      Recent 4 weeks get 2× weight. Wider noise band for elite stocks.
 
-    Signal 2 — Return Quality Confirmation (45%):
-      For highly ranked stocks, are recent returns positive (confirming value)?
-      Uses avg of recent ret_30d values. A stock at rank 5 with -22% monthly
-      return is a TRAP — this signal catches it.
+    Signal 2 — Return Quality Confirmation (30%):
+      Are recent ret_30d values positive for highly ranked stocks?
+      Catches TRAP stocks: high rank + deeply negative 30d return.
 
-    MULTIPLIER RANGE: ×0.92 (strong divergence) to ×1.08 (strong confirmation)
+    Signal 3 — 3-Month Conviction (30%):
+      Is ret_3m positive? Strongest predictor for positional trades.
+      A stock with positive 3m return has confirmed medium-term trend.
+
+    MULTIPLIER RANGE: ×0.85 (strong divergence) to ×1.12 (strong confirmation)
 
     Returns: (multiplier, label, alignment_score)
     """
     cfg = PRICE_ALIGNMENT
     n = len(pcts)
+    if ret_3m is None:
+        ret_3m = []
 
     # ── Guard: Need valid return data ──
     valid_ret7 = [r for r in ret_7d if r is not None and not np.isnan(r)]
     if len(valid_ret7) < cfg['min_weeks'] or n < cfg['min_weeks']:
         return 1.0, 'NEUTRAL', 50.0
 
-    # Build aligned triplets: (ret_7d, ret_30d, percentile)
-    pairs = []
-    for i in range(n):
-        r7 = ret_7d[i] if i < len(ret_7d) else float('nan')
-        r30 = ret_30d[i] if i < len(ret_30d) else float('nan')
-        if r7 is not None and not np.isnan(r7):
-            pairs.append((r7, r30, pcts[i]))
+    # ── EMA-smooth ret_7d to reduce noise ──
+    ema_span = cfg.get('ema_span', 3)
+    smoothed_r7 = _ema_smooth(ret_7d, span=ema_span)
 
-    if len(pairs) < cfg['min_weeks']:
+    # Build aligned quads: (ema_r7, r30, r3m, percentile)
+    quads = []
+    for i in range(n):
+        r7e = smoothed_r7[i] if i < len(smoothed_r7) else float('nan')
+        r30 = ret_30d[i] if i < len(ret_30d) else float('nan')
+        r3m = ret_3m[i] if i < len(ret_3m) else float('nan')
+        if r7e is not None and not np.isnan(r7e):
+            quads.append((r7e, r30, r3m, pcts[i]))
+
+    if len(quads) < cfg['min_weeks']:
         return 1.0, 'NEUTRAL', 50.0
 
-    # ── Signal 1: Return-Rank Directional Agreement (55%) ──
-    agree = 0
-    counted = 0
+    # ── Signal 1: EMA-Smoothed Directional Agreement (40%) — recency-weighted ──
+    agree = 0.0
+    total_weight = 0.0
     noise_band = cfg['noise_band_stable'] if avg_pct > 80 else cfg['noise_band_normal']
+    recency_window = cfg.get('recency_window', 4)
+    nq = len(quads)
 
-    for i in range(1, len(pairs)):
-        r7 = pairs[i][0]
-        r_chg = pairs[i][2] - pairs[i - 1][2]  # Percentile change
+    for i in range(1, nq):
+        r7e = quads[i][0]
+        r_chg = quads[i][3] - quads[i - 1][3]  # Percentile change
 
         # Skip noise — tiny rank moves for elite stocks
-        if abs(r_chg) < noise_band and abs(r7) < 1.0:
+        if abs(r_chg) < noise_band and abs(r7e) < 1.0:
             continue
 
-        counted += 1
-        # Positive ret_7d should align with improving percentile
-        if r7 > 0 and r_chg > 0:
-            agree += 1.0   # Both positive — strong agreement
-        elif r7 < -1.0 and r_chg < -1.0:
-            agree += 0.8   # Both negative — at least consistent
-        elif abs(r7) < 1.0:
-            agree += 0.3   # Return near zero — not really disagreeing
-        else:
-            agree -= 0.3   # Divergent direction
+        # Recency weight: last `recency_window` weeks get 2×
+        w = 2.0 if (nq - 1 - i) < recency_window else 1.0
+        total_weight += w
 
-    if counted > 0:
-        dir_score = float(np.clip((agree / counted) * 50 + 50, 0, 100))
+        # Positive EMA(ret_7d) should align with improving percentile
+        if r7e > 0 and r_chg > 0:
+            agree += 1.0 * w    # Both positive — strong agreement
+        elif r7e < -1.0 and r_chg < -1.0:
+            agree += 0.8 * w    # Both negative — at least consistent
+        elif abs(r7e) < 1.0:
+            agree += 0.3 * w    # Return near zero — not really disagreeing
+        else:
+            agree -= 0.3 * w    # Divergent direction
+
+    if total_weight > 0:
+        dir_score = float(np.clip((agree / total_weight) * 50 + 50, 0, 100))
     else:
-        # No significant rank moves — check cumulative using latest ret_30d
+        # No significant rank moves — fallback to latest ret_30d
         latest_r30 = float('nan')
-        for _, r30, _ in reversed(pairs):
+        for _, r30, _, _ in reversed(quads):
             if r30 is not None and not np.isnan(r30):
                 latest_r30 = r30
                 break
@@ -922,43 +961,73 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
         else:
             dir_score = 55.0
 
-    # ── Signal 2: Return Quality Confirmation (45%) ──
-    # Recent ret_30d tells us if the stock is actually making money
-    recent_window = min(6, len(pairs))
-    recent_r30 = [p[1] for p in pairs[-recent_window:]
-                  if p[1] is not None and not np.isnan(p[1])]
-    recent_r7 = [p[0] for p in pairs[-recent_window:]]
+    # ── Signal 2: Return Quality Confirmation (30%) ──
+    recent_window = min(6, len(quads))
+    recent_r30 = [q[1] for q in quads[-recent_window:]
+                  if q[1] is not None and not np.isnan(q[1])]
 
     if recent_r30:
         avg_r30 = float(np.mean(recent_r30))
         if avg_pct >= 70:
-            # High-ranked stocks SHOULD have positive returns
             if avg_r30 > 10:
-                trend_score = 85.0
+                quality_score = 85.0
             elif avg_r30 > 0:
-                trend_score = 65.0
+                quality_score = 65.0
             elif avg_r30 > -10:
-                trend_score = 45.0
+                quality_score = 45.0
             else:
-                trend_score = 20.0   # TRAP: rank high but returns very negative
+                quality_score = 20.0   # TRAP: rank high but returns very negative
         else:
-            # Lower-ranked stocks — any positive returns are a bonus
             if avg_r30 > 20:
-                trend_score = 80.0
+                quality_score = 80.0
             elif avg_r30 > 5:
-                trend_score = 60.0
+                quality_score = 60.0
             elif avg_r30 > -5:
-                trend_score = 50.0
+                quality_score = 50.0
             else:
-                trend_score = 35.0
+                quality_score = 35.0
     else:
-        trend_score = 50.0
+        quality_score = 50.0
 
-    # ── Composite Alignment Score ──
-    alignment = 0.55 * dir_score + 0.45 * trend_score
+    # ── Signal 3: 3-Month Conviction (30%) ──
+    # ret_3m is the strongest predictor for positional trades — confirms sustained trend
+    recent_r3m = [q[2] for q in quads[-recent_window:]
+                  if q[2] is not None and not np.isnan(q[2])]
+
+    if recent_r3m:
+        avg_r3m = float(np.mean(recent_r3m))
+        if avg_pct >= 70:
+            # High-ranked: 3m positive = strong conviction, negative = divergence
+            if avg_r3m > 20:
+                conviction_score = 90.0
+            elif avg_r3m > 10:
+                conviction_score = 78.0
+            elif avg_r3m > 0:
+                conviction_score = 62.0
+            elif avg_r3m > -10:
+                conviction_score = 40.0
+            else:
+                conviction_score = 18.0  # SEVERE: 3m deeply negative on ranked stock
+        else:
+            # Lower-ranked: any positive 3m is a turnaround signal
+            if avg_r3m > 30:
+                conviction_score = 85.0
+            elif avg_r3m > 10:
+                conviction_score = 70.0
+            elif avg_r3m > 0:
+                conviction_score = 55.0
+            elif avg_r3m > -15:
+                conviction_score = 42.0
+            else:
+                conviction_score = 30.0
+    else:
+        conviction_score = 50.0  # No data — neutral, don't penalize
+
+    # ── Composite Alignment Score (3 signals) ──
+    alignment = 0.40 * dir_score + 0.30 * quality_score + 0.30 * conviction_score
     alignment = float(np.clip(alignment, 0, 100))
 
-    # ── Convert to Multiplier ──
+    # ── Convert to Multiplier (wider range: ×0.85 to ×1.12) ──
     conf_thresh = cfg['confirmed_threshold']
     div_thresh = cfg['divergent_threshold']
     max_boost = cfg['multiplier_max_boost']
@@ -966,19 +1035,19 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
 
     if alignment >= conf_thresh:
         t = (alignment - conf_thresh) / (100 - conf_thresh)
-        multiplier = 1.03 + t * (max_boost - 1.03)
+        multiplier = 1.04 + t * (max_boost - 1.04)
         label = 'PRICE_CONFIRMED'
     elif alignment >= 50:
         t = (alignment - 50) / (conf_thresh - 50)
-        multiplier = 1.00 + t * 0.03
+        multiplier = 1.00 + t * 0.04
         label = 'NEUTRAL'
     elif alignment >= div_thresh:
         t = (alignment - div_thresh) / (50 - div_thresh)
-        multiplier = 0.97 + t * 0.03
+        multiplier = 0.96 + t * 0.04
         label = 'NEUTRAL'
     else:
         t = alignment / div_thresh
-        multiplier = max_pen + t * (0.97 - max_pen)
+        multiplier = max_pen + t * (0.96 - max_pen)
         label = 'PRICE_DIVERGENT'
 
     return float(multiplier), label, float(alignment)
