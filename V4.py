@@ -2640,192 +2640,284 @@ def _render_comparison_chart(main_ticker: str, compare_tickers: list,
 # ============================================
 
 def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
-    """Render the 3-Stage Selection Funnel with visual pipeline"""
-    
-    st.markdown("### 🎯 3-Stage Selection Funnel")
-    st.markdown("*Systematic filtering: Discovery → Validation → Final Buys*")
-    
-    # ── Funnel Configuration ──
+    """3-Stage Selection Funnel — v3.0 (Clean, Minimal, Smart)"""
+
+    # ── Header ──
+    st.markdown("""
+    <div style="background:#0d1117; border-radius:14px; padding:18px 24px; margin-bottom:16px; border:1px solid #30363d;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div>
+                <span style="font-size:1.4rem; font-weight:800; color:#fff;">🎯 Selection Funnel</span>
+                <div style="color:#8b949e; font-size:0.85rem; margin-top:2px;">Systematic filtering: Discovery → Validation → Final Buys</div>
+            </div>
+            <div style="display:flex; gap:6px;">
+                <span style="background:#58a6ff22; color:#58a6ff; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #58a6ff44;">Stage 1: Score + Pattern</span>
+                <span style="background:#d2992222; color:#d29922; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #d2992244;">Stage 2: 5-Rule Engine</span>
+                <span style="background:#3fb95022; color:#3fb950; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #3fb95044;">Stage 3: Final Filter</span>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Configuration (compact inline) ──
     with st.expander("⚙️ Funnel Configuration", expanded=False):
         fc1, fc2, fc3 = st.columns(3)
         with fc1:
-            st.markdown("**Stage 1: Discovery**")
-            s1_score = st.number_input("Min Trajectory Score", 30, 100, FUNNEL_DEFAULTS['stage1_score'], key='f_s1')
+            st.markdown('<div style="color:#58a6ff; font-weight:700; font-size:0.85rem; margin-bottom:4px;">Stage 1 — Discovery</div>', unsafe_allow_html=True)
+            s1_score = st.number_input("Min T-Score", 30, 100, FUNNEL_DEFAULTS['stage1_score'], key='f_s1')
             s1_patterns = st.multiselect(
-                "Include Patterns (OR condition)",
+                "Include Patterns",
                 ['rocket', 'breakout', 'momentum_building', 'stable_elite', 'at_peak', 'steady_climber', 'recovery'],
                 default=FUNNEL_DEFAULTS['stage1_patterns'], key='f_s1_pat'
             )
         with fc2:
-            st.markdown("**Stage 2: Validation**")
+            st.markdown('<div style="color:#d29922; font-weight:700; font-size:0.85rem; margin-bottom:4px;">Stage 2 — Validation</div>', unsafe_allow_html=True)
             s2_tq = st.number_input("Min Trend Quality", 30, 100, FUNNEL_DEFAULTS['stage2_tq'], key='f_s2_tq')
             s2_ms = st.number_input("Min Master Score", 20, 100, FUNNEL_DEFAULTS['stage2_master_score'], key='f_s2_ms')
             s2_rules = st.number_input("Min Rules (of 5)", 2, 5, FUNNEL_DEFAULTS['stage2_min_rules'], key='f_s2_r')
         with fc3:
-            st.markdown("**Stage 3: Final Filter**")
+            st.markdown('<div style="color:#3fb950; font-weight:700; font-size:0.85rem; margin-bottom:4px;">Stage 3 — Final</div>', unsafe_allow_html=True)
             s3_tq = st.number_input("Min TQ (strict)", 50, 100, FUNNEL_DEFAULTS['stage3_tq'], key='f_s3_tq')
             s3_leader = st.checkbox("Require Leader Pattern", FUNNEL_DEFAULTS['stage3_require_leader'], key='f_s3_l')
             s3_dt = st.number_input("No DOWNTREND (weeks)", 1, 10, FUNNEL_DEFAULTS['stage3_no_downtrend_weeks'], key='f_s3_dt')
-    
+
     funnel_config = {
         'stage1_score': s1_score, 'stage1_patterns': s1_patterns,
         'stage2_tq': s2_tq, 'stage2_master_score': s2_ms, 'stage2_min_rules': s2_rules,
         'stage3_tq': s3_tq, 'stage3_require_leader': s3_leader, 'stage3_no_downtrend_weeks': s3_dt
     }
-    
-    # Execute funnel
+
+    # ── Execute Funnel ──
     stage1, stage2, stage3 = run_funnel(traj_df, histories, funnel_config)
-    
+
+    total = len(traj_df)
     s1_count = len(stage1)
-    s2_total = len(stage2)
     s2_pass = len(stage2[stage2['s2_pass']]) if not stage2.empty and 's2_pass' in stage2.columns else 0
-    s3_total = len(stage3)
     s3_pass = len(stage3[stage3['final_pass']]) if not stage3.empty and 'final_pass' in stage3.columns else 0
-    
-    # ── Visual Funnel Chart ──
-    st.markdown("---")
-    
-    fig_funnel = go.Figure(go.Funnel(
-        y=['📊 All Stocks', '🔍 Stage 1: Discovery', '✅ Stage 2: Validated', '🏆 Stage 3: Final Buys'],
-        x=[len(traj_df), s1_count, s2_pass, s3_pass],
-        textinfo='value+percent initial',
-        textposition='inside',
-        marker=dict(
-            color=['#555555', '#2196F3', '#FF9800', '#00C853'],
-            line=dict(width=2, color='#333')
-        ),
-        connector=dict(line=dict(color='#444', width=2))
-    ))
-    fig_funnel.update_layout(
-        title="Selection Funnel Pipeline",
-        height=350,
-        template='plotly_dark',
-        margin=dict(t=50, b=20, l=20, r=20),
-        font=dict(size=14)
-    )
-    st.plotly_chart(fig_funnel, use_container_width=True)
-    
-    # ── Funnel Stats ──
-    ks1, ks2, ks3, ks4 = st.columns(4)
-    with ks1:
-        st.markdown(f"""<div class="funnel-stat">
-            <div class="funnel-stat-value" style="color:#2196F3;">{s1_count}</div>
-            <div class="funnel-stat-label">Stage 1 Discovery</div></div>""", unsafe_allow_html=True)
-    with ks2:
-        rate = round(s2_pass / max(s1_count, 1) * 100, 1)
-        st.markdown(f"""<div class="funnel-stat">
-            <div class="funnel-stat-value" style="color:#FF9800;">{s2_pass}</div>
-            <div class="funnel-stat-label">Stage 2 Validated ({rate}%)</div></div>""", unsafe_allow_html=True)
-    with ks3:
-        rate3 = round(s3_pass / max(s2_pass, 1) * 100, 1)
-        st.markdown(f"""<div class="funnel-stat">
-            <div class="funnel-stat-value" style="color:#00C853;">{s3_pass}</div>
-            <div class="funnel-stat-label">Stage 3 Final ({rate3}%)</div></div>""", unsafe_allow_html=True)
-    with ks4:
-        overall = round(s3_pass / max(len(traj_df), 1) * 100, 2)
-        st.markdown(f"""<div class="funnel-stat">
-            <div class="funnel-stat-value" style="color:#FFD700;">{overall}%</div>
-            <div class="funnel-stat-label">Selection Rate</div></div>""", unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    # ── STAGE 3: FINAL BUYS (Show First — Most Important) ──
-    st.markdown("### 🏆 FINAL BUYS — Stage 3 Passed")
-    if s3_pass > 0:
-        final_buys = stage3[stage3['final_pass']].copy()
-        for idx, row in final_buys.iterrows():
-            h = histories.get(row['ticker'], {})
-            pats = row.get('latest_pats', '')
-            # Truncate patterns for display
-            display_pats = pats[:120] + '...' if len(pats) > 120 else pats
-            
-            st.markdown(f"""
-            <div class="final-buy-card">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-                    <div>
-                        <h3 style="margin:0; color:#00C853;">🏆 {row['ticker']}</h3>
-                        <p style="margin:2px 0; color:#ccc;">{row.get('company_name', '')}</p>
-                        <p style="margin:0; color:#888;">{row.get('category', '')} • {row.get('sector', '')}</p>
+
+    # ── Pipeline Metrics Strip ──
+    s1_pct = round(s1_count / max(total, 1) * 100, 1)
+    s2_pct = round(s2_pass / max(s1_count, 1) * 100, 1)
+    s3_pct = round(s3_pass / max(s2_pass, 1) * 100, 1)
+    overall_pct = round(s3_pass / max(total, 1) * 100, 2)
+
+    pipeline_items = [
+        ('📊 Universe', f'{total:,}', '100%', '#8b949e'),
+        ('🔍 Discovery', f'{s1_count}', f'{s1_pct}%', '#58a6ff'),
+        ('✅ Validated', f'{s2_pass}', f'{s2_pct}% pass', '#d29922'),
+        ('🏆 Final Buys', f'{s3_pass}', f'{s3_pct}% pass', '#3fb950'),
+        ('📌 Selection', f'{overall_pct}%', 'of universe', '#FFD700'),
+    ]
+    pipe_html = ''.join([
+        f'<div class="m-chip">'
+        f'<div style="font-size:0.6rem;color:#8b949e;text-transform:uppercase;">{label}</div>'
+        f'<div style="font-size:1.3rem;font-weight:800;color:{color};">{val}</div>'
+        f'<div style="font-size:0.6rem;color:#6e7681;">{sub}</div>'
+        f'</div>'
+        for label, val, sub, color in pipeline_items
+    ])
+    st.markdown(f'<div class="m-strip">{pipe_html}</div>', unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Visual Funnel Diagram ──
+    fc_left, fc_right = st.columns([2, 3])
+
+    with fc_left:
+        fig_funnel = go.Figure(go.Funnel(
+            y=['Universe', 'Stage 1', 'Stage 2', 'Final Buys'],
+            x=[total, s1_count, s2_pass, s3_pass],
+            textinfo='value+percent initial',
+            textposition='inside',
+            textfont=dict(size=13),
+            marker=dict(
+                color=['#30363d', '#58a6ff', '#d29922', '#3fb950'],
+                line=dict(width=1, color='#21262d')
+            ),
+            connector=dict(line=dict(color='#30363d', width=1))
+        ))
+        fig_funnel.update_layout(
+            height=300,
+            template='plotly_dark',
+            margin=dict(t=10, b=10, l=10, r=10),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(size=12),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_funnel, use_container_width=True)
+
+    with fc_right:
+        # Stage flow breakdown
+        st.markdown(f"""
+        <div style="background:#161b22; border-radius:12px; padding:16px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:12px;">Pipeline Flow</div>
+
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                <div style="width:8px; height:8px; border-radius:50%; background:#58a6ff;"></div>
+                <div style="flex:1;">
+                    <div style="display:flex; justify-content:space-between;">
+                        <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 1 — Discovery</span>
+                        <span style="color:#58a6ff; font-weight:700;">{s1_count} stocks</span>
                     </div>
-                    <div style="text-align:right;">
-                        <div style="font-size:2rem; font-weight:800; color:#00C853;">{row['trajectory_score']:.1f}</div>
-                        <div style="color:#aaa; font-size:0.8rem;">T-SCORE</div>
-                        <div style="color:#FFD700; font-size:1.1rem;">Rank #{row['current_rank']}</div>
+                    <div style="color:#6e7681; font-size:0.75rem;">T-Score ≥ {s1_score} OR pattern ∈ {{{', '.join(s1_patterns[:3])}{'...' if len(s1_patterns) > 3 else ''}}}</div>
+                    <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
+                        <div style="background:#58a6ff; height:6px; border-radius:4px; width:{min(s1_pct, 100)}%;"></div>
                     </div>
-                </div>
-                <div style="margin-top:10px; padding-top:10px; border-top:1px solid #2a5a2a;">
-                    <span style="color:#aaa; font-size:0.85rem;">
-                        TQ: {row.get('latest_tq', 0):.0f} | 
-                        TMI: {row['tmi']:.0f} | 
-                        Grade: {row['grade_emoji']} {row['grade']} | 
-                        Pattern: {row['pattern']} |
-                        Rules: {row.get('rules_passed', 0)}/5
-                    </span>
-                </div>
-                <div style="margin-top:5px;">
-                    <span style="color:#777; font-size:0.8rem;">{display_pats}</span>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
-        
-        # Final buys table
-        if len(final_buys) > 0:
-            fb_cols = ['ticker', 'company_name', 'category', 'trajectory_score', 'grade',
-                       'pattern', 'tmi', 'current_rank', 'best_rank', 'rank_change',
-                       'positional', 'trend', 'latest_tq', 'rules_passed']
-            fb_display = final_buys[[c for c in fb_cols if c in final_buys.columns]].copy()
-            fb_display.columns = [c.replace('_', ' ').title() for c in fb_display.columns]
-            st.dataframe(fb_display, hide_index=True, use_container_width=True)
+
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                <div style="width:8px; height:8px; border-radius:50%; background:#d29922;"></div>
+                <div style="flex:1;">
+                    <div style="display:flex; justify-content:space-between;">
+                        <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 2 — Validation</span>
+                        <span style="color:#d29922; font-weight:700;">{s2_pass} passed</span>
+                    </div>
+                    <div style="color:#6e7681; font-size:0.75rem;">5 rules: TQ≥{s2_tq} | No Downtrend | MS≥{s2_ms} | Δ≥-20 | Volume — need {s2_rules}/5</div>
+                    <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
+                        <div style="background:#d29922; height:6px; border-radius:4px; width:{min(s2_pct, 100)}%;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:8px; height:8px; border-radius:50%; background:#3fb950;"></div>
+                <div style="flex:1;">
+                    <div style="display:flex; justify-content:space-between;">
+                        <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 3 — Final Buys</span>
+                        <span style="color:#3fb950; font-weight:700;">{s3_pass} selected</span>
+                    </div>
+                    <div style="color:#6e7681; font-size:0.75rem;">TQ≥{s3_tq} | {'Leader required' if s3_leader else 'Leader optional'} | No downtrend last {s3_dt}w</div>
+                    <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
+                        <div style="background:#3fb950; height:6px; border-radius:4px; width:{min(s3_pct, 100)}%;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ══════════════════════════════════════════
+    # FINAL BUYS — Most Important, Shown First
+    # ══════════════════════════════════════════
+    st.markdown('<div class="sec-head">🏆 Final Buys</div>', unsafe_allow_html=True)
+
+    if s3_pass > 0:
+        final_buys = stage3[stage3['final_pass']].copy().reset_index(drop=True)
+
+        # Card grid — 2 per row
+        for i in range(0, len(final_buys), 2):
+            cols = st.columns(2)
+            for j, col in enumerate(cols):
+                if i + j >= len(final_buys):
+                    break
+                r = final_buys.iloc[i + j]
+                h = histories.get(r['ticker'], {})
+                latest_price = h['prices'][-1] if h.get('prices') else 0
+                p_key = r.get('pattern_key', 'neutral')
+                p_emoji, p_name, _ = PATTERN_DEFS.get(p_key, ('➖', 'Neutral', ''))
+                p_color = PATTERN_COLORS.get(p_key, '#8b949e')
+                grade_color = {'S': '#FFD700', 'A': '#3fb950', 'B': '#58a6ff', 'C': '#d29922', 'D': '#FF5722', 'F': '#f85149'}.get(r['grade'], '#888')
+
+                with col:
+                    st.markdown(f"""
+                    <div class="final-buy-card">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                            <div>
+                                <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
+                                    <span style="font-size:1.15rem; font-weight:800; color:#3fb950;">{r['ticker']}</span>
+                                    <span style="background:{p_color}22; color:{p_color}; padding:2px 8px; border-radius:10px; font-size:0.68rem; border:1px solid {p_color}44;">{p_emoji} {p_name}</span>
+                                </div>
+                                <div style="color:#8b949e; font-size:0.8rem;">{r.get('company_name', '')[:35]}</div>
+                                <div style="color:#484f58; font-size:0.7rem;">{r.get('category', '')} • {r.get('sector', '')}</div>
+                            </div>
+                            <div style="text-align:right;">
+                                <div style="font-size:1.5rem; font-weight:800; color:#FF6B35;">{r['trajectory_score']:.1f}</div>
+                                <div style="font-size:0.6rem; color:#8b949e;">T-SCORE</div>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:14px; margin-top:10px; padding-top:8px; border-top:1px solid #21262d;">
+                            <div><span style="color:#6e7681; font-size:0.7rem;">Rank</span><br><span style="color:#e6edf3; font-weight:700;">#{r['current_rank']}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.7rem;">Grade</span><br><span style="color:{grade_color}; font-weight:700;">{r['grade_emoji']} {r['grade']}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.7rem;">TMI</span><br><span style="color:#e6edf3; font-weight:700;">{r['tmi']:.0f}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.7rem;">TQ</span><br><span style="color:#e6edf3; font-weight:700;">{r.get('latest_tq', 0):.0f}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.7rem;">Rules</span><br><span style="color:#3fb950; font-weight:700;">{r.get('rules_passed', 0)}/5</span></div>
+                            <div><span style="color:#6e7681; font-size:0.7rem;">Price</span><br><span style="color:#e6edf3; font-weight:700;">₹{latest_price:,.1f}</span></div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+        # Summary table
+        st.markdown("")
+        fb_cols = ['ticker', 'company_name', 'category', 'trajectory_score', 'grade',
+                   'pattern', 'tmi', 'current_rank', 'best_rank', 'rank_change',
+                   'latest_tq', 'rules_passed']
+        fb_display = final_buys[[c for c in fb_cols if c in final_buys.columns]].copy()
+        fb_display.columns = [c.replace('_', ' ').title() for c in fb_display.columns]
+        st.dataframe(fb_display, column_config={
+            'Trajectory Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
+        }, hide_index=True, use_container_width=True)
     else:
-        st.warning("⚠️ No stocks passed all 3 stages. Try relaxing Stage 3 criteria in the config above.")
-    
-    st.markdown("---")
-    
-    # ── STAGE 2: Validation Details ──
-    with st.expander(f"✅ Stage 2: Validation Results ({s2_pass} passed / {s2_total} tested)", expanded=False):
+        st.markdown("""
+        <div style="background:#161b22; border-radius:10px; padding:24px; text-align:center; border:1px solid #30363d;">
+            <div style="font-size:1.3rem; margin-bottom:6px;">🔍</div>
+            <div style="color:#8b949e; font-size:0.9rem;">No stocks passed all 3 stages</div>
+            <div style="color:#484f58; font-size:0.8rem; margin-top:4px;">Try relaxing Stage 3 criteria in the config above</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ══════════════════════════════════════════
+    # STAGE 2: Validation Detail
+    # ══════════════════════════════════════════
+    with st.expander(f"✅ Stage 2 — Validation ({s2_pass} passed / {len(stage2) if not stage2.empty else 0} tested)", expanded=False):
         if not stage2.empty:
-            st.markdown("**5 Rules:** TQ≥{} | Not DOWNTREND | MS≥{} | Rank Δ≥-20 | Volume Pattern".format(s2_tq, s2_ms))
-            
-            s2_display_cols = ['ticker', 'company_name', 'trajectory_score', 'rules_passed', 
+            st.markdown(f'<div style="color:#6e7681; font-size:0.8rem; margin-bottom:8px;">5 Rules: TQ≥{s2_tq} | Not DOWNTREND | MS≥{s2_ms} | Δ≥-20 | Volume — need {s2_rules}/5</div>', unsafe_allow_html=True)
+            s2_display_cols = ['ticker', 'company_name', 'trajectory_score', 'rules_passed',
                                's2_pass', 'rules_detail', 'pattern', 'current_rank']
             s2_display = stage2[[c for c in s2_display_cols if c in stage2.columns]].copy()
             s2_display.columns = ['Ticker', 'Company', 'T-Score', 'Rules', 'Pass', 'Detail', 'Pattern', 'Rank']
             s2_display['Company'] = s2_display['Company'].str[:30]
-            
             st.dataframe(s2_display, column_config={
                 'Pass': st.column_config.CheckboxColumn('Pass'),
                 'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
             }, hide_index=True, use_container_width=True, height=400)
         else:
-            st.info("No stocks entered Stage 2")
-    
-    # ── STAGE 1: Discovery ──
-    with st.expander(f"🔍 Stage 1: Discovery ({s1_count} candidates)", expanded=False):
+            st.caption("No stocks entered Stage 2")
+
+    # ══════════════════════════════════════════
+    # STAGE 1: Discovery
+    # ══════════════════════════════════════════
+    with st.expander(f"🔍 Stage 1 — Discovery ({s1_count} candidates)", expanded=False):
         if not stage1.empty:
-            s1_cols = ['ticker', 'company_name', 'category', 'trajectory_score', 
-                       'grade', 'pattern', 'tmi', 'current_rank', 'positional']
+            s1_cols = ['ticker', 'company_name', 'category', 'trajectory_score',
+                       'grade', 'pattern', 'tmi', 'current_rank']
             s1_display = stage1[[c for c in s1_cols if c in stage1.columns]].head(100).copy()
-            s1_display.columns = ['Ticker', 'Company', 'Category', 'T-Score', 
-                                  'Grade', 'Pattern', 'TMI', 'Rank', 'Positional']
-            s1_display['Company'] = s1_display['Company'].str[:30]
+            s1_display.columns = [c.replace('_', ' ').title() for c in s1_display.columns]
             st.dataframe(s1_display, column_config={
-                'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-                'TMI': st.column_config.ProgressColumn('TMI', min_value=0, max_value=100, format="%.0f"),
-                'Positional': st.column_config.ProgressColumn('Positional', min_value=0, max_value=100, format="%.0f"),
+                'Trajectory Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
+                'Tmi': st.column_config.ProgressColumn('TMI', min_value=0, max_value=100, format="%.0f"),
             }, hide_index=True, use_container_width=True, height=400)
         else:
-            st.info("No stocks passed Stage 1 discovery threshold")
-    
-    # ── Stage 3 Failures (near misses) ──
+            st.caption("No stocks passed Stage 1")
+
+    # ══════════════════════════════════════════
+    # NEAR MISSES
+    # ══════════════════════════════════════════
     if not stage3.empty:
         near_misses = stage3[~stage3['final_pass']].copy()
         if len(near_misses) > 0:
-            with st.expander(f"📋 Stage 3 Near Misses ({len(near_misses)} stocks — passed Stage 2 but failed Stage 3)", expanded=False):
+            with st.expander(f"📋 Near Misses — {len(near_misses)} stocks passed Stage 2 but failed Stage 3", expanded=False):
                 nm_cols = ['ticker', 'company_name', 'trajectory_score', 's3_detail', 'latest_tq', 'current_rank']
                 nm_display = near_misses[[c for c in nm_cols if c in near_misses.columns]].copy()
-                nm_display.columns = ['Ticker', 'Company', 'T-Score', 'Stage 3 Detail', 'TQ', 'Rank']
+                nm_display.columns = ['Ticker', 'Company', 'T-Score', 'S3 Detail', 'TQ', 'Rank']
                 nm_display['Company'] = nm_display['Company'].str[:30]
-                st.dataframe(nm_display, hide_index=True, use_container_width=True)
+                st.dataframe(nm_display, column_config={
+                    'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
+                }, hide_index=True, use_container_width=True)
 
 
 # ============================================
