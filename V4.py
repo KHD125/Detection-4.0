@@ -2150,12 +2150,17 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
 # UI: SEARCH TAB
 # ============================================
 
-def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
-    """Search & Analyse — v3.0 (Price Trajectory, Pro Rank, Latest Price, Clean UI)"""
+def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, histories: dict, dates_iso: list):
+    """Search & Analyse — v3.0 (Price Trajectory, Pro Rank, Latest Price, Clean UI)
 
-    # ── Search Input ──
+    Args:
+        filtered_df: Category/sector-filtered stocks (for dropdown).
+        traj_df:     Full unfiltered data (for Pro Rank against universe).
+    """
+
+    # ── Search Input — dropdown shows only filtered stocks ──
     label_map = {}
-    for _, row in traj_df.iterrows():
+    for _, row in filtered_df.iterrows():
         label_map[f"{row['ticker']} — {row['company_name'][:35]}"] = row['ticker']
     labels = sorted(label_map.keys())
 
@@ -2169,7 +2174,7 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
         return
 
     ticker = label_map[selected_label]
-    row = traj_df[traj_df['ticker'] == ticker].iloc[0]
+    row = filtered_df[filtered_df['ticker'] == ticker].iloc[0]
     h = histories.get(ticker, {})
     if not h:
         st.warning("No history data available for this ticker")
@@ -2179,8 +2184,7 @@ def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
     latest_price = h['prices'][-1] if h.get('prices') else 0
     pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
     total_stocks = h['total_per_week'][-1] if h.get('total_per_week') else 0
-    pro_rank = int(traj_df[traj_df['ticker'] == ticker].index[0]) + 1 if ticker in traj_df['ticker'].values else 0
-    # Re-compute pro_rank based on T-Score sort
+    # Pro Rank = rank within full universe (all stocks, not filtered)
     sorted_df = traj_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
     pro_rank_idx = sorted_df[sorted_df['ticker'] == ticker].index
     pro_rank = int(pro_rank_idx[0]) + 1 if len(pro_rank_idx) > 0 else 0
@@ -2649,8 +2653,13 @@ def _render_comparison_chart(main_ticker: str, compare_tickers: list,
 # UI: FUNNEL TAB (3-Stage Selection System)
 # ============================================
 
-def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
-    """3-Stage Selection Funnel — v3.0 (Clean, Minimal, Smart)"""
+def render_funnel_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, histories: dict, metadata: dict):
+    """3-Stage Selection Funnel — v3.0 (Clean, Minimal, Smart)
+
+    Args:
+        filtered_df: Category/sector-filtered stocks (funnel input).
+        traj_df:     Full unfiltered data (for total universe count).
+    """
 
     # ── Header ──
     st.markdown("""
@@ -2697,10 +2706,10 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
         'stage3_tq': s3_tq, 'stage3_require_leader': s3_leader, 'stage3_no_downtrend_weeks': s3_dt
     }
 
-    # ── Execute Funnel ──
-    stage1, stage2, stage3 = run_funnel(traj_df, histories, funnel_config)
+    # ── Execute Funnel (on filtered stocks) ──
+    stage1, stage2, stage3 = run_funnel(filtered_df, histories, funnel_config)
 
-    total = len(traj_df)
+    total = len(filtered_df)
     s1_count = len(stage1)
     s2_pass = len(stage2[stage2['s2_pass']]) if not stage2.empty and 's2_pass' in stage2.columns else 0
     s3_pass = len(stage3[stage3['final_pass']]) if not stage3.empty and 'final_pass' in stage3.columns else 0
@@ -3707,10 +3716,10 @@ def main():
         render_rankings_tab(filtered_df, traj_df, histories, metadata)
 
     with tab_search:
-        render_search_tab(traj_df, histories, dates_iso)
+        render_search_tab(filtered_df, traj_df, histories, dates_iso)
 
     with tab_funnel:
-        render_funnel_tab(traj_df, histories, metadata)
+        render_funnel_tab(filtered_df, traj_df, histories, metadata)
 
     with tab_alerts:
         render_alerts_tab(filtered_df, histories)
