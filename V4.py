@@ -2748,58 +2748,43 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
         st.plotly_chart(fig_funnel, use_container_width=True)
 
     with fc_right:
-        # Stage flow breakdown — built as separate calls for reliability
-        st.markdown('<div style="background:#161b22; border-radius:12px; padding:16px; border:1px solid #30363d;">', unsafe_allow_html=True)
-        st.markdown('<div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:12px;">Pipeline Flow</div>', unsafe_allow_html=True)
-
+        # Stage flow breakdown — single self-contained HTML block
         pat_list = ', '.join(s1_patterns[:3]) + ('...' if len(s1_patterns) > 3 else '')
         s1_bar_w = min(s1_pct, 100)
-        st.markdown(f"""<div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+        s2_bar_w = min(s2_pct, 100)
+        s3_bar_w = min(s3_pct, 100)
+        leader_text = 'Leader required' if s3_leader else 'Leader optional'
+
+        flow_html = f"""
+        <div style="background:#161b22; border-radius:12px; padding:16px; border:1px solid #30363d;">
+        <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:12px;">Pipeline Flow</div>
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
             <div style="width:8px; height:8px; border-radius:50%; background:#58a6ff; flex-shrink:0;"></div>
             <div style="flex:1;">
-                <div style="display:flex; justify-content:space-between;">
-                    <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 1 — Discovery</span>
-                    <span style="color:#58a6ff; font-weight:700;">{s1_count} stocks</span>
-                </div>
-                <div style="color:#6e7681; font-size:0.75rem;">T-Score ≥ {s1_score} OR pattern in [{pat_list}]</div>
-                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
-                    <div style="background:#58a6ff; height:6px; border-radius:4px; width:{s1_bar_w}%;"></div>
-                </div>
+                <div style="display:flex; justify-content:space-between;"><span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 1 — Discovery</span><span style="color:#58a6ff; font-weight:700;">{s1_count} stocks</span></div>
+                <div style="color:#6e7681; font-size:0.75rem; margin-top:2px;">T-Score ≥ {s1_score} OR pattern in [{pat_list}]</div>
+                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;"><div style="background:#58a6ff; height:6px; border-radius:4px; width:{s1_bar_w}%;"></div></div>
             </div>
-        </div>""", unsafe_allow_html=True)
-
-        s2_bar_w = min(s2_pct, 100)
-        leader_text = 'Leader required' if s3_leader else 'Leader optional'
-        st.markdown(f"""<div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
             <div style="width:8px; height:8px; border-radius:50%; background:#d29922; flex-shrink:0;"></div>
             <div style="flex:1;">
-                <div style="display:flex; justify-content:space-between;">
-                    <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 2 — Validation</span>
-                    <span style="color:#d29922; font-weight:700;">{s2_pass} passed</span>
-                </div>
-                <div style="color:#6e7681; font-size:0.75rem;">5 rules: TQ≥{s2_tq} | No Downtrend | MS≥{s2_ms} | Δ≥-20 | Volume — need {s2_rules}/5</div>
-                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
-                    <div style="background:#d29922; height:6px; border-radius:4px; width:{s2_bar_w}%;"></div>
-                </div>
+                <div style="display:flex; justify-content:space-between;"><span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 2 — Validation</span><span style="color:#d29922; font-weight:700;">{s2_pass} passed</span></div>
+                <div style="color:#6e7681; font-size:0.75rem; margin-top:2px;">5 rules: TQ≥{s2_tq} | No Downtrend | MS≥{s2_ms} | Δ≥-20 | Vol — need {s2_rules}/5</div>
+                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;"><div style="background:#d29922; height:6px; border-radius:4px; width:{s2_bar_w}%;"></div></div>
             </div>
-        </div>""", unsafe_allow_html=True)
-
-        s3_bar_w = min(s3_pct, 100)
-        st.markdown(f"""<div style="display:flex; align-items:center; gap:10px;">
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
             <div style="width:8px; height:8px; border-radius:50%; background:#3fb950; flex-shrink:0;"></div>
             <div style="flex:1;">
-                <div style="display:flex; justify-content:space-between;">
-                    <span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 3 — Final Buys</span>
-                    <span style="color:#3fb950; font-weight:700;">{s3_pass} selected</span>
-                </div>
-                <div style="color:#6e7681; font-size:0.75rem;">TQ≥{s3_tq} | {leader_text} | No downtrend last {s3_dt}w</div>
-                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;">
-                    <div style="background:#3fb950; height:6px; border-radius:4px; width:{s3_bar_w}%;"></div>
-                </div>
+                <div style="display:flex; justify-content:space-between;"><span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 3 — Final Buys</span><span style="color:#3fb950; font-weight:700;">{s3_pass} selected</span></div>
+                <div style="color:#6e7681; font-size:0.75rem; margin-top:2px;">TQ≥{s3_tq} | {leader_text} | No downtrend last {s3_dt}w</div>
+                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;"><div style="background:#3fb950; height:6px; border-radius:4px; width:{s3_bar_w}%;"></div></div>
             </div>
-        </div>""", unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
+        </div>
+        </div>
+        """
+        st.markdown(flow_html, unsafe_allow_html=True)
 
     st.markdown("")
 
@@ -2810,6 +2795,11 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
 
     if s3_pass > 0:
         final_buys = stage3[stage3['final_pass']].copy().reset_index(drop=True)
+
+        # Precompute Pro Rank map (T-Score sorted)
+        pro_rank_sorted = traj_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
+        pro_rank_map = {t: i + 1 for i, t in enumerate(pro_rank_sorted['ticker'])}
+        total_stocks = len(pro_rank_sorted)
 
         # Card grid — 2 per row
         for i in range(0, len(final_buys), 2):
@@ -2824,6 +2814,7 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
                 p_emoji, p_name, _ = PATTERN_DEFS.get(p_key, ('➖', 'Neutral', ''))
                 p_color = PATTERN_COLORS.get(p_key, '#8b949e')
                 grade_color = {'S': '#FFD700', 'A': '#3fb950', 'B': '#58a6ff', 'C': '#d29922', 'D': '#FF5722', 'F': '#f85149'}.get(r['grade'], '#888')
+                pro_rank = pro_rank_map.get(r['ticker'], 0)
 
                 with col:
                     st.markdown(f"""
@@ -2842,13 +2833,14 @@ def render_funnel_tab(traj_df: pd.DataFrame, histories: dict, metadata: dict):
                                 <div style="font-size:0.6rem; color:#8b949e;">T-SCORE</div>
                             </div>
                         </div>
-                        <div style="display:flex; gap:14px; margin-top:10px; padding-top:8px; border-top:1px solid #21262d;">
-                            <div><span style="color:#6e7681; font-size:0.7rem;">Rank</span><br><span style="color:#e6edf3; font-weight:700;">#{r['current_rank']}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.7rem;">Grade</span><br><span style="color:{grade_color}; font-weight:700;">{r['grade_emoji']} {r['grade']}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.7rem;">TMI</span><br><span style="color:#e6edf3; font-weight:700;">{r['tmi']:.0f}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.7rem;">TQ</span><br><span style="color:#e6edf3; font-weight:700;">{r.get('latest_tq', 0):.0f}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.7rem;">Rules</span><br><span style="color:#3fb950; font-weight:700;">{r.get('rules_passed', 0)}/5</span></div>
-                            <div><span style="color:#6e7681; font-size:0.7rem;">Price</span><br><span style="color:#e6edf3; font-weight:700;">₹{latest_price:,.1f}</span></div>
+                        <div style="display:flex; gap:12px; margin-top:10px; padding-top:8px; border-top:1px solid #21262d; flex-wrap:wrap;">
+                            <div><span style="color:#6e7681; font-size:0.65rem;">Pro Rank</span><br><span style="color:#58a6ff; font-weight:700;">#{pro_rank}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.65rem;">Rank</span><br><span style="color:#e6edf3; font-weight:700;">#{r['current_rank']}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.65rem;">Grade</span><br><span style="color:{grade_color}; font-weight:700;">{r['grade_emoji']} {r['grade']}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.65rem;">TMI</span><br><span style="color:#e6edf3; font-weight:700;">{r['tmi']:.0f}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.65rem;">TQ</span><br><span style="color:#e6edf3; font-weight:700;">{r.get('latest_tq', 0):.0f}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.65rem;">Rules</span><br><span style="color:#3fb950; font-weight:700;">{r.get('rules_passed', 0)}/5</span></div>
+                            <div><span style="color:#6e7681; font-size:0.65rem;">Price</span><br><span style="color:#e6edf3; font-weight:700;">₹{latest_price:,.1f}</span></div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
