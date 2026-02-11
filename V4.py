@@ -1,1578 +1,1521 @@
 """
-WAVE Analyzer — System Intelligence Engine
-═══════════════════════════════════════════
-Companion to WAVE DETECTION 3.0.
-Takes weekly CSV snapshots → adds the TIME dimension your scoring system lacks.
+Rank Trajectory Engine 1.0
+=================================================================
+Professional Stock Rank Trajectory Analysis System
 
-Answers: "Does my scoring system predict future gains? Which signals work?
-          What should I buy THIS week? How should I size and exit?"
+Tracks rank evolution across weekly snapshots and identifies
+stocks with the strongest trajectory momentum using a
+5-component scoring system.
 
-pip install streamlit pandas numpy plotly scipy
-streamlit run wave_analyzer.py
+Components: Trend (30%) | Velocity (25%) | Acceleration (15%)
+            Consistency (15%) | Resilience (15%)
+
+Patterns: Rocket | Breakout | Stable Elite | At Peak |
+          Steady Climber | Recovery | Fading | Volatile |
+          New Entry | Stagnant
+
+Version: 1.0.0
+Last Updated: February 2026
 """
 
-# ═══════════════════════════════════════════
-#  IMPORTS
-# ═══════════════════════════════════════════
+# ============================================
+# STREAMLIT CONFIG - Must be first
+# ============================================
 import os
 os.environ['STREAMLIT_SERVER_FILE_WATCHER_TYPE'] = 'none'
 
 import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from scipy import stats
-from collections import defaultdict
-import re
-import warnings
-from datetime import datetime
-
-warnings.filterwarnings('ignore')
-np.seterr(all='ignore')
-
-# ═══════════════════════════════════════════
-#  PAGE CONFIG & STYLING
-# ═══════════════════════════════════════════
 st.set_page_config(
-    page_title="WAVE Analyzer",
-    page_icon="🌊",
+    page_title="Rank Trajectory Engine",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# ============================================
+# IMPORTS
+# ============================================
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+from datetime import datetime
+import re
+import warnings
+import logging
+from typing import Dict, List, Tuple, Optional, Any
+from io import BytesIO
+
+warnings.filterwarnings('ignore')
+np.seterr(all='ignore')
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+logger = logging.getLogger(__name__)
+
+# ============================================
+# CONFIGURATION
+# ============================================
+
+CSV_DIR = "CSV"
+MIN_WEEKS_DEFAULT = 3
+MAX_DISPLAY_DEFAULT = 100
+
+# Trajectory Score Weights (total = 1.0)
+WEIGHTS = {
+    'trend': 0.30,
+    'velocity': 0.25,
+    'acceleration': 0.15,
+    'consistency': 0.15,
+    'resilience': 0.15
+}
+
+# Grade definitions: (min_score, label, emoji)
+GRADE_DEFS = [
+    (85, 'S', '🏆'), (70, 'A', '🥇'), (55, 'B', '🥈'),
+    (40, 'C', '🥉'), (25, 'D', '📊'), (0, 'F', '📉')
+]
+
+GRADE_COLORS = {
+    'S': '#FFD700', 'A': '#00C853', 'B': '#2196F3',
+    'C': '#FF9800', 'D': '#FF5722', 'F': '#F44336'
+}
+
+# Pattern definitions: key -> (emoji, name, description)
+PATTERN_DEFS = {
+    'rocket':         ('🚀', 'Rocket',         'Rapid strong improvement across all dimensions'),
+    'breakout':       ('⚡', 'Breakout',        'Sudden significant rank jump beyond normal variance'),
+    'stable_elite':   ('🎯', 'Stable Elite',    'Consistently top-ranked with low volatility'),
+    'at_peak':        ('🏔️', 'At Peak',         'Currently at or near all-time best rank'),
+    'steady_climber': ('📈', 'Steady Climber',  'Gradual but consistent rank improvement'),
+    'recovery':       ('🔄', 'Recovery',        'Bouncing back from rank deterioration'),
+    'fading':         ('📉', 'Fading',          'Rank deteriorating from recent levels'),
+    'volatile':       ('🌊', 'Volatile',        'Large and unpredictable rank swings'),
+    'new_entry':      ('💎', 'New Entry',        'Recently appeared or insufficient history'),
+    'stagnant':       ('⏸️', 'Stagnant',        'No significant rank movement')
+}
+
+PATTERN_COLORS = {
+    'rocket': '#FF4500', 'breakout': '#FFD700', 'stable_elite': '#8A2BE2',
+    'at_peak': '#FF69B4', 'steady_climber': '#32CD32', 'recovery': '#00BFFF',
+    'fading': '#808080', 'volatile': '#FF8C00', 'new_entry': '#00CED1',
+    'stagnant': '#A9A9A9'
+}
+
+# ============================================
+# CUSTOM CSS
+# ============================================
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-* { font-family: 'Inter', sans-serif; }
-.block-container { padding-top: 0.8rem; max-width: 1400px; }
-
-/* Header */
-.wave-header {
-    text-align: center; padding: 0.4rem 0 0.2rem 0;
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-    border-radius: 12px; margin-bottom: 0.8rem;
-    border: 1px solid #334155;
-}
-.wave-header h1 {
-    font-size: 1.8rem !important; font-weight: 800;
-    background: linear-gradient(90deg, #38bdf8, #818cf8, #c084fc);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    margin: 0; padding: 0;
-}
-.wave-header p { color: #94a3b8; font-size: 0.78rem; margin: 0; }
-
-/* Metrics */
-.verdict-box {
-    padding: 1rem 1.5rem; border-radius: 10px; margin: 0.8rem 0;
-    font-size: 0.95rem; font-weight: 600;
-}
-.verdict-good { background: #052e16; border: 1px solid #16a34a; color: #4ade80; }
-.verdict-mid  { background: #422006; border: 1px solid #d97706; color: #fbbf24; }
-.verdict-bad  { background: #450a0a; border: 1px solid #dc2626; color: #f87171; }
-
-.big { font-size: 2.2rem; font-weight: 800; line-height: 1; }
-.green { color: #4ade80; }
-.red { color: #f87171; }
-.amber { color: #fbbf24; }
-.blue { color: #38bdf8; }
-.muted { color: #64748b; font-size: 0.78rem; }
-.signal-stack { font-size: 0.82rem; line-height: 1.6; }
-
-/* Cards */
-.stock-card {
-    background: #0f172a; border: 1px solid #1e293b; border-radius: 10px;
-    padding: 0.8rem 1rem; margin-bottom: 0.5rem;
-}
-.stock-card:hover { border-color: #38bdf8; }
-.fresh-badge {
-    display: inline-block; padding: 2px 8px; border-radius: 6px;
-    font-size: 0.72rem; font-weight: 700;
-}
-.fresh-new { background: #065f46; color: #6ee7b7; }
-.fresh-est { background: #1e3a5f; color: #93c5fd; }
-.fresh-aging { background: #713f12; color: #fcd34d; }
-
-/* Nav */
-div[data-testid="stHorizontalBlock"] > div[data-testid="column"] { padding: 0 0.3rem; }
+    .main-header {
+        font-size: 2.5rem; font-weight: 800;
+        background: linear-gradient(90deg, #FF6B35, #004E98);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        margin-bottom: 0; line-height: 1.2;
+    }
+    .sub-header {
+        font-size: 1.05rem; color: #888; margin-top: -8px; margin-bottom: 20px;
+    }
+    .kpi-card {
+        background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
+        border-radius: 12px; padding: 20px; text-align: center;
+        border: 1px solid #333; box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+    .kpi-value { font-size: 2rem; font-weight: 700; color: #FF6B35; }
+    .kpi-label { font-size: 0.8rem; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
+    .stock-card {
+        background: linear-gradient(135deg, #1a1a2e, #16213e);
+        border-radius: 16px; padding: 25px; margin-bottom: 20px;
+        border: 1px solid #333;
+    }
+    .grade-S { color: #FFD700; font-weight: 900; font-size: 1.5rem; }
+    .grade-A { color: #00C853; font-weight: 900; font-size: 1.5rem; }
+    .grade-B { color: #2196F3; font-weight: 900; font-size: 1.5rem; }
+    .grade-C { color: #FF9800; font-weight: 900; font-size: 1.5rem; }
+    .grade-D { color: #FF5722; font-weight: 900; font-size: 1.5rem; }
+    .grade-F { color: #F44336; font-weight: 900; font-size: 1.5rem; }
+    .pattern-tag {
+        display: inline-block; padding: 4px 12px; border-radius: 15px;
+        font-size: 0.85rem; background: rgba(255,107,53,0.15); color: #FF6B35;
+        border: 1px solid rgba(255,107,53,0.3); margin: 2px;
+    }
+    .mover-up { color: #00C853; font-weight: 700; }
+    .mover-down { color: #F44336; font-weight: 700; }
+    .divider { border-top: 1px solid #333; margin: 15px 0; }
+    div[data-testid="stDataFrame"] { border-radius: 10px; overflow: hidden; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] {
+        padding: 10px 24px; font-weight: 600;
+        border-radius: 8px 8px 0 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ═══════════════════════════════════════════════════════════
-#  DATA ENGINE
-# ═══════════════════════════════════════════════════════════
+# ============================================
+# UTILITY FUNCTIONS
+# ============================================
 
-NUMERIC_COLS = [
-    'rank','master_score','position_score','volume_score','momentum_score',
-    'acceleration_score','breakout_score','rvol_score','trend_quality',
-    'price','pe','eps_current','eps_change_pct','from_low_pct','from_high_pct',
-    'ret_1d','ret_7d','ret_30d','ret_3m','ret_6m','ret_1y',
-    'rvol','vmi','money_flow_mm','position_tension','momentum_harmony',
-    'overall_market_strength'
-]
-
-SCORE_COLS = ['master_score','position_score','volume_score','momentum_score',
-              'acceleration_score','breakout_score','rvol_score','trend_quality']
-
-WAVE_WEIGHTS = {
-    'position_score': 0.27, 'volume_score': 0.23, 'momentum_score': 0.22,
-    'breakout_score': 0.18, 'rvol_score': 0.10, 'acceleration_score': 0.0
-}
-
-PATTERN_TAGS = [
-    ('CAT LEADER','cat_leader'), ('VOL EXPLOSION','vol_explosion'),
-    ('MARKET LEADER','market_leader'), ('MOMENTUM WAVE','momentum_wave'),
-    ('PREMIUM MOMENTUM','premium_momentum'), ('VELOCITY BREAKOUT','velocity_breakout'),
-    ('INSTITUTIONAL TSUNAMI','institutional_tsunami'), ('INSTITUTIONAL','institutional'),
-    ('GOLDEN CROSS','golden_cross'), ('STEALTH','stealth'),
-    ('DISTRIBUTION','distribution'), ('CAPITULATION','capitulation'),
-    ('HIGH PE','high_pe'), ('PHOENIX RISING','phoenix_rising'),
-    ('PULLBACK SUPPORT','pullback_support'), ('RANGE COMPRESS','range_compress'),
-    ('ACCELERATION','acceleration'), ('ROTATION LEADER','rotation_leader'),
-    ('GARP LEADER','garp_leader'), ('VALUE MOMENTUM','value_momentum'),
-    ('EARNINGS','earnings'), ('LIQUID LEADER','liquid_leader'),
-    ('VELOCITY SQUEEZE','velocity_squeeze'), ('RUNAWAY GAP','runaway_gap'),
-    ('PYRAMID','pyramid'), ('MOMENTUM DIVERGE','momentum_diverge'),
-    ('VACUUM','vacuum'), ('PERFECT STORM','perfect_storm'),
-    ('EXHAUSTION','exhaustion'), ('ENTROPY','entropy'),
-    ('ATOMIC DECAY','atomic_decay'), ('INFORMATION DECAY','info_decay'),
-]
-
-RANK_BUCKETS = [(1, 20, 'Top 20'), (21, 50, 'Top 21-50'), (51, 100, 'Top 51-100'),
-                (101, 200, '101-200'), (201, 500, '201-500'),
-                (501, 1000, '501-1000'), (1001, 9999, '1000+')]
-
-MARKET_STATES = ['STRONG_UPTREND','UPTREND','PULLBACK','ROTATION',
-                 'SIDEWAYS','BOUNCE','DOWNTREND','STRONG_DOWNTREND']
+def safe_div(a: float, b: float, default: float = 0.0) -> float:
+    """Safe division with zero/nan/inf protection"""
+    try:
+        if b == 0 or np.isnan(b) or np.isnan(a):
+            return default
+        result = a / b
+        return default if np.isinf(result) else result
+    except (TypeError, ValueError):
+        return default
 
 
-@st.cache_data(show_spinner=False)
-def load_weekly_csvs(uploaded_files):
-    """Parse all uploaded weekly CSVs into a unified panel."""
-    frames = []
-    file_info = []
-    for f in uploaded_files:
+def get_grade(score: float) -> Tuple[str, str]:
+    """Return (grade_letter, emoji) for a trajectory score"""
+    for threshold, label, emoji in GRADE_DEFS:
+        if score >= threshold:
+            return label, emoji
+    return 'F', '📉'
+
+
+def format_rank_change(change: int) -> str:
+    """Format rank change with arrow indicators"""
+    if change > 0:
+        return f"▲ {change}"
+    elif change < 0:
+        return f"▼ {abs(change)}"
+    return "— 0"
+
+
+def ranks_to_percentiles(ranks: List[float], totals: List[int]) -> List[float]:
+    """Convert absolute ranks to percentiles (higher = better)"""
+    return [(1 - r / max(t, 1)) * 100 for r, t in zip(ranks, totals)]
+
+
+def calculate_tmi(ranks: List[float], totals: List[int], period: int = 14) -> float:
+    """
+    Trajectory Momentum Index (TMI) - RSI-style indicator for rank trajectory.
+    TMI > 70 = Strong momentum, TMI < 30 = Weak/deteriorating.
+    """
+    pcts = ranks_to_percentiles(ranks, totals)
+    if len(pcts) < 3:
+        return 50.0
+
+    changes = np.diff(pcts)
+    window = min(period, len(changes))
+    recent = changes[-window:]
+
+    gains = np.where(recent > 0, recent, 0)
+    losses = np.where(recent < 0, -recent, 0)
+
+    avg_gain = np.mean(gains) if len(gains) > 0 else 0
+    avg_loss = np.mean(losses) if len(losses) > 0 else 0.001
+
+    rs = safe_div(avg_gain, avg_loss, 1.0)
+    tmi = 100 - safe_div(100, 1 + rs, 50)
+    return float(np.clip(tmi, 0, 100))
+
+
+# ============================================
+# DATA LOADING ENGINE
+# ============================================
+
+def parse_date_from_filename(filename: str) -> Optional[datetime]:
+    """Extract date from CSV filename: Stocks_Weekly_YYYY-MM-DD_..."""
+    match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+    return datetime.strptime(match.group(1), '%Y-%m-%d') if match else None
+
+
+@st.cache_data(ttl=3600, show_spinner="📂 Loading weekly snapshots...")
+def load_and_compute(csv_dir: str) -> Tuple[Optional[pd.DataFrame], Optional[dict], Optional[list], Optional[dict]]:
+    """
+    Master data pipeline: Load CSVs → Build histories → Compute trajectories.
+    Returns: (trajectory_df, histories, dates_iso, metadata)
+    """
+    # ── Step 1: Load all CSVs ──
+    if not os.path.exists(csv_dir):
+        return None, None, None, None
+
+    csv_files = sorted([f for f in os.listdir(csv_dir) if f.lower().endswith('.csv')])
+    if not csv_files:
+        return None, None, None, None
+
+    weekly_data = {}
+    for filename in csv_files:
+        date = parse_date_from_filename(filename)
+        if date is None:
+            continue
         try:
-            df = pd.read_csv(f)
-            m = re.search(r'(\d{4}-\d{2}-\d{2})', f.name)
-            if not m:
-                continue
-            week = pd.to_datetime(m.group(1))
-            df['week'] = week
-            for c in NUMERIC_COLS:
-                if c in df.columns:
-                    df[c] = pd.to_numeric(df[c], errors='coerce')
-            frames.append(df)
-            file_info.append({'file': f.name, 'date': week, 'stocks': len(df)})
+            df = pd.read_csv(os.path.join(csv_dir, filename))
+            if 'rank' in df.columns and 'ticker' in df.columns:
+                df['ticker'] = df['ticker'].astype(str).str.strip()
+                df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
+                df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
+                df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+                weekly_data[date] = df
         except Exception as e:
-            st.warning(f"Skipped {f.name}: {e}")
+            logger.warning(f"Failed to load {filename}: {e}")
 
-    if not frames:
-        return None, None, []
+    if not weekly_data:
+        return None, None, None, None
 
-    panel = pd.concat(frames, ignore_index=True)
-    panel = panel.sort_values(['ticker', 'week']).reset_index(drop=True)
-    weeks = sorted(panel['week'].unique())
-    return panel, weeks, file_info
+    weekly_data = dict(sorted(weekly_data.items()))
+    dates = sorted(weekly_data.keys())
+    dates_iso = [d.strftime('%Y-%m-%d') for d in dates]
 
+    # ── Step 2: Build rank histories ──
+    histories = {}
+    for date in dates:
+        df = weekly_data[date]
+        total = len(df)
+        for _, row in df.iterrows():
+            ticker = str(row.get('ticker', '')).strip()
+            if not ticker or ticker == 'nan':
+                continue
 
-@st.cache_data(show_spinner=False)
-def build_enriched_panel(_panel, _weeks):
-    """Add forward returns, rank deltas, entry freshness, pattern flags."""
-    panel = _panel.copy()
-    weeks = list(_weeks)
-    n_weeks = len(weeks)
-    week_idx = {w: i for i, w in enumerate(weeks)}
+            if ticker not in histories:
+                histories[ticker] = {
+                    'dates': [], 'ranks': [], 'scores': [], 'prices': [],
+                    'total_per_week': [],
+                    'company_name': '', 'category': '', 'sector': '',
+                    'industry': '', 'market_state': '', 'patterns': ''
+                }
 
-    # ── Fast lookup tables ──
-    price_map = {}
-    rank_map = {}
-    score_map = {}
-    for _, r in panel[['ticker','week','price','rank','master_score']].iterrows():
-        key = (r['ticker'], r['week'])
-        price_map[key] = r['price']
-        rank_map[key] = r['rank']
-        score_map[key] = r['master_score']
+            h = histories[ticker]
+            h['dates'].append(date.strftime('%Y-%m-%d'))
+            h['ranks'].append(float(row['rank']) if pd.notna(row['rank']) else total)
+            h['scores'].append(float(row['master_score']))
+            h['prices'].append(float(row['price']))
+            h['total_per_week'].append(total)
 
-    # ── Compute per-row enrichments ──
-    fwd_cols = {1: [], 2: [], 4: [], 8: [], 12: []}
-    fwd_rank_cols = {1: [], 4: []}
-    rank_delta_1w = []
-    score_delta_1w = []
-    rank_delta_2w = []
+            # Always keep latest info
+            for fld in ['company_name', 'category', 'sector', 'industry', 'market_state', 'patterns']:
+                val = row.get(fld, '')
+                if pd.notna(val) and str(val).strip():
+                    h[fld] = str(val).strip()
 
-    for _, row in panel.iterrows():
-        t, w, p, rk, sc = row['ticker'], row['week'], row['price'], row['rank'], row['master_score']
-        wi = week_idx.get(w, -1)
-
-        # Forward returns
-        for fwd_n, col_list in fwd_cols.items():
-            fwd_wi = wi + fwd_n
-            if fwd_wi < n_weeks and p and p > 0:
-                fp = price_map.get((t, weeks[fwd_wi]))
-                col_list.append(((fp - p) / p * 100) if fp and fp > 0 else np.nan)
-            else:
-                col_list.append(np.nan)
-
-        # Forward rank change
-        for fwd_n, col_list in fwd_rank_cols.items():
-            fwd_wi = wi + fwd_n
-            if fwd_wi < n_weeks:
-                fr = rank_map.get((t, weeks[fwd_wi]))
-                col_list.append(rk - fr if fr else np.nan)  # +ve = rank improved
-            else:
-                col_list.append(np.nan)
-
-        # Backward deltas (vs previous weeks)
-        prev_rank = rank_map.get((t, weeks[wi - 1])) if wi > 0 else None
-        prev_score = score_map.get((t, weeks[wi - 1])) if wi > 0 else None
-        prev2_rank = rank_map.get((t, weeks[wi - 2])) if wi > 1 else None
-
-        rank_delta_1w.append((prev_rank - rk) if prev_rank is not None else 0)
-        score_delta_1w.append((sc - prev_score) if prev_score is not None else 0)
-        rank_delta_2w.append((prev2_rank - rk) if prev2_rank is not None else 0)
-
-    panel['fwd_1w'] = fwd_cols[1]
-    panel['fwd_2w'] = fwd_cols[2]
-    panel['fwd_4w'] = fwd_cols[4]
-    panel['fwd_8w'] = fwd_cols[8]
-    panel['fwd_12w'] = fwd_cols[12]
-    panel['fwd_rank_1w'] = fwd_rank_cols[1]
-    panel['fwd_rank_4w'] = fwd_rank_cols[4]
-    panel['rank_delta_1w'] = rank_delta_1w
-    panel['score_delta_1w'] = score_delta_1w
-    panel['rank_delta_2w'] = rank_delta_2w
-
-    # ── Pattern flags ──
-    for tag, key in PATTERN_TAGS:
-        panel[f'p_{key}'] = panel['patterns'].fillna('').str.contains(tag, case=False).astype(int)
-    panel['n_patterns'] = panel['patterns'].fillna('').apply(
-        lambda x: x.count('|') + 1 if x.strip() else 0
-    )
-
-    # ── Market state flags ──
-    ms = panel['market_state'].fillna('')
-    panel['is_uptrend'] = ms.isin(['UPTREND', 'STRONG_UPTREND']).astype(int)
-    panel['is_downtrend'] = ms.isin(['DOWNTREND', 'STRONG_DOWNTREND']).astype(int)
-
-    # ── Entry freshness ──
-    panel['rank_bucket'] = pd.cut(
-        panel['rank'], bins=[0, 20, 50, 100, 200, 500, 1000, 99999],
-        labels=['Top20','21-50','51-100','101-200','201-500','501-1000','1000+']
-    )
-
-    # Compute weeks_in_top100 per stock
-    weeks_in_top = []
-    prev_top100 = {}  # ticker -> consecutive count
-    for w in weeks:
-        week_tickers = set(panel[(panel['week'] == w) & (panel['rank'] <= 100)]['ticker'])
-        for t in panel[panel['week'] == w]['ticker'].unique():
-            if t in week_tickers:
-                prev_top100[t] = prev_top100.get(t, 0) + 1
-            else:
-                prev_top100[t] = 0
-
-    # Map back
-    wit_map = {}
-    for w in weeks:
-        wk_data = panel[panel['week'] == w]
-        temp_top100 = {}
-        for _, r in wk_data.iterrows():
-            t = r['ticker']
-            if t not in temp_top100:
-                # Count consecutive weeks in top 100 up to this week
-                count = 0
-                wi = week_idx[w]
-                for back in range(wi, -1, -1):
-                    rk = rank_map.get((t, weeks[back]))
-                    if rk is not None and rk <= 100:
-                        count += 1
-                    else:
-                        break
-                temp_top100[t] = count
-            wit_map[(t, w)] = temp_top100[t]
-
-    panel['weeks_in_top100'] = panel.apply(lambda r: wit_map.get((r['ticker'], r['week']), 0), axis=1)
-    panel['is_fresh_entry'] = ((panel['weeks_in_top100'] <= 2) & (panel['weeks_in_top100'] > 0)).astype(int)
-
-    return panel
-
-
-# ═══════════════════════════════════════════════════════════
-#  ANALYTICS ENGINE
-# ═══════════════════════════════════════════════════════════
-
-def compute_weekly_ic(panel, feature, fwd_col='fwd_4w'):
-    """Spearman rank IC between a feature and forward returns, per week."""
+    # ── Step 3: Compute trajectories for all tickers ──
     results = []
-    for w in sorted(panel['week'].unique()):
-        wk = panel[panel['week'] == w].dropna(subset=[feature, fwd_col])
-        if len(wk) < 50:
-            continue
-        ic, pval = stats.spearmanr(wk[feature], wk[fwd_col])
-        results.append({'week': w, 'IC': ic, 'p_value': pval, 'n': len(wk)})
-    return pd.DataFrame(results)
+    for ticker, h in histories.items():
+        traj = _compute_single_trajectory(h)
+        traj['ticker'] = ticker
+        traj['company_name'] = h['company_name']
+        traj['category'] = h['category']
+        traj['sector'] = h['sector']
+        traj['industry'] = h['industry']
+        traj['market_state'] = h['market_state']
+        traj['latest_patterns'] = h['patterns']
+        results.append(traj)
+
+    # Build DataFrame and sort
+    traj_df = pd.DataFrame(results)
+    traj_df = traj_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
+    traj_df.insert(0, 't_rank', range(1, len(traj_df) + 1))
+
+    # Metadata
+    metadata = {
+        'total_weeks': len(dates),
+        'date_range': f"{dates[0].strftime('%b %d, %Y')} → {dates[-1].strftime('%b %d, %Y')}",
+        'total_tickers': len(histories),
+        'first_date': dates[0].strftime('%Y-%m-%d'),
+        'last_date': dates[-1].strftime('%Y-%m-%d'),
+        'avg_stocks_per_week': int(np.mean([len(weekly_data[d]) for d in dates]))
+    }
+
+    return traj_df, histories, dates_iso, metadata
 
 
-def compute_quintile_analysis(panel, feature, fwd_col='fwd_4w'):
-    """Split into quintiles by feature per week, measure avg forward return."""
-    valid = panel.dropna(subset=[feature, fwd_col]).copy()
-    if len(valid) < 200:
-        return None, 0
+# ============================================
+# TRAJECTORY SCORING ENGINE
+# ============================================
 
-    # Ascending = True for rank (lower=better), False for scores (higher=better)
-    ascending = (feature == 'rank')
-    valid['quintile'] = valid.groupby('week')[feature].transform(
-        lambda x: pd.qcut(x.rank(method='first'), 5,
-                          labels=[5,4,3,2,1] if ascending else [1,2,3,4,5])
+def _compute_single_trajectory(h: dict) -> dict:
+    """Compute all trajectory metrics for a single ticker's history"""
+    ranks = h['ranks']
+    totals = h['total_per_week']
+    scores = h['scores']
+    n = len(ranks)
+
+    # Insufficient data
+    if n < 2:
+        pcts = ranks_to_percentiles(ranks, totals) if ranks else []
+        return _empty_trajectory(ranks, totals, pcts, n)
+
+    pcts = ranks_to_percentiles(ranks, totals)
+
+    # ── Component Scores ──
+    trend = _calc_trend(pcts, n)
+    velocity = _calc_velocity(pcts, n)
+    acceleration = _calc_acceleration(pcts, n)
+    consistency = _calc_consistency(pcts, n)
+    resilience = _calc_resilience(pcts, n)
+
+    # ── Composite Score ──
+    trajectory_score = (
+        WEIGHTS['trend'] * trend +
+        WEIGHTS['velocity'] * velocity +
+        WEIGHTS['acceleration'] * acceleration +
+        WEIGHTS['consistency'] * consistency +
+        WEIGHTS['resilience'] * resilience
     )
-    valid['quintile'] = pd.to_numeric(valid['quintile'])
 
-    qtable = valid.groupby('quintile').agg(
-        count=(fwd_col, 'count'),
-        mean_return=(fwd_col, 'mean'),
-        median_return=(fwd_col, 'median'),
-        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
-        big_win=(fwd_col, lambda x: (x > 10).mean() * 100),
-        big_loss=(fwd_col, lambda x: (x < -10).mean() * 100),
-    ).reset_index()
+    # ── Grade ──
+    grade, grade_emoji = get_grade(trajectory_score)
 
-    returns = qtable['mean_return'].values
-    mono = np.corrcoef(range(len(returns)), returns)[0, 1] if len(returns) >= 3 else 0
-    return qtable, mono
+    # ── Pattern Detection ──
+    pattern_key = _detect_pattern(ranks, totals, pcts, trend, velocity, acceleration, consistency)
+    p_emoji, p_name, _ = PATTERN_DEFS[pattern_key]
 
+    # ── Additional Metrics ──
+    current_rank = int(ranks[-1])
+    best_rank = int(min(ranks))
+    worst_rank = int(max(ranks))
+    avg_rank = round(np.mean(ranks), 1)
+    rank_change = int(ranks[0] - ranks[-1])  # Positive = improved
 
-def compute_pattern_edges(panel, fwd_col='fwd_4w'):
-    """For each pattern, compute edge vs baseline with t-test."""
-    valid = panel.dropna(subset=[fwd_col])
-    if len(valid) < 100:
-        return pd.DataFrame()
-
-    baseline_ret = valid[fwd_col].mean()
-    baseline_wr = (valid[fwd_col] > 0).mean() * 100
-
-    results = []
-    for tag, key in PATTERN_TAGS:
-        col = f'p_{key}'
-        if col not in valid.columns:
-            continue
-        with_p = valid[valid[col] == 1]
-        without_p = valid[valid[col] == 0]
-        if len(with_p) < 10:
-            continue
-
-        avg = with_p[fwd_col].mean()
-        wr = (with_p[fwd_col] > 0).mean() * 100
-        edge = avg - baseline_ret
-
-        if len(with_p) >= 10 and len(without_p) >= 10:
-            t, pval = stats.ttest_ind(with_p[fwd_col].dropna(), without_p[fwd_col].dropna(), equal_var=False)
+    # Streak (consecutive weeks of rank improvement)
+    streak = 0
+    for i in range(len(ranks) - 1, 0, -1):
+        if ranks[i] < ranks[i - 1]:
+            streak += 1
         else:
-            pval = 1.0
+            break
 
-        results.append({
-            'Pattern': tag, 'key': key, 'Count': len(with_p),
-            'Avg Return %': round(avg, 2), 'Edge %': round(edge, 2),
-            'Win Rate %': round(wr, 1), 'WR Edge': round(wr - baseline_wr, 1),
-            'Big Win >10%': round((with_p[fwd_col] > 10).mean() * 100, 1),
-            'Big Loss <-10%': round((with_p[fwd_col] < -10).mean() * 100, 1),
-            'p-value': round(pval, 4),
-            'Sig': '✅' if pval < 0.10 else '❌',
+    # TMI
+    tmi = calculate_tmi(ranks, totals)
+
+    # Rank volatility
+    rank_vol = round(np.std(ranks), 1) if n > 1 else 0
+
+    # Score trajectory for sparkline (percentiles, higher = better)
+    sparkline_data = [round(p, 1) for p in pcts]
+
+    # Week-over-week rank changes
+    if n >= 2:
+        last_week_change = int(ranks[-2] - ranks[-1])  # positive = improved
+    else:
+        last_week_change = 0
+
+    return {
+        'trajectory_score': round(trajectory_score, 2),
+        'trend': round(trend, 2),
+        'velocity': round(velocity, 2),
+        'acceleration': round(acceleration, 2),
+        'consistency': round(consistency, 2),
+        'resilience': round(resilience, 2),
+        'grade': grade,
+        'grade_emoji': grade_emoji,
+        'pattern_key': pattern_key,
+        'pattern': f"{p_emoji} {p_name}",
+        'current_rank': current_rank,
+        'best_rank': best_rank,
+        'worst_rank': worst_rank,
+        'avg_rank': avg_rank,
+        'rank_change': rank_change,
+        'last_week_change': last_week_change,
+        'streak': streak,
+        'tmi': round(tmi, 1),
+        'weeks': n,
+        'rank_volatility': rank_vol,
+        'sparkline': sparkline_data
+    }
+
+
+def _empty_trajectory(ranks, totals, pcts, n):
+    """Return neutral trajectory for insufficient data"""
+    return {
+        'trajectory_score': 0, 'trend': 50, 'velocity': 50,
+        'acceleration': 50, 'consistency': 50, 'resilience': 50,
+        'grade': 'F', 'grade_emoji': '📉',
+        'pattern_key': 'new_entry', 'pattern': '💎 New Entry',
+        'current_rank': int(ranks[-1]) if ranks else 0,
+        'best_rank': int(min(ranks)) if ranks else 0,
+        'worst_rank': int(max(ranks)) if ranks else 0,
+        'avg_rank': round(np.mean(ranks), 1) if ranks else 0,
+        'rank_change': 0, 'last_week_change': 0, 'streak': 0,
+        'tmi': 50.0, 'weeks': n, 'rank_volatility': 0,
+        'sparkline': [round(p, 1) for p in pcts] if pcts else []
+    }
+
+
+# ── Component Score Calculators ──
+
+def _calc_trend(pcts: List[float], n: int) -> float:
+    """Weighted linear regression of percentile trajectory (recency-biased)"""
+    if n < 3:
+        return 50.0
+
+    x = np.arange(n, dtype=float)
+    y = np.array(pcts, dtype=float)
+    # Exponential weights favoring recent data
+    weights = np.exp(0.12 * x)
+    weights /= weights.sum()
+
+    # Weighted least squares
+    wx = (weights * x).sum()
+    wy = (weights * y).sum()
+    wxx = (weights * x * x).sum()
+    wxy = (weights * x * y).sum()
+    w_sum = weights.sum()
+
+    denom = w_sum * wxx - wx * wx
+    if abs(denom) < 1e-10:
+        return 50.0
+
+    slope = (w_sum * wxy - wx * wy) / denom
+
+    # Normalize: +2 percentile/week = 100, -2 = 0
+    return float(np.clip(slope / 2.0 * 50 + 50, 0, 100))
+
+
+def _calc_velocity(pcts: List[float], n: int, window: int = 4) -> float:
+    """Recent rate of percentile change"""
+    if n < 2:
+        return 50.0
+
+    w = min(window, n - 1)
+    change = pcts[-1] - pcts[-w - 1]
+
+    # Normalize: +10 pct points in window = 100, -10 = 0
+    return float(np.clip(change / 10.0 * 50 + 50, 0, 100))
+
+
+def _calc_acceleration(pcts: List[float], n: int, window: int = 3) -> float:
+    """Is the rate of improvement increasing?"""
+    if n < 2 * window + 1:
+        return 50.0
+
+    # Recent velocity
+    recent_vel = (pcts[-1] - pcts[-window - 1]) / window
+    # Prior velocity
+    prior_vel = (pcts[-window - 1] - pcts[-2 * window - 1]) / window
+
+    accel = recent_vel - prior_vel
+
+    # Normalize: +2 pct/week² = 100, -2 = 0
+    return float(np.clip(accel / 2.0 * 50 + 50, 0, 100))
+
+
+def _calc_consistency(pcts: List[float], n: int) -> float:
+    """How consistent and directionally reliable is the trajectory?"""
+    if n < 3:
+        return 50.0
+
+    changes = np.diff(pcts)
+    std = np.std(changes)
+    positive_ratio = np.sum(changes > 0) / len(changes)
+
+    # Low volatility score (std of 0 = 100, std of 50 = 0)
+    stability = float(np.clip(100 - std * 2, 0, 100))
+    # Direction consistency (all positive = 100)
+    direction = positive_ratio * 100
+
+    return 0.55 * stability + 0.45 * direction
+
+
+def _calc_resilience(pcts: List[float], n: int) -> float:
+    """Recovery ability from percentile drawdowns"""
+    if n < 4:
+        return 50.0
+
+    arr = np.array(pcts)
+    peak = np.maximum.accumulate(arr)
+    drawdowns = peak - arr
+    max_dd = np.max(drawdowns)
+    current_dd = drawdowns[-1]
+
+    if max_dd < 1.0:
+        return 100.0  # No meaningful drawdown
+
+    recovery_ratio = 1.0 - safe_div(current_dd, max_dd, 1.0)
+    dd_penalty = min(max_dd / 50, 0.5)  # Max 50% penalty for huge drawdowns
+
+    return float(np.clip(recovery_ratio * 100 * (1 - dd_penalty), 0, 100))
+
+
+# ── Pattern Detection ──
+
+def _detect_pattern(ranks, totals, pcts, trend, velocity, acceleration, consistency) -> str:
+    """Classify trajectory into a pattern based on metrics and shape"""
+    n = len(ranks)
+    if n < MIN_WEEKS_DEFAULT:
+        return 'new_entry'
+
+    current_pct = pcts[-1]
+    avg_pct = np.mean(pcts)
+    current_rank = ranks[-1]
+    best_rank = min(ranks)
+
+    # 🚀 Rocket - Strong improvement everywhere
+    if trend > 78 and velocity > 72 and acceleration > 55:
+        return 'rocket'
+
+    # ⚡ Breakout - Sudden jump beyond normal variance
+    if n >= 4:
+        recent_change = pcts[-1] - pcts[-3]
+        avg_abs_change = np.mean(np.abs(np.diff(pcts)))
+        if avg_abs_change > 0 and recent_change > 0 and recent_change > 2.8 * avg_abs_change:
+            return 'breakout'
+
+    # 🎯 Stable Elite - Consistently top-ranked
+    if avg_pct > 88 and consistency > 68 and current_pct > 83:
+        return 'stable_elite'
+
+    # 🏔️ At Peak - Near best rank ever
+    if best_rank > 0 and current_rank <= best_rank * 1.12 and current_pct > 68:
+        return 'at_peak'
+
+    # 📈 Steady Climber - Gradual consistent improvement
+    if trend > 58 and consistency > 58 and velocity > 48:
+        return 'steady_climber'
+
+    # 🔄 Recovery - Bouncing back
+    if velocity > 62 and current_pct > avg_pct and trend < 55:
+        return 'recovery'
+
+    # 📉 Fading - Deteriorating
+    if velocity < 35 and trend < 40:
+        return 'fading'
+
+    # 🌊 Volatile - Wild swings
+    if consistency < 32:
+        return 'volatile'
+
+    return 'stagnant'
+
+
+# ============================================
+# TOP MOVERS CALCULATION
+# ============================================
+
+def get_top_movers(histories: dict, n: int = 10) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Get biggest rank gainers and decliners in the latest week"""
+    movers = []
+    for ticker, h in histories.items():
+        if len(h['ranks']) < 2:
+            continue
+        change = int(h['ranks'][-2] - h['ranks'][-1])  # Positive = improved
+        movers.append({
+            'ticker': ticker,
+            'company_name': h['company_name'],
+            'category': h['category'],
+            'prev_rank': int(h['ranks'][-2]),
+            'current_rank': int(h['ranks'][-1]),
+            'rank_change': change
         })
 
-    return pd.DataFrame(results).sort_values('Edge %', ascending=False)
+    mover_df = pd.DataFrame(movers)
+    if mover_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    gainers = mover_df.nlargest(n, 'rank_change')
+    decliners = mover_df.nsmallest(n, 'rank_change')
+    return gainers, decliners
 
 
-def compute_transition_matrix(panel, horizon_weeks=4):
-    """P(stock in rank bucket A → rank bucket B after N weeks)."""
-    fwd_rank_col = f'fwd_rank_{"1w" if horizon_weeks == 1 else "4w"}'
+# ============================================
+# UI: SIDEBAR
+# ============================================
 
-    bucket_labels = [b[2] for b in RANK_BUCKETS]
+def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
+    """Render sidebar with data info and global filters"""
+    with st.sidebar:
+        st.markdown("### 📊 Rank Trajectory Engine")
+        st.markdown("---")
 
-    def get_bucket(rank):
-        for lo, hi, label in RANK_BUCKETS:
-            if lo <= rank <= hi:
-                return label
-        return '1000+'
+        # Data status
+        st.markdown("#### 📂 Data Status")
+        st.markdown(f"**Weeks Loaded:** {metadata['total_weeks']}")
+        st.markdown(f"**Date Range:** {metadata['date_range']}")
+        st.markdown(f"**Total Tickers:** {metadata['total_tickers']:,}")
+        st.markdown(f"**Avg Stocks/Week:** {metadata['avg_stocks_per_week']:,}")
+        st.markdown("---")
 
-    valid = panel.dropna(subset=['rank']).copy()
-    weeks = sorted(valid['week'].unique())
+        # Filters
+        st.markdown("#### ⚙️ Filters")
 
-    transitions = defaultdict(lambda: defaultdict(int))
-    totals = defaultdict(int)
+        # Category filter
+        categories = ['All'] + sorted(traj_df['category'].dropna().unique().tolist())
+        selected_cats = st.multiselect("Category", categories, default=['All'], key='sb_cat')
 
-    for _, row in valid.iterrows():
-        t, w, rk = row['ticker'], row['week'], row['rank']
-        wi = list(sorted(valid['week'].unique())).index(w) if w in weeks else -1
+        # Sector filter (top sectors by count)
+        sector_counts = traj_df['sector'].value_counts()
+        top_sectors = sector_counts[sector_counts >= 3].index.tolist()
+        sectors = ['All'] + sorted(top_sectors)
+        selected_sectors = st.multiselect("Sector", sectors, default=['All'], key='sb_sector')
 
-        fwd_wi = wi + horizon_weeks
-        if fwd_wi >= len(weeks):
-            continue
+        # Min weeks
+        min_weeks = st.slider("Min Weeks of Data", 2, metadata['total_weeks'], MIN_WEEKS_DEFAULT, key='sb_weeks')
 
-        # Get future rank
-        fwd_w = weeks[fwd_wi]
-        fwd_rows = valid[(valid['ticker'] == t) & (valid['week'] == fwd_w)]
-        if len(fwd_rows) == 0:
-            continue
-        fwd_rk = fwd_rows.iloc[0]['rank']
+        # Min T-Score
+        min_score = st.slider("Min Trajectory Score", 0, 100, 0, key='sb_score')
 
-        src = get_bucket(rk)
-        dst = get_bucket(fwd_rk)
-        transitions[src][dst] += 1
-        totals[src] += 1
+        # Display count
+        display_n = st.select_slider("Show Top N", options=[25, 50, 100, 200, 500, 1000, 5000],
+                                      value=MAX_DISPLAY_DEFAULT, key='sb_topn')
 
-    # Build matrix
-    matrix = pd.DataFrame(0.0, index=bucket_labels, columns=bucket_labels)
-    for src in bucket_labels:
-        if totals[src] > 0:
-            for dst in bucket_labels:
-                matrix.loc[src, dst] = transitions[src][dst] / totals[src] * 100
+        st.markdown("---")
+        st.markdown("#### 📋 Quick Filters")
+        quick_filter = st.radio("Preset", ['None', '🚀 Rockets Only', '🎯 Elite Only',
+                                           '📈 Climbers', '⚡ Breakouts', 'TMI > 70'],
+                                index=0, key='sb_quick')
 
-    counts = pd.Series({src: totals[src] for src in bucket_labels})
-    return matrix, counts
+        st.markdown("---")
+        st.caption("v1.0.0 | Built for Wave Detection System")
 
-
-def compute_survival_curve(panel, entry_threshold=50):
-    """Of stocks entering top N for the first time, what % remain after 1,2,...,K weeks?"""
-    weeks = sorted(panel['week'].unique())
-    week_idx = {w: i for i, w in enumerate(weeks)}
-
-    # Find first entry week for each stock
-    first_entry = {}
-    for w in weeks:
-        wk = panel[(panel['week'] == w) & (panel['rank'] <= entry_threshold)]
-        for t in wk['ticker'].unique():
-            if t not in first_entry:
-                first_entry[t] = w
-
-    # For each entry, check how many subsequent weeks it stays in top N
-    survival_data = defaultdict(list)
-    rank_map = panel.set_index(['ticker', 'week'])['rank'].to_dict()
-
-    for t, entry_week in first_entry.items():
-        wi = week_idx[entry_week]
-        for offset in range(0, min(16, len(weeks) - wi)):
-            future_week = weeks[wi + offset]
-            rk = rank_map.get((t, future_week))
-            survived = 1 if rk is not None and rk <= entry_threshold else 0
-            survival_data[offset].append(survived)
-
-    curve = {}
-    for offset, vals in sorted(survival_data.items()):
-        if len(vals) >= 5:
-            curve[offset] = np.mean(vals) * 100
-
-    return pd.DataFrame({'weeks_after_entry': list(curve.keys()), 'survival_%': list(curve.values())})
+    return {
+        'categories': selected_cats,
+        'sectors': selected_sectors,
+        'min_weeks': min_weeks,
+        'min_score': min_score,
+        'display_n': display_n,
+        'quick_filter': quick_filter
+    }
 
 
-def compute_market_state_edge(panel, fwd_col='fwd_4w'):
-    """Average forward return by market_state."""
-    valid = panel.dropna(subset=[fwd_col, 'market_state'])
-    if len(valid) < 100:
-        return pd.DataFrame()
+def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
+    """Apply sidebar filters to trajectory DataFrame"""
+    df = traj_df.copy()
 
-    results = valid.groupby('market_state').agg(
-        count=(fwd_col, 'count'),
-        avg_return=(fwd_col, 'mean'),
-        median_return=(fwd_col, 'median'),
-        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
-    ).reset_index().sort_values('avg_return', ascending=False)
-    return results
+    # Category
+    if 'All' not in filters['categories']:
+        df = df[df['category'].isin(filters['categories'])]
 
+    # Sector
+    if 'All' not in filters['sectors']:
+        df = df[df['sector'].isin(filters['sectors'])]
 
-def compute_harmony_edge(panel, fwd_col='fwd_4w'):
-    """Forward return by momentum_harmony level (0-4)."""
-    valid = panel.dropna(subset=[fwd_col, 'momentum_harmony'])
-    valid['mh'] = valid['momentum_harmony'].astype(int)
-    if len(valid) < 100:
-        return pd.DataFrame()
+    # Min weeks
+    df = df[df['weeks'] >= filters['min_weeks']]
 
-    return valid.groupby('mh').agg(
-        count=(fwd_col, 'count'),
-        avg_return=(fwd_col, 'mean'),
-        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
-    ).reset_index().rename(columns={'mh': 'Harmony Level'})
+    # Min score
+    df = df[df['trajectory_score'] >= filters['min_score']]
 
+    # Quick filters
+    qf = filters['quick_filter']
+    if qf == '🚀 Rockets Only':
+        df = df[df['pattern_key'] == 'rocket']
+    elif qf == '🎯 Elite Only':
+        df = df[df['pattern_key'] == 'stable_elite']
+    elif qf == '📈 Climbers':
+        df = df[df['pattern_key'] == 'steady_climber']
+    elif qf == '⚡ Breakouts':
+        df = df[df['pattern_key'] == 'breakout']
+    elif qf == 'TMI > 70':
+        df = df[df['tmi'] > 70]
 
-def compute_entry_freshness_edge(panel, fwd_col='fwd_4w'):
-    """Do fresh entries outperform established stocks?"""
-    valid = panel[(panel['rank'] <= 100)].dropna(subset=[fwd_col]).copy()
-    if len(valid) < 50:
-        return pd.DataFrame()
+    # Limit
+    df = df.head(filters['display_n'])
 
-    valid['freshness'] = valid['weeks_in_top100'].apply(
-        lambda x: '🆕 Fresh (1-2 wks)' if x <= 2 else
-                  '📊 Established (3-6 wks)' if x <= 6 else
-                  '⏳ Aging (7+ wks)')
+    # Re-rank after filtering
+    df = df.reset_index(drop=True)
+    df['t_rank'] = range(1, len(df) + 1)
 
-    return valid.groupby('freshness').agg(
-        count=(fwd_col, 'count'),
-        avg_return=(fwd_col, 'mean'),
-        win_rate=(fwd_col, lambda x: (x > 0).mean() * 100),
-    ).reset_index().sort_values('avg_return', ascending=False)
+    return df
 
 
-def compute_composite_entry_score(panel, weeks, pattern_edge_df, ic_data, fwd_col='fwd_4w'):
-    """
-    Data-driven composite score for latest week.
-    Weights derived from IC analysis, pattern bonuses from actual edges.
-    """
-    latest_week = max(weeks)
-    latest = panel[panel['week'] == latest_week].copy()
-    if len(latest) == 0:
-        return latest
+# ============================================
+# UI: RANKINGS TAB
+# ============================================
 
-    # ── Factor weights from IC ──
-    factor_ics = {}
-    for feat in SCORE_COLS:
-        ic_df = ic_data.get(feat)
-        if ic_df is not None and len(ic_df) > 0:
-            factor_ics[feat] = max(0, ic_df['IC'].median())  # Only positive IC
-        else:
-            factor_ics[feat] = 0
+def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
+                        histories: dict, metadata: dict):
+    """Render the main rankings tab"""
 
-    total_ic = sum(factor_ics.values())
-    if total_ic > 0:
-        ic_weights = {k: v / total_ic for k, v in factor_ics.items()}
-    else:
-        # Fallback to WAVE DETECTION weights
-        ic_weights = {k: WAVE_WEIGHTS.get(k, 0.05) for k in SCORE_COLS}
-        tot = sum(ic_weights.values())
-        ic_weights = {k: v / tot for k, v in ic_weights.items()}
+    # ── KPI Cards ──
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-    # Weighted score (0-100)
-    latest['composite'] = sum(
-        latest[feat].fillna(0) * w for feat, w in ic_weights.items()
+    rockets = len(all_df[all_df['pattern_key'] == 'rocket'])
+    elites = len(all_df[all_df['pattern_key'] == 'stable_elite'])
+    avg_score = all_df['trajectory_score'].mean()
+
+    with col1:
+        st.markdown(f"""<div class="kpi-card">
+            <div class="kpi-value">{len(filtered_df):,}</div>
+            <div class="kpi-label">Stocks Shown</div></div>""", unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"""<div class="kpi-card">
+            <div class="kpi-value">{avg_score:.1f}</div>
+            <div class="kpi-label">Avg T-Score</div></div>""", unsafe_allow_html=True)
+    with col3:
+        st.markdown(f"""<div class="kpi-card">
+            <div class="kpi-value">{rockets}</div>
+            <div class="kpi-label">🚀 Rockets</div></div>""", unsafe_allow_html=True)
+    with col4:
+        st.markdown(f"""<div class="kpi-card">
+            <div class="kpi-value">{elites}</div>
+            <div class="kpi-label">🎯 Elites</div></div>""", unsafe_allow_html=True)
+    with col5:
+        st.markdown(f"""<div class="kpi-card">
+            <div class="kpi-value">{metadata['total_weeks']}</div>
+            <div class="kpi-label">📅 Weeks</div></div>""", unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Top Movers This Week ──
+    with st.expander("🔥 Top Movers This Week", expanded=False):
+        gainers, decliners = get_top_movers(histories, n=10)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("##### ⬆️ Biggest Climbers")
+            if not gainers.empty:
+                display_g = gainers[['ticker', 'company_name', 'prev_rank', 'current_rank', 'rank_change']].copy()
+                display_g.columns = ['Ticker', 'Company', 'Prev Rank', 'Now', 'Δ Rank']
+                st.dataframe(display_g, hide_index=True, use_container_width=True)
+            else:
+                st.info("No data")
+        with c2:
+            st.markdown("##### ⬇️ Biggest Decliners")
+            if not decliners.empty:
+                display_d = decliners[['ticker', 'company_name', 'prev_rank', 'current_rank', 'rank_change']].copy()
+                display_d.columns = ['Ticker', 'Company', 'Prev Rank', 'Now', 'Δ Rank']
+                st.dataframe(display_d, hide_index=True, use_container_width=True)
+            else:
+                st.info("No data")
+
+    # ── Sort Options ──
+    sort_col1, sort_col2 = st.columns([1, 3])
+    with sort_col1:
+        sort_by = st.selectbox("Sort By", [
+            'Trajectory Score', 'TMI', 'Current Rank', 'Rank Change',
+            'Best Rank', 'Streak', 'Trend', 'Velocity', 'Consistency'
+        ], key='rank_sort')
+
+    sort_map = {
+        'Trajectory Score': ('trajectory_score', False),
+        'TMI': ('tmi', False),
+        'Current Rank': ('current_rank', True),
+        'Rank Change': ('rank_change', False),
+        'Best Rank': ('best_rank', True),
+        'Streak': ('streak', False),
+        'Trend': ('trend', False),
+        'Velocity': ('velocity', False),
+        'Consistency': ('consistency', False)
+    }
+    col_name, ascending = sort_map[sort_by]
+    display_df = filtered_df.sort_values(col_name, ascending=ascending).reset_index(drop=True)
+    display_df['t_rank'] = range(1, len(display_df) + 1)
+
+    # ── Rankings Table ──
+    st.markdown("##### 📋 Trajectory Rankings")
+
+    # Prepare display columns
+    table_df = display_df[[
+        't_rank', 'ticker', 'company_name', 'category',
+        'trajectory_score', 'grade', 'pattern', 'tmi',
+        'current_rank', 'best_rank', 'rank_change', 'last_week_change',
+        'streak', 'weeks', 'sparkline'
+    ]].copy()
+
+    table_df.columns = [
+        '#', 'Ticker', 'Company', 'Category',
+        'T-Score', 'Grade', 'Pattern', 'TMI',
+        'Rank Now', 'Best', 'Δ Total', 'Δ Week',
+        'Streak', 'Weeks', 'Trajectory'
+    ]
+
+    # Truncate company names
+    table_df['Company'] = table_df['Company'].str[:30]
+
+    st.dataframe(
+        table_df,
+        column_config={
+            '#': st.column_config.NumberColumn(width="small"),
+            'T-Score': st.column_config.ProgressColumn(
+                'T-Score', min_value=0, max_value=100, format="%.1f"
+            ),
+            'TMI': st.column_config.ProgressColumn(
+                'TMI', min_value=0, max_value=100, format="%.0f"
+            ),
+            'Trajectory': st.column_config.LineChartColumn(
+                'Trajectory', y_min=0, y_max=100, width="medium"
+            ),
+            'Δ Total': st.column_config.NumberColumn(format="%+d"),
+            'Δ Week': st.column_config.NumberColumn(format="%+d"),
+            'Streak': st.column_config.NumberColumn(format="%d 🔥"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        height=600
     )
 
-    # ── Pattern bonus (from actual edges) ──
-    if len(pattern_edge_df) > 0:
-        sig_patterns = pattern_edge_df[pattern_edge_df['p-value'] < 0.15]
-        bonus = pd.Series(0.0, index=latest.index)
-        for _, pr in sig_patterns.iterrows():
-            col = f"p_{pr['key']}"
-            if col in latest.columns:
-                edge_bonus = np.clip(pr['Edge %'] * 0.5, -3, 3)
-                bonus += latest[col] * edge_bonus
-        latest['composite'] += np.clip(bonus, -10, 10)
+    # ── Insights Section ──
+    with st.expander("📊 Trajectory Insights", expanded=False):
+        ins_c1, ins_c2 = st.columns(2)
 
-    # ── Entry freshness bonus ──
-    latest['composite'] += latest['is_fresh_entry'] * 3
-    latest.loc[latest['weeks_in_top100'] > 8, 'composite'] -= 2
+        with ins_c1:
+            # Pattern distribution
+            pattern_counts = all_df['pattern_key'].value_counts()
+            fig_pat = go.Figure(data=[go.Pie(
+                labels=[PATTERN_DEFS[k][1] for k in pattern_counts.index],
+                values=pattern_counts.values,
+                marker_colors=[PATTERN_COLORS.get(k, '#888') for k in pattern_counts.index],
+                hole=0.45,
+                textinfo='label+percent',
+                textfont_size=11
+            )])
+            fig_pat.update_layout(
+                title="Pattern Distribution",
+                height=400,
+                template='plotly_dark',
+                showlegend=False,
+                margin=dict(t=40, b=20, l=20, r=20)
+            )
+            st.plotly_chart(fig_pat, use_container_width=True)
 
-    # ── Rank velocity bonus ──
-    rv = latest['rank_delta_1w'].fillna(0)
-    latest['composite'] += np.clip(rv / 100, -3, 5)
+        with ins_c2:
+            # Top sectors by avg trajectory score
+            sector_avg = all_df[all_df['weeks'] >= 3].groupby('sector')['trajectory_score'].agg(['mean', 'count'])
+            sector_avg = sector_avg[sector_avg['count'] >= 5].sort_values('mean', ascending=False).head(15)
 
-    # ── Uptrend bonus ──
-    latest['composite'] += latest['is_uptrend'] * 2
-    latest['composite'] -= latest['is_downtrend'] * 3
+            if not sector_avg.empty:
+                fig_sec = go.Figure(data=[go.Bar(
+                    x=sector_avg['mean'].values,
+                    y=sector_avg.index,
+                    orientation='h',
+                    marker_color='#FF6B35',
+                    text=[f"{v:.1f} ({int(c)})" for v, c in
+                          zip(sector_avg['mean'], sector_avg['count'])],
+                    textposition='auto'
+                )])
+                fig_sec.update_layout(
+                    title="Sector Avg Trajectory Score (min 5 stocks)",
+                    height=400,
+                    template='plotly_dark',
+                    xaxis_title='Avg T-Score',
+                    yaxis=dict(autorange='reversed'),
+                    margin=dict(t=40, b=40, l=150, r=20)
+                )
+                st.plotly_chart(fig_sec, use_container_width=True)
 
-    # Normalize to 0-100
-    cmin, cmax = latest['composite'].min(), latest['composite'].max()
-    if cmax > cmin:
-        latest['composite'] = ((latest['composite'] - cmin) / (cmax - cmin) * 100).round(1)
-    else:
-        latest['composite'] = 50.0
+        # Grade distribution
+        grade_counts = all_df['grade'].value_counts().reindex(['S', 'A', 'B', 'C', 'D', 'F']).fillna(0)
+        fig_grade = go.Figure(data=[go.Bar(
+            x=grade_counts.index,
+            y=grade_counts.values,
+            marker_color=[GRADE_COLORS.get(g, '#888') for g in grade_counts.index],
+            text=grade_counts.values.astype(int),
+            textposition='outside'
+        )])
+        fig_grade.update_layout(
+            title="Grade Distribution",
+            height=300,
+            template='plotly_dark',
+            xaxis_title='Grade',
+            yaxis_title='Count',
+            margin=dict(t=40, b=40, l=40, r=20)
+        )
+        st.plotly_chart(fig_grade, use_container_width=True)
 
-    # Percentile rank
-    latest['composite_pctile'] = latest['composite'].rank(pct=True) * 100
 
-    # Confidence tier
-    latest['confidence'] = latest.apply(lambda r: (
-        '🟢 HIGH' if r['composite_pctile'] >= 90 and r.get('is_uptrend', 0) == 1 else
-        '🟢 HIGH' if r['composite_pctile'] >= 95 else
-        '🟡 MEDIUM' if r['composite_pctile'] >= 75 else
-        '🟠 LOW' if r['composite_pctile'] >= 50 else
-        '🔴 AVOID'
-    ), axis=1)
+# ============================================
+# UI: SEARCH TAB
+# ============================================
 
-    # Freshness label
-    latest['freshness_label'] = latest['weeks_in_top100'].apply(
-        lambda x: '🆕 NEW' if 0 < x <= 2 else '📊 ESTAB' if x <= 6 else '⏳ AGING' if x > 6 else '—'
+def render_search_tab(traj_df: pd.DataFrame, histories: dict, dates_iso: list):
+    """Render stock search and detailed analysis tab"""
+
+    # ── Search Input ──
+    ticker_options = sorted(traj_df['ticker'].unique().tolist())
+    # Build display labels: "TICKER - Company Name"
+    label_map = {}
+    for _, row in traj_df.iterrows():
+        label = f"{row['ticker']} — {row['company_name'][:35]}"
+        label_map[label] = row['ticker']
+
+    labels = sorted(label_map.keys())
+
+    selected_label = st.selectbox("🔍 Search Stock (type ticker or company name)",
+                                   labels, index=None,
+                                   placeholder="Start typing a ticker or company name...",
+                                   key='search_select')
+
+    if selected_label is None:
+        st.info("👆 Select a stock to view detailed trajectory analysis")
+        return
+
+    ticker = label_map[selected_label]
+    row = traj_df[traj_df['ticker'] == ticker].iloc[0]
+    h = histories.get(ticker, {})
+
+    if not h:
+        st.warning("No history data available for this ticker")
+        return
+
+    # ── Stock Header Card ──
+    st.markdown(f"""
+    <div class="stock-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
+            <div>
+                <h2 style="margin:0; color:#fff;">{row['ticker']}</h2>
+                <p style="margin:2px 0; color:#aaa; font-size:1.1rem;">{row['company_name']}</p>
+                <p style="margin:0; color:#666;">{row['category']} • {row['sector']} • {row['industry']}</p>
+            </div>
+            <div style="text-align:center;">
+                <div class="grade-{row['grade']}">{row['grade_emoji']} Grade {row['grade']}</div>
+                <div style="font-size:2rem; font-weight:800; color:#FF6B35;">{row['trajectory_score']}</div>
+                <div style="color:#888; font-size:0.8rem;">TRAJECTORY SCORE</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── KPI Row ──
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Current Rank", f"#{row['current_rank']}", f"{row['last_week_change']:+d} this week")
+    k2.metric("Best Rank", f"#{row['best_rank']}")
+    k3.metric("Total Δ Rank", f"{row['rank_change']:+d}", "improved" if row['rank_change'] > 0 else "declined")
+    k4.metric("TMI", f"{row['tmi']:.0f}")
+    k5.metric("Streak", f"{row['streak']} weeks")
+    k6.metric("Pattern", row['pattern'])
+
+    st.markdown("---")
+
+    # ── Charts ──
+    chart_c1, chart_c2 = st.columns([2, 1])
+
+    with chart_c1:
+        st.markdown("##### 📈 Rank Trajectory Over Time")
+        _render_trajectory_chart(h, ticker)
+
+    with chart_c2:
+        st.markdown("##### 🎯 Component Breakdown")
+        _render_radar_chart(row)
+
+    st.markdown("---")
+
+    # ── Detailed Stats ──
+    stat_c1, stat_c2 = st.columns(2)
+
+    with stat_c1:
+        st.markdown("##### 📊 Trajectory Statistics")
+        stats_data = {
+            'Metric': [
+                'Trajectory Score', 'Grade', 'Pattern', 'TMI',
+                'Current Rank', 'Best Rank', 'Worst Rank', 'Avg Rank',
+                'Total Rank Change', 'Last Week Change',
+                'Improvement Streak', 'Weeks of Data', 'Rank Volatility'
+            ],
+            'Value': [
+                f"{row['trajectory_score']:.1f} / 100",
+                f"{row['grade_emoji']} {row['grade']}",
+                row['pattern'],
+                f"{row['tmi']:.0f} / 100",
+                f"#{row['current_rank']}",
+                f"#{row['best_rank']}",
+                f"#{row['worst_rank']}",
+                f"#{row['avg_rank']}",
+                f"{row['rank_change']:+d} positions",
+                f"{row['last_week_change']:+d} positions",
+                f"{row['streak']} consecutive weeks",
+                f"{row['weeks']} weeks",
+                f"{row['rank_volatility']:.1f}"
+            ]
+        }
+        st.dataframe(pd.DataFrame(stats_data), hide_index=True, use_container_width=True)
+
+    with stat_c2:
+        st.markdown("##### 🧩 Component Scores")
+        comp_data = {
+            'Component': ['Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience'],
+            'Weight': ['30%', '25%', '15%', '15%', '15%'],
+            'Score': [row['trend'], row['velocity'], row['acceleration'],
+                      row['consistency'], row['resilience']],
+            'Contribution': [
+                round(row['trend'] * 0.30, 1),
+                round(row['velocity'] * 0.25, 1),
+                round(row['acceleration'] * 0.15, 1),
+                round(row['consistency'] * 0.15, 1),
+                round(row['resilience'] * 0.15, 1)
+            ]
+        }
+        comp_df = pd.DataFrame(comp_data)
+        st.dataframe(comp_df, column_config={
+            'Score': st.column_config.ProgressColumn('Score', min_value=0, max_value=100, format="%.1f")
+        }, hide_index=True, use_container_width=True)
+
+        # Latest patterns from Wave Detection
+        if row.get('latest_patterns', ''):
+            st.markdown("##### 🏷️ Latest Wave Detection Patterns")
+            st.markdown(f"<div class='pattern-tag'>{row['latest_patterns']}</div>", unsafe_allow_html=True)
+
+    # ── Week-by-Week Table ──
+    with st.expander("📅 Week-by-Week Rank History", expanded=False):
+        week_data = {
+            'Date': h['dates'],
+            'Rank': [int(r) for r in h['ranks']],
+            'Master Score': [round(s, 1) for s in h['scores']],
+            'Price': [round(p, 1) for p in h['prices']],
+            'Total Stocks': h['total_per_week']
+        }
+        # Add percentile column
+        week_data['Percentile'] = [
+            round((1 - r / max(t, 1)) * 100, 1)
+            for r, t in zip(h['ranks'], h['total_per_week'])
+        ]
+        # Add week-over-week change
+        wk_changes = [0] + [int(h['ranks'][i - 1] - h['ranks'][i]) for i in range(1, len(h['ranks']))]
+        week_data['Δ Rank'] = wk_changes
+
+        wk_df = pd.DataFrame(week_data)
+        wk_df = wk_df.iloc[::-1]  # Latest first
+        st.dataframe(wk_df, column_config={
+            'Δ Rank': st.column_config.NumberColumn(format="%+d"),
+            'Percentile': st.column_config.ProgressColumn('Percentile', min_value=0, max_value=100, format="%.1f")
+        }, hide_index=True, use_container_width=True)
+
+    # ── Comparison Mode ──
+    with st.expander("⚖️ Compare with Other Stocks", expanded=False):
+        compare_labels = [l for l in labels if l != selected_label]
+        compare_selections = st.multiselect("Select stocks to compare (max 4)",
+                                             compare_labels, max_selections=4,
+                                             key='compare_select')
+        if compare_selections:
+            compare_tickers = [label_map[l] for l in compare_selections]
+            _render_comparison_chart(ticker, compare_tickers, histories, traj_df)
+
+
+def _render_trajectory_chart(h: dict, ticker: str):
+    """Render main trajectory chart with rank (inverted) + master score"""
+    dates = h['dates']
+    ranks = h['ranks']
+    scores = h['scores']
+    prices = h['prices']
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Rank line (inverted y-axis: lower rank = higher on chart)
+    fig.add_trace(go.Scatter(
+        x=dates, y=ranks,
+        mode='lines+markers',
+        name='Rank',
+        line=dict(color='#FF6B35', width=3),
+        marker=dict(size=7),
+        fill='tozeroy',
+        fillcolor='rgba(255,107,53,0.1)',
+        hovertemplate='Date: %{x}<br>Rank: #%{y}<extra></extra>'
+    ), secondary_y=False)
+
+    # Master score overlay
+    fig.add_trace(go.Scatter(
+        x=dates, y=scores,
+        mode='lines+markers',
+        name='Master Score',
+        line=dict(color='#00C853', width=2, dash='dot'),
+        marker=dict(size=5),
+        opacity=0.7,
+        hovertemplate='Date: %{x}<br>Score: %{y:.1f}<extra></extra>'
+    ), secondary_y=True)
+
+    # Best rank annotation
+    best_idx = int(np.argmin(ranks))
+    fig.add_annotation(
+        x=dates[best_idx], y=ranks[best_idx],
+        text=f"Best: #{int(ranks[best_idx])}",
+        showarrow=True, arrowhead=2,
+        font=dict(color='#FFD700', size=11),
+        bgcolor='rgba(0,0,0,0.7)', bordercolor='#FFD700'
     )
 
-    return latest.sort_values('composite', ascending=False)
+    fig.update_layout(
+        height=400,
+        template='plotly_dark',
+        hovermode='x unified',
+        legend=dict(orientation='h', y=-0.15),
+        margin=dict(t=20, b=60, l=60, r=60),
+        xaxis=dict(title='Week', tickangle=-45)
+    )
+    fig.update_yaxes(title_text="Rank (lower = better)", autorange="reversed",
+                     secondary_y=False, gridcolor='rgba(255,255,255,0.05)')
+    fig.update_yaxes(title_text="Master Score", secondary_y=True,
+                     gridcolor='rgba(255,255,255,0.03)')
+
+    st.plotly_chart(fig, use_container_width=True)
 
 
-def walk_forward_backtest(panel, weeks, top_n=20, rebalance=1, min_score=0, fwd_col='fwd_4w'):
-    """Walk-forward: each period picks top-N using ONLY past + current data."""
-    results = []
-    fwd_weeks = int(fwd_col.replace('fwd_', '').replace('w', ''))
+def _render_radar_chart(row):
+    """Render radar/spider chart for component scores"""
+    categories = ['Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience']
+    values = [row['trend'], row['velocity'], row['acceleration'],
+              row['consistency'], row['resilience']]
+    values_closed = values + [values[0]]  # Close the polygon
+    cats_closed = categories + [categories[0]]
 
-    for i in range(0, len(weeks) - fwd_weeks):
-        w = weeks[i]
-        wk = panel[panel['week'] == w].copy()
-        if min_score > 0:
-            wk = wk[wk['master_score'] >= min_score]
+    fig = go.Figure()
 
-        wk_valid = wk.dropna(subset=[fwd_col])
-        if len(wk_valid) < top_n * 2:
+    # Reference circle at 50
+    fig.add_trace(go.Scatterpolar(
+        r=[50] * 6,
+        theta=cats_closed,
+        mode='lines',
+        line=dict(color='rgba(255,255,255,0.15)', width=1, dash='dash'),
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+
+    # Score polygon
+    fig.add_trace(go.Scatterpolar(
+        r=values_closed,
+        theta=cats_closed,
+        fill='toself',
+        fillcolor='rgba(255,107,53,0.25)',
+        line=dict(color='#FF6B35', width=2),
+        name='Scores',
+        hovertemplate='%{theta}: %{r:.1f}<extra></extra>'
+    ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100], showticklabels=True,
+                           tickfont=dict(size=9), gridcolor='rgba(255,255,255,0.08)'),
+            angularaxis=dict(tickfont=dict(size=11))
+        ),
+        height=380,
+        template='plotly_dark',
+        showlegend=False,
+        margin=dict(t=20, b=20, l=60, r=60)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_comparison_chart(main_ticker: str, compare_tickers: list,
+                              histories: dict, traj_df: pd.DataFrame):
+    """Render comparison chart for multiple stocks"""
+    colors = ['#FF6B35', '#00C853', '#2196F3', '#FFD700', '#E040FB']
+    all_tickers = [main_ticker] + compare_tickers
+
+    fig = go.Figure()
+    for i, ticker in enumerate(all_tickers):
+        h = histories.get(ticker, {})
+        if not h:
             continue
+        # Convert to percentiles for fair comparison
+        pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
+        name_row = traj_df[traj_df['ticker'] == ticker]
+        label = f"{ticker}"
+        if not name_row.empty:
+            label = f"{ticker} (T:{name_row.iloc[0]['trajectory_score']:.0f})"
 
-        top = wk_valid.nsmallest(top_n, 'rank')
-        bottom = wk_valid.nlargest(top_n, 'rank')
-        universe = wk_valid
+        fig.add_trace(go.Scatter(
+            x=h['dates'], y=pcts,
+            mode='lines+markers',
+            name=label,
+            line=dict(color=colors[i % len(colors)], width=3 if i == 0 else 2),
+            marker=dict(size=6 if i == 0 else 4),
+            opacity=1.0 if i == 0 else 0.8
+        ))
 
-        results.append({
-            'week': w,
-            'top_avg': top[fwd_col].mean(),
-            'top_median': top[fwd_col].median(),
-            'top_wr': (top[fwd_col] > 0).mean() * 100,
-            'bottom_avg': bottom[fwd_col].mean(),
-            'bottom_wr': (bottom[fwd_col] > 0).mean() * 100,
-            'universe_avg': universe[fwd_col].mean(),
-            'spread': top[fwd_col].mean() - bottom[fwd_col].mean(),
-            'top_tickers': ', '.join(top['ticker'].head(5).tolist()),
+    fig.update_layout(
+        title="Rank Percentile Comparison (higher = better rank)",
+        height=400,
+        template='plotly_dark',
+        hovermode='x unified',
+        yaxis=dict(title='Rank Percentile', range=[0, 100]),
+        xaxis=dict(title='Week'),
+        legend=dict(orientation='h', y=-0.2),
+        margin=dict(t=40, b=60, l=60, r=20)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Comparison table
+    comp_rows = []
+    for ticker in all_tickers:
+        r = traj_df[traj_df['ticker'] == ticker]
+        if r.empty:
+            continue
+        r = r.iloc[0]
+        comp_rows.append({
+            'Ticker': ticker,
+            'Company': r['company_name'][:25],
+            'T-Score': r['trajectory_score'],
+            'Grade': f"{r['grade_emoji']} {r['grade']}",
+            'Pattern': r['pattern'],
+            'TMI': r['tmi'],
+            'Rank Now': r['current_rank'],
+            'Best': r['best_rank'],
+            'Δ Rank': r['rank_change'],
+            'Streak': r['streak']
         })
-
-    return pd.DataFrame(results)
-
-
-def get_sector_rotation(panel, weeks, top_n=100):
-    """% of top-N stocks from each sector, per week."""
-    records = []
-    for w in weeks:
-        wk = panel[(panel['week'] == w) & (panel['rank'] <= top_n)]
-        total = len(wk)
-        if total == 0:
-            continue
-        for sector, count in wk['sector'].value_counts().items():
-            records.append({'week': w, 'sector': sector, 'pct': count / total * 100, 'count': count})
-    return pd.DataFrame(records)
+    if comp_rows:
+        st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
 
 
-# ═══════════════════════════════════════════════════════════
-#  SIDEBAR & NAVIGATION
-# ═══════════════════════════════════════════════════════════
+# ============================================
+# UI: EXPORT TAB
+# ============================================
 
-with st.sidebar:
-    st.markdown("# 🌊 WAVE Analyzer")
-    st.caption("System Intelligence Engine")
+def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories: dict):
+    """Render export options tab"""
+
+    st.markdown("##### 📤 Export Trajectory Data")
+    st.markdown("Download trajectory rankings and analysis data in various formats.")
+
+    # Export scope
+    exp_c1, exp_c2 = st.columns(2)
+    with exp_c1:
+        scope = st.radio("Export Scope", ['Filtered Rankings (as shown)', 'All Rankings', 'Custom Selection'],
+                          key='exp_scope')
+    with exp_c2:
+        detail = st.radio("Detail Level", ['Compact', 'Standard', 'Full Detail'],
+                           key='exp_detail')
+
+    # Determine data to export
+    if scope == 'Filtered Rankings (as shown)':
+        export_df = filtered_df.copy()
+    elif scope == 'All Rankings':
+        export_df = all_df.copy()
+    else:
+        # Custom selection
+        available = sorted(all_df['ticker'].tolist())
+        selected = st.multiselect("Select tickers to export", available, key='exp_tickers')
+        if selected:
+            export_df = all_df[all_df['ticker'].isin(selected)].copy()
+        else:
+            st.info("Select tickers above to export")
+            return
+
+    # Column selection based on detail level
+    compact_cols = ['t_rank', 'ticker', 'company_name', 'category', 'trajectory_score',
+                    'grade', 'pattern', 'tmi', 'current_rank', 'best_rank', 'rank_change', 'weeks']
+    standard_cols = compact_cols + ['trend', 'velocity', 'acceleration', 'consistency',
+                                     'resilience', 'sector', 'industry', 'streak',
+                                     'last_week_change', 'avg_rank', 'rank_volatility']
+    full_cols = standard_cols + ['worst_rank', 'market_state', 'latest_patterns',
+                                  'grade_emoji', 'pattern_key']
+
+    if detail == 'Compact':
+        cols = [c for c in compact_cols if c in export_df.columns]
+    elif detail == 'Standard':
+        cols = [c for c in standard_cols if c in export_df.columns]
+    else:
+        cols = [c for c in full_cols if c in export_df.columns]
+
+    export_data = export_df[cols].copy()
+    # Remove sparkline from export (it's a list column)
+    if 'sparkline' in export_data.columns:
+        export_data = export_data.drop(columns=['sparkline'])
+
+    # Preview
+    st.markdown(f"##### Preview ({len(export_data)} stocks, {len(cols)} columns)")
+    st.dataframe(export_data.head(20), hide_index=True, use_container_width=True)
+
+    # Download buttons
+    dl_c1, dl_c2, dl_c3 = st.columns(3)
+
+    with dl_c1:
+        csv_data = export_data.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download CSV",
+            data=csv_data,
+            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime='text/csv'
+        )
+
+    with dl_c2:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            export_data.to_excel(writer, index=False, sheet_name='Trajectory Rankings')
+        buffer.seek(0)
+        st.download_button(
+            label="📥 Download Excel",
+            data=buffer.getvalue(),
+            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+
+    with dl_c3:
+        json_data = export_data.to_json(orient='records', indent=2)
+        st.download_button(
+            label="📥 Download JSON",
+            data=json_data,
+            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+            mime='application/json'
+        )
+
+    # ── Export individual stock trajectory ──
     st.markdown("---")
-
-    uploaded_files = st.file_uploader(
-        "📁 Upload Weekly CSVs",
-        type=['csv'], accept_multiple_files=True,
-        help="Upload your Stocks_Weekly_*.csv files (5+ recommended)"
-    )
-
-    if uploaded_files:
-        st.success(f"✅ {len(uploaded_files)} files")
-
-        st.markdown("---")
-        st.markdown("### ⚙️ Settings")
-
-        horizon = st.radio("⏱️ Forward Horizon", ['1 Week','2 Weeks','4 Weeks','8 Weeks','12 Weeks'],
-                           index=2, horizontal=True)
-        fwd_col = {'1 Week':'fwd_1w','2 Weeks':'fwd_2w','4 Weeks':'fwd_4w',
-                    '8 Weeks':'fwd_8w','12 Weeks':'fwd_12w'}[horizon]
-
-        top_n = st.slider("Top N for strategies", 5, 50, 20)
-
-        st.markdown("---")
-        st.markdown("### 🔍 Filters")
-        min_score_filter = st.slider("Min Master Score", 0, 80, 0, 5)
-        max_rank_filter = st.slider("Max Rank", 50, 2200, 2200, 50)
-
-        cat_filter = st.multiselect("Category", ['Mega Cap','Large Cap','Mid Cap','Small Cap','Micro Cap'])
-        sector_input = st.text_input("Sector contains", "")
+    st.markdown("##### 📈 Export Individual Stock History")
+    ticker_for_export = st.selectbox("Select ticker", sorted(histories.keys()), key='exp_single')
+    if ticker_for_export and ticker_for_export in histories:
+        h = histories[ticker_for_export]
+        hist_df = pd.DataFrame({
+            'date': h['dates'],
+            'rank': [int(r) for r in h['ranks']],
+            'master_score': [round(s, 2) for s in h['scores']],
+            'price': [round(p, 2) for p in h['prices']],
+            'total_stocks': h['total_per_week'],
+            'percentile': [round((1 - r / max(t, 1)) * 100, 2) for r, t in zip(h['ranks'], h['total_per_week'])]
+        })
+        st.dataframe(hist_df, hide_index=True, use_container_width=True)
+        csv_hist = hist_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📥 Download {ticker_for_export} History (CSV)",
+            data=csv_hist,
+            file_name=f"{ticker_for_export}_trajectory_history.csv",
+            mime='text/csv'
+        )
 
 
-# ═══════════════════════════════════════════════════════════
-#  MAIN APP
-# ═══════════════════════════════════════════════════════════
+# ============================================
+# UI: ABOUT TAB
+# ============================================
 
-# Header
-st.markdown("""
-<div class="wave-header">
-    <h1>🌊 WAVE Analyzer</h1>
-    <p>System Intelligence Engine — Does your scoring system predict future gains?</p>
-</div>
-""", unsafe_allow_html=True)
+def render_about_tab():
+    """Render about/documentation tab"""
 
-
-if not uploaded_files:
-    st.markdown("---")
     st.markdown("""
-    ## How to Use
+    ## 📊 Rank Trajectory Engine v1.0
 
-    **1.** Upload your `Stocks_Weekly_*.csv` files (sidebar)
-    **2.** Explore 6 pages of temporal intelligence
+    A professional stock rank trajectory analysis system that tracks how stocks' rankings
+    evolve across multiple weekly snapshots from the Wave Detection system.
 
-    | Page | Purpose |
-    |------|---------|
-    | **📊 System Health** | Does your master_score ACTUALLY predict gains? IC analysis proves it. |
-    | **⚡ Signal Lab** | Which patterns/states have real statistical edge? |
-    | **🎯 This Week's Picks** | Data-driven stock picks with confidence tiers |
-    | **🔄 Rank Dynamics** | Transition matrix — where do top stocks end up? |
-    | **🔬 Stock X-Ray** | Any stock's full weekly journey |
-    | **🧪 Backtest Lab** | Walk-forward proof — would this have worked? |
+    Instead of looking at a single week's score, this engine analyzes the **trajectory** —
+    identifying stocks with consistent improvement momentum and classifying their movement patterns.
 
     ---
 
-    **Why this exists:** Your WAVE DETECTION system scores 2100+ stocks brilliantly at each point in time.
-    But it has **zero temporal memory** — it doesn't know if a stock just entered the top ranks (strong signal)
-    or has been there for 12 weeks (potentially exhausted). This app adds the **time dimension**.
+    ### 🧮 How It Works
 
-    **Minimum:** 3 weekly CSVs &nbsp;|&nbsp; **Recommended:** 10+ &nbsp;|&nbsp; **Best:** 23+ weeks
+    1. **Data Collection** — Loads all weekly CSV snapshots from the Wave Detection system
+    2. **History Building** — Tracks each stock's rank, master score, and price across all weeks
+    3. **Percentile Normalization** — Converts ranks to percentiles (handles varying stock counts)
+    4. **5-Component Scoring** — Calculates trajectory score from 5 weighted components
+    5. **Pattern Detection** — Classifies trajectory shape into 10 pattern types
+    6. **TMI Calculation** — RSI-style momentum indicator for rank trajectory
+    7. **Ranking** — Final ranking by composite trajectory score
 
-    ```
-    pip install streamlit pandas numpy plotly scipy
-    streamlit run wave_analyzer.py
-    ```
+    ---
+
+    ### 🏗️ Scoring Components
+
+    | Component | Weight | What It Measures |
+    |-----------|--------|------------------|
+    | **Trend** | 30% | Long-term direction via exponentially-weighted regression. Stocks consistently moving to better ranks score higher. |
+    | **Velocity** | 25% | Recent rate of rank improvement over a 4-week window. Fast movers score higher. |
+    | **Acceleration** | 15% | Is the rate of improvement *speeding up*? Captures trajectory curvature. |
+    | **Consistency** | 15% | Reliability of movement — low variance + consistent positive direction. |
+    | **Resilience** | 15% | Recovery ability from rank drawdowns. How well does the stock bounce back? |
+
+    **Composite Score** = Σ(Component × Weight), normalized to 0-100.
+
+    ---
+
+    ### 📊 Trajectory Momentum Index (TMI)
+
+    Similar to RSI but applied to rank position changes:
+
+    `TMI = 100 - (100 / (1 + RS))` where `RS = Avg Rank Gain / Avg Rank Loss`
+
+    | TMI Range | Interpretation |
+    |-----------|----------------|
+    | **70-100** | Strong trajectory momentum — rank consistently improving |
+    | **50-70** | Moderate momentum — some improvement |
+    | **30-50** | Weak momentum — mixed signals |
+    | **0-30** | Deteriorating — rank consistently worsening |
+
+    ---
+
+    ### 🏷️ Trajectory Patterns
     """)
-    st.stop()
 
-if len(uploaded_files) < 3:
-    st.warning("Upload at least 3 weekly CSV files for meaningful analysis.")
-    st.stop()
+    # Pattern table
+    pattern_rows = []
+    for key, (emoji, name, desc) in PATTERN_DEFS.items():
+        pattern_rows.append({'Pattern': f"{emoji} {name}", 'Description': desc})
+    st.table(pd.DataFrame(pattern_rows))
 
+    st.markdown("""
+    ---
 
-# ── Load & Process ──
-with st.spinner("Loading weekly snapshots..."):
-    panel, weeks, file_info = load_weekly_csvs(uploaded_files)
+    ### 🎓 Grades
 
-if panel is None:
-    st.error("Could not parse any CSV files. Check file format.")
-    st.stop()
+    | Grade | Score Range | Meaning |
+    |-------|------------|---------|
+    | 🏆 **S** | 85 — 100 | Elite trajectory — strong, consistent improvement |
+    | 🥇 **A** | 70 — 84 | Excellent trajectory — clear positive momentum |
+    | 🥈 **B** | 55 — 69 | Good trajectory — above average improvement |
+    | 🥉 **C** | 40 — 54 | Average — mixed signals |
+    | 📊 **D** | 25 — 39 | Below average — weak trajectory |
+    | 📉 **F** | 0 — 24 | Poor — deteriorating or insufficient data |
 
-with st.spinner("Computing forward returns & enrichments..."):
-    panel = build_enriched_panel(panel, weeks)
+    ---
 
-latest_week = max(weeks)
-n_weeks = len(weeks)
+    ### 📂 Data Requirements
 
-# ── Pre-compute analytics (cached internally) ──
-with st.spinner("Running analytics..."):
-    # IC for all score columns
-    ic_data = {}
-    for feat in SCORE_COLS:
-        ic_data[feat] = compute_weekly_ic(panel, feat, fwd_col)
+    - **Source**: Weekly CSV exports from Wave Detection system
+    - **Location**: Place CSV files in the `CSV/` folder
+    - **Naming**: `Stocks_Weekly_YYYY-MM-DD_Month_Year.csv`
+    - **Minimum**: 3 weeks of data required for trajectory scoring
+    - **Expected columns**: `rank`, `ticker`, `company_name`, `master_score`, `price`, `category`, `sector`, `industry`
 
-    # Pattern edges
-    pattern_edges = compute_pattern_edges(panel, fwd_col)
+    ---
 
-    # Composite entry score for latest week
-    latest_scored = compute_composite_entry_score(panel, weeks, pattern_edges, ic_data, fwd_col)
+    ### ⚙️ Technical Details
 
+    - **Recency Weighting**: Exponential decay (λ=0.12) for trend calculation — recent weeks count more
+    - **Velocity Window**: Adaptive 4-week window (adjusts for stocks with fewer weeks)
+    - **Acceleration Window**: 3-week comparison periods
+    - **Consistency**: 55% stability (low variance) + 45% directional consistency
+    - **Resilience**: Drawdown recovery ratio × drawdown severity penalty
 
-# ═══════════════════════════════════════════════════════════
-#  NAVIGATION
-# ═══════════════════════════════════════════════════════════
+    ---
 
-page = st.radio(
-    "nav", ["📊 System Health", "⚡ Signal Lab", "🎯 This Week's Picks",
-            "🔄 Rank Dynamics", "🔬 Stock X-Ray", "🧪 Backtest Lab"],
-    horizontal=True, label_visibility="collapsed"
-)
+    *Built for the Wave Detection ecosystem • v1.0.0 • February 2026*
+    """)
 
-# Quick stats bar
-c1, c2, c3, c4, c5 = st.columns(5)
-with c1:
-    st.metric("Weeks", n_weeks)
-with c2:
-    n_stocks = panel[panel['week'] == latest_week]['ticker'].nunique()
-    st.metric("Stocks", f"{n_stocks:,}")
-with c3:
-    st.metric("Range", f"{weeks[0].strftime('%b %d')} → {weeks[-1].strftime('%b %d, %Y')}")
-with c4:
-    avg_mkt = panel[panel['week'] == latest_week]['overall_market_strength'].mean()
-    st.metric("Mkt Strength", f"{avg_mkt:.1f}")
-with c5:
-    st.metric("Horizon", horizon)
 
-st.markdown("---")
+# ============================================
+# MAIN APPLICATION
+# ============================================
 
+def main():
+    """Main application entry point"""
 
-# ═══════════════════════════════════════════════════════════
-#  PAGE 1: SYSTEM HEALTH
-# ═══════════════════════════════════════════════════════════
-if page == "📊 System Health":
-    st.markdown(f"## 📊 System Health — Does Your Scoring Predict {horizon} Gains?")
+    # Header
+    st.markdown('<div class="main-header">📊 RANK TRAJECTORY ENGINE</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Professional Stock Rank Trajectory Analysis • Multi-Week Momentum Intelligence</div>',
+                unsafe_allow_html=True)
 
-    # ── Master Score IC ──
-    ms_ic = ic_data.get('master_score', pd.DataFrame())
+    # ── Load Data ──
+    result = load_and_compute(CSV_DIR)
 
-    if len(ms_ic) > 0:
-        median_ic = ms_ic['IC'].median()
-        pct_positive = (ms_ic['IC'] > 0).mean() * 100
-        t_stat, t_pval = stats.ttest_1samp(ms_ic['IC'].dropna(), 0)
+    if result[0] is None:
+        st.error(f"❌ No valid CSV files found in `{CSV_DIR}/` directory.")
+        st.markdown("""
+        **To get started:**
+        1. Create a `CSV/` folder in the same directory as this script
+        2. Place your Wave Detection weekly CSV exports there
+        3. Files should be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year.csv`
+        4. Refresh this page
+        """)
+        return
 
-        # Verdict
-        if median_ic > 0.05 and pct_positive > 60:
-            verdict_class = 'verdict-good'
-            verdict_text = f"✅ SYSTEM WORKS — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks (p={t_pval:.4f}). Your master_score reliably predicts {horizon} forward returns."
-        elif median_ic > 0.02 and pct_positive > 50:
-            verdict_class = 'verdict-mid'
-            verdict_text = f"⚠️ MODERATE SIGNAL — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks. Signal exists but is noisy. More data will clarify."
-        else:
-            verdict_class = 'verdict-bad'
-            verdict_text = f"❌ WEAK/NO SIGNAL — Median IC = {median_ic:.4f}, positive in {pct_positive:.0f}% of weeks. master_score doesn't reliably predict {horizon} returns at this data volume."
+    traj_df, histories, dates_iso, metadata = result
 
-        st.markdown(f'<div class="verdict-box {verdict_class}">{verdict_text}</div>', unsafe_allow_html=True)
+    if traj_df.empty:
+        st.warning("No stocks found with sufficient data for trajectory analysis.")
+        return
 
-        # IC chart
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            fig = go.Figure()
-            colors = ['#4ade80' if x > 0 else '#f87171' for x in ms_ic['IC']]
-            fig.add_trace(go.Bar(x=ms_ic['week'], y=ms_ic['IC'], marker_color=colors, name='Weekly IC'))
-            fig.add_hline(y=median_ic, line_dash="dash", line_color="#38bdf8",
-                         annotation_text=f"Median: {median_ic:.4f}")
-            fig.add_hline(y=0, line_color="#475569")
-            fig.update_layout(title=f'master_score IC vs {horizon} Forward Return (per week)',
-                             height=350, template='plotly_dark', yaxis_title='Information Coefficient',
-                             margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
+    # ── Sidebar ──
+    filters = render_sidebar(metadata, traj_df)
 
-        with col2:
-            st.markdown("### IC Summary")
-            st.metric("Median IC", f"{median_ic:.4f}")
-            st.metric("Mean IC", f"{ms_ic['IC'].mean():.4f}")
-            st.metric("% Weeks Positive", f"{pct_positive:.0f}%")
-            st.metric("t-statistic", f"{t_stat:.2f}")
-            st.metric("p-value", f"{t_pval:.4f}")
-            st.caption("IC > 0.03 = signal exists")
-            st.caption("IC > 0.05 = strong signal")
-            st.caption("p-value < 0.05 = statistically significant")
+    # ── Apply Filters ──
+    filtered_df = apply_filters(traj_df, filters)
 
-    st.markdown("---")
+    # ── Tabs ──
+    tab_ranking, tab_search, tab_export, tab_about = st.tabs([
+        "🏆 Rankings", "🔍 Search & Analyze", "📤 Export", "ℹ️ About"
+    ])
 
-    # ── Factor Decomposition ──
-    st.markdown("### 🔍 Factor IC Decomposition — Which Sub-Scores Carry the Edge?")
-    st.caption("Compares each of your 7 component scores. WAVE DETECTION weights: Position 27%, Volume 23%, Momentum 22%, Breakout 18%, RVOL 10%")
+    with tab_ranking:
+        render_rankings_tab(filtered_df, traj_df, histories, metadata)
 
-    factor_summary = []
-    for feat in SCORE_COLS:
-        ic_df = ic_data.get(feat, pd.DataFrame())
-        if len(ic_df) > 0:
-            med_ic = ic_df['IC'].median()
-            wave_w = WAVE_WEIGHTS.get(feat, 0)
-            factor_summary.append({
-                'Factor': feat.replace('_score','').replace('_',' ').title(),
-                'Median IC': round(med_ic, 4),
-                'Mean IC': round(ic_df['IC'].mean(), 4),
-                '% Positive': round((ic_df['IC'] > 0).mean() * 100, 0),
-                'Current Weight': f"{wave_w:.0%}",
-                'IC Suggests': '⬆️ Increase' if med_ic > 0.04 and wave_w < 0.25 else
-                               '⬇️ Decrease' if med_ic < 0.01 and wave_w > 0.10 else
-                               '✅ OK',
-            })
+    with tab_search:
+        render_search_tab(traj_df, histories, dates_iso)
 
-    if factor_summary:
-        fsum = pd.DataFrame(factor_summary).sort_values('Median IC', ascending=False)
+    with tab_export:
+        render_export_tab(filtered_df, traj_df, histories)
 
-        fig = px.bar(fsum, x='Factor', y='Median IC', color='Median IC',
-                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                     title='Median IC by Factor (higher = more predictive)',
-                     hover_data=['% Positive','Current Weight'])
-        fig.add_hline(y=0, line_color="#475569")
-        fig.update_layout(height=350, template='plotly_dark', xaxis_tickangle=-30,
-                         margin=dict(t=40, b=30))
-        st.plotly_chart(fig, use_container_width=True)
+    with tab_about:
+        render_about_tab()
 
-        st.dataframe(fsum.reset_index(drop=True), use_container_width=True, hide_index=True)
 
-        # Optimal weights suggestion
-        positive_factors = {row['Factor']: max(0, row['Median IC']) for _, row in fsum.iterrows()}
-        total_pos = sum(positive_factors.values())
-        if total_pos > 0:
-            suggested = {k: round(v / total_pos * 100) for k, v in positive_factors.items()}
-            st.markdown("#### 💡 Suggested Optimal Weights (based on IC)")
-            cols = st.columns(len(suggested))
-            for i, (k, v) in enumerate(sorted(suggested.items(), key=lambda x: -x[1])):
-                with cols[i]:
-                    st.metric(k, f"{v}%")
-
-    st.markdown("---")
-
-    # ── Quintile Spread ──
-    st.markdown("### 📊 Quintile Analysis — Top vs Bottom")
-    st.caption("All stocks split into 5 equal groups by master_score each week. Q5 = highest scores, Q1 = lowest.")
-
-    qt, mono = compute_quintile_analysis(panel, 'master_score', fwd_col)
-    if qt is not None:
-        col1, col2 = st.columns(2)
-        with col1:
-            fig = px.bar(qt, x='quintile', y='mean_return', color='mean_return',
-                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                         title=f'Average {horizon} Forward Return by Score Quintile',
-                         labels={'quintile': 'Quintile (1=worst, 5=best)', 'mean_return': 'Avg Return %'})
-            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            fig = px.bar(qt, x='quintile', y='win_rate', color='win_rate',
-                         color_continuous_scale='RdYlGn', color_continuous_midpoint=50,
-                         title='Win Rate by Quintile',
-                         labels={'quintile': 'Quintile', 'win_rate': 'Win Rate %'})
-            fig.add_hline(y=50, line_dash="dash", line_color="#94a3b8")
-            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.metric("Monotonicity Score", f"{mono:.3f}",
-                  help="1.0 = quintiles perfectly predict returns. >0.7 strong, >0.4 moderate")
-        st.dataframe(qt.round(2), use_container_width=True, hide_index=True)
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 2: SIGNAL LAB
-# ═══════════════════════════════════════════════════════════
-elif page == "⚡ Signal Lab":
-    st.markdown(f"## ⚡ Signal Lab — What Actually Works? ({horizon})")
-
-    # ── Pattern Edges ──
-    st.markdown("### 🏷️ Pattern Edge Analysis")
-    st.caption("Each pattern tested: does it predict gains beyond baseline? p-value < 0.10 = statistically significant.")
-
-    if len(pattern_edges) > 0:
-        valid = panel.dropna(subset=[fwd_col])
-        base_ret = valid[fwd_col].mean()
-        base_wr = (valid[fwd_col] > 0).mean() * 100
-        n_sig = (pattern_edges['p-value'] < 0.10).sum()
-
-        c1, c2, c3 = st.columns(3)
-        with c1: st.metric("Baseline Avg Return", f"{base_ret:.2f}%")
-        with c2: st.metric("Baseline Win Rate", f"{base_wr:.1f}%")
-        with c3: st.metric("Significant Patterns", f"{n_sig}/{len(pattern_edges)}")
-
-        fig = px.bar(pattern_edges, x='Pattern', y='Edge %', color='Edge %',
-                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                     title=f'Pattern Edge: Extra Return vs Baseline ({horizon})',
-                     hover_data=['Count','Win Rate %','p-value','Sig'], text='Sig')
-        fig.add_hline(y=0, line_color="#475569")
-        fig.update_layout(height=450, template='plotly_dark', xaxis_tickangle=-50,
-                         margin=dict(t=40, b=80))
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Win rate chart
-        fig2 = px.bar(pattern_edges, x='Pattern', y='Win Rate %', color='WR Edge',
-                      color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                      title='Win Rate by Pattern', hover_data=['Count','Edge %'])
-        fig2.add_hline(y=base_wr, line_dash="dash", annotation_text=f"Baseline: {base_wr:.0f}%")
-        fig2.update_layout(height=400, template='plotly_dark', xaxis_tickangle=-50,
-                          margin=dict(t=40, b=80))
-        st.plotly_chart(fig2, use_container_width=True)
-
-        with st.expander("📋 Full Pattern Statistics Table"):
-            st.dataframe(pattern_edges.drop(columns=['key']).reset_index(drop=True),
-                        use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── Pattern Combinations ──
-    st.markdown("### 🔗 Pattern Combinations")
-    combos = [
-        ('p_stealth','p_institutional','STEALTH + INSTITUTIONAL'),
-        ('p_cat_leader','p_market_leader','CAT LEADER + MARKET LEADER'),
-        ('p_velocity_breakout','p_premium_momentum','VELOCITY BREAK + PREMIUM MOM'),
-        ('p_golden_cross','p_momentum_wave','GOLDEN CROSS + MOMENTUM WAVE'),
-        ('p_cat_leader','p_vol_explosion','CAT LEADER + VOL EXPLOSION'),
-        ('p_institutional','p_golden_cross','INSTITUTIONAL + GOLDEN CROSS'),
-        ('p_stealth','p_acceleration','STEALTH + ACCELERATION'),
-        ('p_garp_leader','p_value_momentum','GARP + VALUE MOMENTUM'),
-        ('p_liquid_leader','p_market_leader','LIQUID LEADER + MARKET LEADER'),
-        ('p_institutional_tsunami','p_liquid_leader','INST TSUNAMI + LIQUID LEADER'),
-    ]
-
-    valid = panel.dropna(subset=[fwd_col])
-    combo_results = []
-    for c1_col, c2_col, label in combos:
-        if c1_col in valid.columns and c2_col in valid.columns:
-            combo = valid[(valid[c1_col] == 1) & (valid[c2_col] == 1)]
-            if len(combo) >= 5:
-                base = valid[fwd_col].mean()
-                combo_results.append({
-                    'Combination': label, 'Count': len(combo),
-                    'Avg Return %': round(combo[fwd_col].mean(), 2),
-                    'Edge %': round(combo[fwd_col].mean() - base, 2),
-                    'Win Rate %': round((combo[fwd_col] > 0).mean() * 100, 1),
-                })
-
-    if combo_results:
-        combo_df = pd.DataFrame(combo_results).sort_values('Edge %', ascending=False)
-        st.dataframe(combo_df.reset_index(drop=True), use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── Market State Edge ──
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### 🌐 Market State Edge")
-        ms_edge = compute_market_state_edge(panel, fwd_col)
-        if len(ms_edge) > 0:
-            fig = px.bar(ms_edge, x='market_state', y='avg_return', color='avg_return',
-                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                         title=f'{horizon} Return by Market State',
-                         hover_data=['count','win_rate'])
-            fig.add_hline(y=0, line_color="#475569")
-            fig.update_layout(height=350, template='plotly_dark', xaxis_tickangle=-30,
-                             margin=dict(t=40, b=50))
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(ms_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
-
-    with col2:
-        st.markdown("### 🎵 Momentum Harmony Edge")
-        mh_edge = compute_harmony_edge(panel, fwd_col)
-        if len(mh_edge) > 0:
-            fig = px.bar(mh_edge, x='Harmony Level', y='avg_return', color='avg_return',
-                         color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                         title=f'{horizon} Return by Harmony Level (0-4)',
-                         hover_data=['count','win_rate'])
-            fig.update_layout(height=350, template='plotly_dark', margin=dict(t=40, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(mh_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── Entry Freshness Edge ──
-    st.markdown("### 🆕 Entry Freshness Edge")
-    st.caption("Do stocks that JUST entered Top 100 outperform those sitting there for weeks?")
-
-    fr_edge = compute_entry_freshness_edge(panel, fwd_col)
-    if len(fr_edge) > 0:
-        fig = px.bar(fr_edge, x='freshness', y='avg_return', color='avg_return',
-                     color_continuous_scale='RdYlGn', color_continuous_midpoint=0,
-                     title=f'Fresh vs Established vs Aging — {horizon} Avg Return',
-                     hover_data=['count','win_rate'])
-        fig.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(fr_edge.round(2).reset_index(drop=True), use_container_width=True, hide_index=True)
-
-    # ── Score Threshold Analysis ──
-    st.markdown("---")
-    st.markdown("### 📈 Score Threshold Analysis")
-    st.caption("What's the minimum master_score that matters?")
-
-    valid = panel.dropna(subset=[fwd_col])
-    thresholds = [0, 20, 30, 40, 50, 60, 70, 80]
-    thresh_results = []
-    for th in thresholds:
-        subset = valid[valid['master_score'] >= th]
-        if len(subset) >= 20:
-            thresh_results.append({
-                'Min Score': th, 'Stocks': len(subset),
-                'Avg Return %': round(subset[fwd_col].mean(), 2),
-                'Win Rate %': round((subset[fwd_col] > 0).mean() * 100, 1),
-            })
-
-    if thresh_results:
-        th_df = pd.DataFrame(thresh_results)
-        fig = px.line(th_df, x='Min Score', y='Avg Return %', markers=True,
-                      title=f'Average {horizon} Return at Different Score Cutoffs')
-        fig.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(th_df.reset_index(drop=True), use_container_width=True, hide_index=True)
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 3: THIS WEEK'S PICKS
-# ═══════════════════════════════════════════════════════════
-elif page == "🎯 This Week's Picks":
-    st.markdown(f"## 🎯 This Week's Picks — {latest_week.strftime('%B %d, %Y')}")
-    st.caption("Composite score = data-driven weights (from IC analysis) + pattern bonuses (from tested edges) + entry freshness + rank velocity")
-
-    picks = latest_scored.copy()
-
-    # Apply sidebar filters
-    if min_score_filter > 0:
-        picks = picks[picks['master_score'] >= min_score_filter]
-    if max_rank_filter < 2200:
-        picks = picks[picks['rank'] <= max_rank_filter]
-    if cat_filter:
-        picks = picks[picks['category'].isin(cat_filter)]
-    if sector_input:
-        picks = picks[picks['sector'].str.contains(sector_input, case=False, na=False)]
-
-    # Market overview
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        up_pct = picks['is_uptrend'].mean() * 100
-        st.metric("% Uptrend", f"{up_pct:.0f}%")
-    with c2:
-        n_fresh = picks['is_fresh_entry'].sum()
-        st.metric("Fresh Top-100 Entries", int(n_fresh))
-    with c3:
-        high_conf = (picks['confidence'] == '🟢 HIGH').sum()
-        st.metric("High Confidence Picks", int(high_conf))
-    with c4:
-        avg_comp = picks.head(top_n)['composite'].mean()
-        st.metric(f"Avg Composite (Top {top_n})", f"{avg_comp:.1f}")
-
-    st.markdown("---")
-
-    # ── Rank Velocity Radar ──
-    st.markdown("### 🚀 Rank Velocity — Fastest Movers This Week")
-    st.caption("Stocks with biggest rank improvement — freshest buy signals")
-
-    movers = picks.nlargest(10, 'rank_delta_1w')
-    mover_cols = st.columns(5)
-    for i, (_, r) in enumerate(movers.head(10).iterrows()):
-        with mover_cols[i % 5]:
-            delta = r['rank_delta_1w']
-            st.markdown(f"""
-            <div class="stock-card">
-                <b>{r['ticker']}</b><br>
-                <span class="big green">+{delta:.0f}</span><br>
-                <span class="muted">Rank #{r['rank']:.0f} | ₹{r['price']:.0f}</span><br>
-                <span class="muted">{r.get('sector','')[:20]}</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── Top Picks Table ──
-    st.markdown(f"### 🏆 Top {top_n} Picks by Composite Score")
-
-    top_picks = picks.head(top_n)
-
-    for i, (_, row) in enumerate(top_picks.iterrows()):
-        comp = row.get('composite', 0)
-        conf = row.get('confidence', '🟠 LOW')
-        fresh = row.get('freshness_label', '—')
-
-        fresh_class = 'fresh-new' if '🆕' in fresh else 'fresh-aging' if '⏳' in fresh else 'fresh-est'
-
-        cols = st.columns([0.4, 2.2, 1, 1, 1, 1, 1.5])
-
-        with cols[0]:
-            st.markdown(f"**#{i+1}**")
-        with cols[1]:
-            st.markdown(f"**{row['ticker']}**")
-            st.caption(f"{str(row.get('company_name',''))[:35]} · {row.get('sector','')}")
-        with cols[2]:
-            color = 'green' if comp > 70 else 'amber' if comp > 50 else 'red'
-            st.markdown(f"<span class='big {color}'>{comp:.0f}</span><br><span class='muted'>Composite</span>", unsafe_allow_html=True)
-        with cols[3]:
-            rdelta = row.get('rank_delta_1w', 0)
-            st.metric("Rank", f"#{row['rank']:.0f}", f"{rdelta:+.0f}")
-        with cols[4]:
-            sdelta = row.get('score_delta_1w', 0)
-            st.metric("Score", f"{row['master_score']:.0f}", f"{sdelta:+.1f}")
-        with cols[5]:
-            st.metric("Price", f"₹{row['price']:.0f}", f"{row.get('ret_7d',0):+.1f}% 7d")
-        with cols[6]:
-            st.markdown(f"**{conf}**")
-            st.markdown(f"<span class='fresh-badge {fresh_class}'>{fresh}</span> · {row.get('market_state','')}", unsafe_allow_html=True)
-
-        # Pattern stack
-        patterns = str(row.get('patterns', ''))
-        if patterns and patterns != 'nan' and len(patterns) > 3:
-            # Annotate patterns with their edge values
-            annotated = []
-            for tag, key in PATTERN_TAGS:
-                if tag in patterns and len(pattern_edges) > 0:
-                    edge_row = pattern_edges[pattern_edges['key'] == key]
-                    if len(edge_row) > 0:
-                        e = edge_row.iloc[0]['Edge %']
-                        sig = edge_row.iloc[0]['Sig']
-                        color = 'green' if e > 0 else 'red'
-                        annotated.append(f"<span class='{color}'>{tag} ({e:+.1f}% {sig})</span>")
-                elif tag in patterns:
-                    annotated.append(tag)
-
-            if annotated:
-                st.markdown(f"<div class='signal-stack'>{'  ·  '.join(annotated)}</div>", unsafe_allow_html=True)
-
-        st.markdown("---")
-
-    # ── Sector Allocation ──
-    st.markdown("### 🗺️ Sector Allocation of Top Picks")
-    sector_counts = top_picks['sector'].value_counts().reset_index()
-    sector_counts.columns = ['sector', 'count']
-    fig = px.treemap(sector_counts, path=['sector'], values='count',
-                     title=f'Top {top_n} Picks by Sector',
-                     color='count', color_continuous_scale='Blues')
-    fig.update_layout(height=350, margin=dict(t=40, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-
-    # ── Risk Flags ──
-    st.markdown("### 🚨 Risk Flags in Top Picks")
-    risk_stocks = top_picks[
-        (top_picks.get('p_capitulation', 0) == 1) |
-        (top_picks.get('p_distribution', 0) == 1) |
-        (top_picks['is_downtrend'] == 1) |
-        (top_picks['rank_delta_1w'] < -200)
-    ]
-    if len(risk_stocks) > 0:
-        st.warning(f"⚠️ {len(risk_stocks)} stocks in Top {top_n} have risk flags:")
-        for _, r in risk_stocks.iterrows():
-            flags = []
-            if r.get('p_capitulation', 0) == 1: flags.append("💣 CAPITULATION")
-            if r.get('p_distribution', 0) == 1: flags.append("📊 DISTRIBUTION")
-            if r['is_downtrend'] == 1: flags.append("📉 DOWNTREND")
-            if r['rank_delta_1w'] < -200: flags.append(f"💀 Rank crashed {r['rank_delta_1w']:.0f}")
-            st.markdown(f"- **{r['ticker']}** — {' | '.join(flags)}")
-    else:
-        st.success("✅ No major risk flags in top picks")
-
-    # ── Download ──
-    st.markdown("---")
-    dl_cols = ['ticker','company_name','composite','confidence','freshness_label',
-               'rank','rank_delta_1w','master_score','score_delta_1w',
-               'price','ret_7d','ret_30d','ret_3m','market_state','patterns',
-               'sector','category','weeks_in_top100']
-    dl_available = [c for c in dl_cols if c in picks.columns]
-    csv_data = picks[dl_available].to_csv(index=False)
-    st.download_button("📥 Download Full Picks CSV", csv_data, "wave_picks.csv", "text/csv")
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 4: RANK DYNAMICS
-# ═══════════════════════════════════════════════════════════
-elif page == "🔄 Rank Dynamics":
-    st.markdown("## 🔄 Rank Dynamics — Where Do Top Stocks End Up?")
-
-    # ── Transition Matrix ──
-    st.markdown("### 🔢 Rank Transition Matrix")
-
-    tm_horizon = st.radio("Transition horizon", ['1 week', '4 weeks'], horizontal=True)
-    h = 1 if '1' in tm_horizon else 4
-
-    with st.spinner("Computing transition matrix..."):
-        matrix, counts = compute_transition_matrix(panel, h)
-
-    st.caption(f"Each cell = P(stock in row bucket this week → column bucket after {tm_horizon}). Diagonal = stocks that STAYED in same bucket.")
-
-    fig = px.imshow(
-        matrix.values.round(1), x=matrix.columns, y=matrix.index,
-        color_continuous_scale='YlOrRd', text_auto='.0f',
-        labels={'x': f'After {tm_horizon}', 'y': 'Current Bucket', 'color': 'Probability %'},
-        title=f'Rank Transition Probabilities ({tm_horizon})'
-    )
-    fig.update_layout(height=450, template='plotly_dark', margin=dict(t=40, b=30))
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Key insights
-    diag = [matrix.iloc[i, i] for i in range(min(len(matrix), len(matrix.columns)))]
-    st.markdown("#### 💡 Key Insights")
-    bucket_labels = [b[2] for b in RANK_BUCKETS]
-    for i, label in enumerate(bucket_labels[:len(diag)]):
-        stability = diag[i]
-        emoji = '🟢' if stability > 50 else '🟡' if stability > 30 else '🔴'
-        st.markdown(f"- {emoji} **{label}**: {stability:.0f}% stay in same bucket after {tm_horizon}")
-
-    st.markdown("---")
-
-    # ── Survival Curves ──
-    st.markdown("### 📉 Survival Curve — How Long Do Top Stocks Stay?")
-    st.caption("Of stocks entering top N for the FIRST time, what % remain after K weeks?")
-
-    surv_threshold = st.slider("Top N threshold", 20, 200, 50, 10)
-    survival = compute_survival_curve(panel, surv_threshold)
-
-    if len(survival) > 0:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=survival['weeks_after_entry'], y=survival['survival_%'],
-            mode='lines+markers', line=dict(color='#38bdf8', width=3),
-            fill='tozeroy', fillcolor='rgba(56,189,248,0.1)'
-        ))
-        fig.add_hline(y=50, line_dash="dash", line_color="#64748b", annotation_text="50% threshold")
-        fig.update_layout(
-            title=f'Survival: % of stocks remaining in Top {surv_threshold} after entry',
-            xaxis_title='Weeks After First Entry', yaxis_title='% Still in Top N',
-            height=350, template='plotly_dark', yaxis=dict(range=[0, 105]),
-            margin=dict(t=40, b=30)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Half-life
-        half_life = survival[survival['survival_%'] < 50]
-        if len(half_life) > 0:
-            hl_week = half_life.iloc[0]['weeks_after_entry']
-            st.info(f"📊 **Half-life: {hl_week:.0f} weeks** — 50% of stocks that enter Top {surv_threshold} drop out within {hl_week:.0f} weeks. {'This suggests you should rebalance more frequently.' if hl_week < 6 else 'Your system has good staying power.'}")
-        else:
-            st.success(f"💪 Most stocks that enter Top {surv_threshold} stay there throughout the data period. Strong system stickiness.")
-
-    st.markdown("---")
-
-    # ── Biggest Movers ──
-    st.markdown("### 🔄 Biggest Rank Movers This Week")
-
-    latest = panel[panel['week'] == latest_week].copy()
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("#### 🚀 Top 20 Rank Improvers")
-        improvers = latest.nlargest(20, 'rank_delta_1w')
-        for i, (_, r) in enumerate(improvers.iterrows()):
-            st.markdown(
-                f"**{i+1}. {r['ticker']}** | #{r['rank']:.0f} "
-                f"(+{r['rank_delta_1w']:.0f}) | Score {r['master_score']:.0f} "
-                f"| ₹{r['price']:.0f} | {r.get('market_state','')}"
-            )
-
-    with col2:
-        st.markdown("#### 💀 Top 20 Rank Crashers")
-        crashers = latest.nsmallest(20, 'rank_delta_1w')
-        for i, (_, r) in enumerate(crashers.iterrows()):
-            st.markdown(
-                f"**{i+1}. {r['ticker']}** | #{r['rank']:.0f} "
-                f"({r['rank_delta_1w']:.0f}) | Score {r['master_score']:.0f} "
-                f"| ₹{r['price']:.0f} | {r.get('market_state','')}"
-            )
-
-    st.markdown("---")
-
-    # ── Sector Rotation ──
-    st.markdown("### 🔄 Sector Rotation Over Time")
-    st.caption("Which sectors dominated Top 100 each week?")
-
-    rotation = get_sector_rotation(panel, weeks, 100)
-    if len(rotation) > 0:
-        top_sectors = rotation.groupby('sector')['pct'].mean().nlargest(8).index.tolist()
-        rot_filtered = rotation[rotation['sector'].isin(top_sectors)]
-
-        fig = px.area(rot_filtered, x='week', y='pct', color='sector',
-                      title='Sector Share of Top 100 Over Time',
-                      labels={'pct': '% of Top 100', 'week': 'Week'})
-        fig.update_layout(height=400, template='plotly_dark', margin=dict(t=40, b=30))
-        st.plotly_chart(fig, use_container_width=True)
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 5: STOCK X-RAY
-# ═══════════════════════════════════════════════════════════
-elif page == "🔬 Stock X-Ray":
-    st.markdown("## 🔬 Stock X-Ray — Full Weekly Journey")
-
-    all_tickers = sorted(panel['ticker'].unique())
-
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        ticker = st.selectbox("Select Stock", all_tickers)
-    with col2:
-        search = st.text_input("Search ticker", "")
-        if search:
-            matches = [t for t in all_tickers if search.upper() in str(t).upper()]
-            if matches:
-                ticker = st.selectbox("Matches", matches, key="search_results")
-
-    stock = panel[panel['ticker'] == ticker].sort_values('week')
-
-    if len(stock) > 0:
-        last = stock.iloc[-1]
-        first = stock.iloc[0]
-
-        # Header
-        st.markdown(f"### {ticker} — {last.get('company_name','')}")
-
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        with c1:
-            total_chg = ((last['price'] - first['price']) / first['price'] * 100) if first['price'] > 0 else 0
-            st.metric("Price", f"₹{last['price']:.0f}", f"{total_chg:+.1f}% total")
-        with c2:
-            st.metric("Rank", f"#{last['rank']:.0f}", f"{last.get('rank_delta_1w',0):+.0f}")
-        with c3:
-            st.metric("Score", f"{last['master_score']:.1f}", f"{last.get('score_delta_1w',0):+.1f}")
-        with c4:
-            st.metric("State", last.get('market_state',''))
-        with c5:
-            st.metric("Sector", str(last.get('sector',''))[:15])
-        with c6:
-            wit = last.get('weeks_in_top100', 0)
-            st.metric("Weeks in Top100", int(wit))
-
-        # 6-panel chart
-        fig = make_subplots(
-            rows=3, cols=2,
-            subplot_titles=['💰 Price','📊 Rank (↓ = better)','🎯 Master Score',
-                           '⚡ Breakout Score','📈 Momentum Score','🔊 Volume Score'],
-            vertical_spacing=0.08
-        )
-
-        w = stock['week']
-        chart_data = [
-            (stock['price'], '#38bdf8', 1, 1),
-            (stock['rank'], '#f87171', 1, 2),
-            (stock['master_score'], '#4ade80', 2, 1),
-            (stock['breakout_score'], '#fbbf24', 2, 2),
-            (stock['momentum_score'], '#a855f7', 3, 1),
-            (stock['volume_score'], '#06b6d4', 3, 2),
-        ]
-
-        for data, color, r, c in chart_data:
-            fig.add_trace(go.Scatter(x=w, y=data, mode='lines+markers',
-                         line=dict(color=color, width=2), showlegend=False), row=r, col=c)
-
-        fig.update_yaxes(autorange="reversed", row=1, col=2)
-        fig.update_layout(height=700, template='plotly_dark', margin=dict(t=30, b=20))
-        st.plotly_chart(fig, use_container_width=True)
-
-        # Pattern timeline
-        st.markdown("### 🏷️ Pattern & State Timeline")
-        for _, row in stock.iterrows():
-            pat = str(row.get('patterns', ''))
-            state = row.get('market_state', '')
-            rk = row['rank']
-            sc = row['master_score']
-            pr = row['price']
-
-            # Market state color
-            state_colors = {
-                'STRONG_UPTREND': '🟢', 'UPTREND': '🟢', 'PULLBACK': '🟡',
-                'ROTATION': '🟡', 'SIDEWAYS': '⚪', 'BOUNCE': '🔵',
-                'DOWNTREND': '🔴', 'STRONG_DOWNTREND': '🔴'
-            }
-            state_icon = state_colors.get(state, '⚪')
-
-            line = f"**{row['week'].strftime('%b %d')}** | {state_icon} `{state}` | Rank #{rk:.0f} | Score {sc:.1f} | ₹{pr:.0f}"
-            if pat and pat != 'nan' and len(pat) > 3:
-                line += f" | {pat}"
-            st.markdown(line)
-
-        # Score delta table
-        with st.expander("📋 Full Weekly Data"):
-            display_cols = ['week','rank','rank_delta_1w','master_score','score_delta_1w',
-                           'price','breakout_score','momentum_score','volume_score',
-                           'acceleration_score','rvol_score','trend_quality',
-                           'ret_7d','ret_30d','ret_3m','market_state','patterns',
-                           'weeks_in_top100']
-            available = [c for c in display_cols if c in stock.columns]
-            disp = stock[available].copy()
-            disp['week'] = disp['week'].dt.strftime('%Y-%m-%d')
-            st.dataframe(disp.reset_index(drop=True), use_container_width=True, hide_index=True)
-
-        # Peer comparison
-        st.markdown("### 👥 Industry Peers")
-        industry = last.get('industry', '')
-        if industry:
-            peers = panel[(panel['week'] == latest_week) & (panel['industry'] == industry)].nsmallest(10, 'rank')
-            if len(peers) > 0:
-                peer_cols = ['ticker','company_name','rank','master_score','price',
-                            'ret_7d','ret_30d','market_state']
-                available = [c for c in peer_cols if c in peers.columns]
-                st.dataframe(peers[available].reset_index(drop=True), use_container_width=True, hide_index=True)
-
-
-# ═══════════════════════════════════════════════════════════
-#  PAGE 6: BACKTEST LAB
-# ═══════════════════════════════════════════════════════════
-elif page == "🧪 Backtest Lab":
-    st.markdown(f"## 🧪 Backtest Lab — Walk-Forward Proof ({horizon})")
-    st.caption("Each entry week: pick top-N stocks by rank (using ONLY current data). Measure ACTUAL forward return. No look-ahead bias.")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        bt_top_n = st.slider("Top N stocks per period", 5, 50, top_n, key="bt_n")
-    with col2:
-        bt_min_score = st.slider("Min score threshold", 0, 80, 0, 10, key="bt_score")
-    with col3:
-        st.markdown(f"**Horizon:** {horizon}")
-
-    if st.button("🚀 Run Backtest", type="primary"):
-        with st.spinner("Running walk-forward backtest..."):
-            bt = walk_forward_backtest(panel, weeks, bt_top_n, 1, bt_min_score, fwd_col)
-
-        if len(bt) > 0:
-            # Summary
-            c1, c2, c3, c4, c5 = st.columns(5)
-            with c1: st.metric("Top N Avg Return", f"{bt['top_avg'].mean():.2f}%")
-            with c2: st.metric("Bottom N Avg Return", f"{bt['bottom_avg'].mean():.2f}%")
-            with c3: st.metric("Spread (Top-Bottom)", f"{bt['spread'].mean():.2f}%")
-            with c4: st.metric("Top N Win Rate", f"{bt['top_wr'].mean():.0f}%")
-            with c5: st.metric("Periods Tested", len(bt))
-
-            spread_avg = bt['spread'].mean()
-            top_wr = bt['top_wr'].mean()
-
-            if spread_avg > 3 and top_wr > 55:
-                st.markdown(f'<div class="verdict-box verdict-good">✅ SYSTEM HAS EDGE — Top {bt_top_n} stocks average {spread_avg:.1f}% more return than Bottom {bt_top_n}, with {top_wr:.0f}% win rate over {len(bt)} periods. This is actionable.</div>', unsafe_allow_html=True)
-            elif spread_avg > 1:
-                st.markdown(f'<div class="verdict-box verdict-mid">⚠️ MODERATE EDGE — {spread_avg:.1f}% spread, {top_wr:.0f}% win rate. Signal exists but may improve with more data or tighter filters.</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="verdict-box verdict-bad">❌ WEAK EDGE — {spread_avg:.1f}% spread, {top_wr:.0f}% win rate. Rankings don\'t reliably predict {horizon} returns at this filter setting.</div>', unsafe_allow_html=True)
-
-            st.markdown("---")
-
-            # Return comparison
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=bt['week'], y=bt['top_avg'], name=f'Top {bt_top_n}',
-                                marker_color='#4ade80', opacity=0.8))
-            fig.add_trace(go.Bar(x=bt['week'], y=bt['bottom_avg'], name=f'Bottom {bt_top_n}',
-                                marker_color='#f87171', opacity=0.8))
-            fig.add_trace(go.Scatter(x=bt['week'], y=bt['universe_avg'], name='Universe Avg',
-                                    line=dict(color='#fbbf24', width=2, dash='dash')))
-            fig.update_layout(
-                title=f'Top {bt_top_n} vs Bottom {bt_top_n} — {horizon} Forward Return per Entry Week',
-                yaxis_title='Return %', height=400, barmode='group',
-                template='plotly_dark', margin=dict(t=40, b=30)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Cumulative equity
-            bt['cum_top'] = (1 + bt['top_avg'] / 100).cumprod() * 100
-            bt['cum_bottom'] = (1 + bt['bottom_avg'] / 100).cumprod() * 100
-            bt['cum_universe'] = (1 + bt['universe_avg'] / 100).cumprod() * 100
-
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_top'], name=f'Top {bt_top_n}',
-                                     line=dict(color='#4ade80', width=3)))
-            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_bottom'], name=f'Bottom {bt_top_n}',
-                                     line=dict(color='#f87171', width=3)))
-            fig2.add_trace(go.Scatter(x=bt['week'], y=bt['cum_universe'], name='Universe',
-                                     line=dict(color='#94a3b8', width=2, dash='dot')))
-            fig2.add_hline(y=100, line_dash="dash", line_color="#475569")
-            fig2.update_layout(
-                title='Cumulative Equity Curve (₹100 start)',
-                yaxis_title='Portfolio Value ₹', height=400,
-                template='plotly_dark', margin=dict(t=40, b=30)
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-
-            # Win rate
-            fig3 = px.bar(bt, x='week', y='top_wr', color='top_wr',
-                          color_continuous_scale='RdYlGn', color_continuous_midpoint=50,
-                          title=f'Win Rate per Period (Top {bt_top_n})')
-            fig3.add_hline(y=50, line_dash="dash", line_color="#94a3b8")
-            fig3.update_layout(height=300, template='plotly_dark', margin=dict(t=40, b=30))
-            st.plotly_chart(fig3, use_container_width=True)
-
-            with st.expander("📋 Period Details"):
-                st.dataframe(bt.round(2), use_container_width=True, hide_index=True)
-
-            # Strategy comparison
-            st.markdown("---")
-            st.markdown("### 📊 Strategy Comparison")
-
-            strategies = {}
-            for n in [10, 20, 50]:
-                r = walk_forward_backtest(panel, weeks, n, 1, 0, fwd_col)
-                if len(r) > 0:
-                    strategies[f'Top {n}'] = {
-                        'Avg Return': round(r['top_avg'].mean(), 2),
-                        'Win Rate': round(r['top_wr'].mean(), 1),
-                        'Spread': round(r['spread'].mean(), 2),
-                        'Best Period': round(r['top_avg'].max(), 2),
-                        'Worst Period': round(r['top_avg'].min(), 2),
-                    }
-
-            if strategies:
-                st.dataframe(pd.DataFrame(strategies).T, use_container_width=True)
-
-        else:
-            st.warning("Not enough data for backtest. Try uploading more weekly files.")
-
-    else:
-        st.info("Click **Run Backtest** to start the walk-forward simulation.")
-
-    # Data confidence
-    st.markdown("---")
-    st.markdown("### 📊 Data Confidence Level")
-    if n_weeks >= 40:
-        st.success(f"🟢 **HIGH CONFIDENCE** — {n_weeks} weeks of data. All statistical tests are reliable. ML models viable as complement.")
-    elif n_weeks >= 20:
-        st.info(f"🟡 **MODERATE CONFIDENCE** — {n_weeks} weeks. Statistical tests meaningful but p-values may be wide. Add {40 - n_weeks} more weeks for high confidence.")
-    else:
-        st.warning(f"🟠 **LOW CONFIDENCE** — {n_weeks} weeks. Results are directional but not definitive. Keep adding weekly data.")
-
-    growth_note = f"Every new week you add makes the analysis more reliable. At 50+ weeks, ML models become viable as a complement to the statistical approach."
-    st.caption(growth_note)
-
-
-# ── Footer ──
-st.markdown("---")
-st.caption("WAVE Analyzer — System Intelligence Engine. Companion to WAVE Detection 3.0. Not financial advice.")
+if __name__ == "__main__":
+    main()
