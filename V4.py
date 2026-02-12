@@ -239,8 +239,8 @@ GRADE_DEFS = [
 ]
 
 GRADE_COLORS = {
-    'S': '#FFD700', 'A': '#00C853', 'B': '#2196F3',
-    'C': '#FF9800', 'D': '#FF5722', 'F': '#F44336'
+    'S': '#FFD700', 'A': '#3fb950', 'B': '#58a6ff',
+    'C': '#d29922', 'D': '#FF5722', 'F': '#f85149'
 }
 
 # Pattern definitions: key -> (emoji, name, description)
