@@ -2394,14 +2394,14 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         st.markdown("#### ⚙️ Filters")
 
         # Category filter
-        categories = ['All'] + sorted(traj_df['category'].dropna().unique().tolist())
-        selected_cats = st.multiselect("Category", categories, default=['All'], key='sb_cat')
+        categories = sorted(traj_df['category'].dropna().unique().tolist())
+        selected_cats = st.multiselect("Category", categories, default=[], placeholder="All", key='sb_cat')
 
         # Sector filter (top sectors by count)
         sector_counts = traj_df['sector'].value_counts()
         top_sectors = sector_counts[sector_counts >= 3].index.tolist()
-        sectors = ['All'] + sorted(top_sectors)
-        selected_sectors = st.multiselect("Sector", sectors, default=['All'], key='sb_sector')
+        sectors = sorted(top_sectors)
+        selected_sectors = st.multiselect("Sector", sectors, default=[], placeholder="All", key='sb_sector')
 
         # Price Alignment filter
         pa_options = ['All', '💰 Confirmed', '⚠️ Divergent', '➖ Neutral']
@@ -2444,11 +2444,11 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     df = traj_df.copy()
 
     # Category
-    if 'All' not in filters['categories']:
+    if filters['categories']:
         df = df[df['category'].isin(filters['categories'])]
 
     # Sector
-    if 'All' not in filters['sectors']:
+    if filters['sectors']:
         df = df[df['sector'].isin(filters['sectors'])]
 
     # Price Alignment
