@@ -496,6 +496,7 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                     'ret_7d': [],             # v2.3: Weekly returns (split-adjusted)
                     'ret_30d': [],            # v2.3: 30-day returns
                     'ret_3m': [],             # v2.3: 3-month returns
+                    'ret_6m': [],             # v3.0: 6-month returns (institutional horizon)
                     'from_high_pct': [],      # v2.3: Distance from 52w high
                     'momentum_score': [],     # v2.3: Wave engine momentum score
                     'volume_score': [],       # v2.3: Wave engine volume score
@@ -521,6 +522,7 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
             # v2.3: Track return & fundamental data per week
             for col_name, hist_key in [
                 ('ret_7d', 'ret_7d'), ('ret_30d', 'ret_30d'), ('ret_3m', 'ret_3m'),
+                ('ret_6m', 'ret_6m'),
                 ('from_high_pct', 'from_high_pct'), ('momentum_score', 'momentum_score'),
                 ('volume_score', 'volume_score')
             ]:
@@ -682,7 +684,8 @@ def _compute_single_trajectory(h: dict) -> dict:
     ret_7d = h.get('ret_7d', [])
     ret_30d = h.get('ret_30d', [])
     ret_3m = h.get('ret_3m', [])
-    price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct, ret_3m)
+    ret_6m = h.get('ret_6m', [])
+    price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct, ret_3m, ret_6m)
     pre_price_score = trajectory_score
     trajectory_score = float(np.clip(trajectory_score * price_multiplier, 0, 100))
 
@@ -903,31 +906,52 @@ def _ema_smooth(values: List[float], span: int = 3) -> List[float]:
     return smoothed
 
 
+def _return_to_conviction(avg_ret: float, avg_pct: float) -> float:
+    """Convert an average return (3m or 6m) to a conviction score (0-100).
+    Position-aware: high-ranked stocks SHOULD have positive returns."""
+    if avg_pct >= 70:
+        if avg_ret > 20:
+            return 90.0
+        elif avg_ret > 10:
+            return 78.0
+        elif avg_ret > 0:
+            return 62.0
+        elif avg_ret > -10:
+            return 40.0
+        else:
+            return 18.0  # SEVERE: deeply negative on ranked stock
+    else:
+        if avg_ret > 30:
+            return 85.0
+        elif avg_ret > 10:
+            return 70.0
+        elif avg_ret > 0:
+            return 55.0
+        elif avg_ret > -15:
+            return 42.0
+        else:
+            return 30.0
+
+
 def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
                           pcts: List[float], avg_pct: float,
-                          ret_3m: Optional[List[float]] = None) -> Tuple[float, str, float]:
+                          ret_3m: Optional[List[float]] = None,
+                          ret_6m: Optional[List[float]] = None) -> Tuple[float, str, float]:
     """
-    Return-Based Price-Rank Alignment Multiplier (v3.0).
+    Return-Based Price-Rank Alignment Multiplier (v3.1).
 
-    UPGRADES from v2.3:
+    UPGRADES from v3.0:
       • EMA-smoothed ret_7d (3-week) — eliminates single-week noise spikes
       • Recency weighting — last 4 weeks count 2× in directional agreement
-      • Signal 3: ret_3m conviction — 3-month return confirms sustained trend
+      • Signal 3: Cross-timeframe conviction (ret_3m + ret_6m) — institutional confirmation
       • Wider multiplier range — ×0.85 to ×1.12 for stronger signal impact
+      • Signal disagreement penalty — contradicting signals reduce confidence
 
     THREE SIGNALS:
 
-    Signal 1 — EMA-Smoothed Directional Agreement (40%):
-      Does EMA(ret_7d, 3) direction match rank percentile movement?
-      Recent 4 weeks get 2× weight. Wider noise band for elite stocks.
-
-    Signal 2 — Return Quality Confirmation (30%):
-      Are recent ret_30d values positive for highly ranked stocks?
-      Catches TRAP stocks: high rank + deeply negative 30d return.
-
-    Signal 3 — 3-Month Conviction (30%):
-      Is ret_3m positive? Strongest predictor for positional trades.
-      A stock with positive 3m return has confirmed medium-term trend.
+    Signal 1 — EMA-Smoothed Directional Agreement (40%)
+    Signal 2 — Return Quality Confirmation via ret_30d (30%)
+    Signal 3 — Cross-Timeframe Conviction via ret_3m + ret_6m (30%)
 
     MULTIPLIER RANGE: ×0.85 (strong divergence) to ×1.12 (strong confirmation)
 
@@ -937,6 +961,8 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
     n = len(pcts)
     if ret_3m is None:
         ret_3m = []
+    if ret_6m is None:
+        ret_6m = []
 
     # ── Guard: Need valid return data ──
     valid_ret7 = [r for r in ret_7d if r is not None and not np.isnan(r)]
@@ -947,14 +973,15 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
     ema_span = cfg.get('ema_span', 3)
     smoothed_r7 = _ema_smooth(ret_7d, span=ema_span)
 
-    # Build aligned quads: (ema_r7, r30, r3m, percentile)
+    # Build aligned quints: (ema_r7, r30, r3m, r6m, percentile)
     quads = []
     for i in range(n):
         r7e = smoothed_r7[i] if i < len(smoothed_r7) else float('nan')
         r30 = ret_30d[i] if i < len(ret_30d) else float('nan')
         r3m = ret_3m[i] if i < len(ret_3m) else float('nan')
+        r6m = ret_6m[i] if i < len(ret_6m) else float('nan')
         if r7e is not None and not np.isnan(r7e):
-            quads.append((r7e, r30, r3m, pcts[i]))
+            quads.append((r7e, r30, r3m, r6m, pcts[i]))
 
     if len(quads) < cfg['min_weeks']:
         return 1.0, 'NEUTRAL', 50.0
@@ -968,7 +995,7 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
 
     for i in range(1, nq):
         r7e = quads[i][0]
-        r_chg = quads[i][3] - quads[i - 1][3]  # Percentile change
+        r_chg = quads[i][4] - quads[i - 1][4]  # Percentile change
 
         # Skip noise — tiny rank moves for elite stocks
         if abs(r_chg) < noise_band and abs(r7e) < 1.0:
@@ -993,7 +1020,7 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
     else:
         # No significant rank moves — fallback to latest ret_30d
         latest_r30 = float('nan')
-        for _, r30, _, _ in reversed(quads):
+        for _, r30, _, _, _ in reversed(quads):
             if r30 is not None and not np.isnan(r30):
                 latest_r30 = r30
                 break
@@ -1037,59 +1064,85 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
     else:
         quality_score = 50.0
 
-    # ── Signal 3: 3-Month Conviction (30%) ──
-    # ret_3m is the strongest predictor for positional trades — confirms sustained trend
+    # ── Signal 3: Cross-Timeframe Conviction (30%) — ret_3m + ret_6m ──
+    # ret_3m = medium-term trend. ret_6m = institutional horizon confirmation.
+    # When both agree (both positive or both negative) = high conviction.
+    # When they disagree = transition zone, reduce confidence.
     recent_r3m = [q[2] for q in quads[-recent_window:]
                   if q[2] is not None and not np.isnan(q[2])]
+    recent_r6m = [q[3] for q in quads[-recent_window:]
+                  if q[3] is not None and not np.isnan(q[3])]
 
-    if recent_r3m:
-        avg_r3m = float(np.mean(recent_r3m))
-        if avg_pct >= 70:
-            # High-ranked: 3m positive = strong conviction, negative = divergence
-            if avg_r3m > 20:
-                conviction_score = 90.0
-            elif avg_r3m > 10:
-                conviction_score = 78.0
-            elif avg_r3m > 0:
-                conviction_score = 62.0
-            elif avg_r3m > -10:
-                conviction_score = 40.0
-            else:
-                conviction_score = 18.0  # SEVERE: 3m deeply negative on ranked stock
+    has_r3m = len(recent_r3m) > 0
+    has_r6m = len(recent_r6m) > 0
+    avg_r3m = float(np.mean(recent_r3m)) if has_r3m else None
+    avg_r6m = float(np.mean(recent_r6m)) if has_r6m else None
+
+    if has_r3m and has_r6m:
+        # ── Both timeframes available: cross-timeframe scoring ──
+        # Score each independently, then blend with agreement bonus/penalty
+        r3m_score = _return_to_conviction(avg_r3m, avg_pct)
+        r6m_score = _return_to_conviction(avg_r6m, avg_pct)
+
+        # Cross-timeframe agreement bonus
+        both_positive = avg_r3m > 0 and avg_r6m > 0
+        both_negative = avg_r3m < -5 and avg_r6m < -5
+        if both_positive:
+            cross_bonus = 8.0   # Both confirm — strong conviction
+        elif both_negative:
+            cross_bonus = -8.0  # Both negative — strong divergence
+        elif (avg_r3m > 0) != (avg_r6m > 0):
+            cross_bonus = -4.0  # Disagree — transition zone
         else:
-            # Lower-ranked: any positive 3m is a turnaround signal
-            if avg_r3m > 30:
-                conviction_score = 85.0
-            elif avg_r3m > 10:
-                conviction_score = 70.0
-            elif avg_r3m > 0:
-                conviction_score = 55.0
-            elif avg_r3m > -15:
-                conviction_score = 42.0
-            else:
-                conviction_score = 30.0
-    else:
-        conviction_score = 50.0  # No data — neutral, don't penalize
+            cross_bonus = 0.0
 
-    # ── Signal 3b: Conviction Momentum (direction of ret_3m trend) ──
-    # A stock going ret_3m: -5% → +8% (recovering) is better than +15% → +10% (fading)
-    # Uses last 3 valid ret_3m values to detect building vs fading momentum
+        # Blend: 55% ret_3m (more recent) + 45% ret_6m (institutional)
+        conviction_score = float(np.clip(
+            0.55 * r3m_score + 0.45 * r6m_score + cross_bonus, 0, 100
+        ))
+    elif has_r3m:
+        # Only ret_3m available
+        conviction_score = _return_to_conviction(avg_r3m, avg_pct)
+    elif has_r6m:
+        # Only ret_6m available (rare for short histories)
+        conviction_score = _return_to_conviction(avg_r6m, avg_pct)
+    else:
+        conviction_score = 50.0  # No data — neutral
+
+    # ── Signal 3b: Conviction Momentum (direction of ret_3m + ret_6m trend) ──
+    # Detects building vs fading momentum across both timeframes
     all_r3m = [q[2] for q in quads if q[2] is not None and not np.isnan(q[2])]
+    all_r6m = [q[3] for q in quads if q[3] is not None and not np.isnan(q[3])]
+    conviction_momentum = 0.0
     if len(all_r3m) >= 3:
         tail = all_r3m[-3:]
-        r3m_delta = tail[-1] - tail[0]   # Positive = 3m return improving
+        r3m_delta = tail[-1] - tail[0]
         if r3m_delta > 10:
-            conviction_momentum = 15.0    # Strong building
+            conviction_momentum += 10.0
         elif r3m_delta > 3:
-            conviction_momentum = 8.0     # Mildly building
+            conviction_momentum += 5.0
         elif r3m_delta > -3:
-            conviction_momentum = 0.0     # Flat
+            conviction_momentum += 0.0
         elif r3m_delta > -10:
-            conviction_momentum = -8.0    # Mildly fading
+            conviction_momentum -= 5.0
         else:
-            conviction_momentum = -15.0   # Strongly fading
-        # Blend into conviction_score (capped 0-100)
-        conviction_score = float(np.clip(conviction_score + conviction_momentum, 0, 100))
+            conviction_momentum -= 10.0
+    if len(all_r6m) >= 3:
+        tail6 = all_r6m[-3:]
+        r6m_delta = tail6[-1] - tail6[0]
+        if r6m_delta > 15:
+            conviction_momentum += 8.0   # 6m accelerating strongly
+        elif r6m_delta > 5:
+            conviction_momentum += 4.0
+        elif r6m_delta > -5:
+            conviction_momentum += 0.0
+        elif r6m_delta > -15:
+            conviction_momentum -= 4.0
+        else:
+            conviction_momentum -= 8.0   # 6m decelerating hard
+    # Clamp total momentum adjustment
+    conviction_momentum = float(np.clip(conviction_momentum, -15.0, 15.0))
+    conviction_score = float(np.clip(conviction_score + conviction_momentum, 0, 100))
 
     # ── Signal Disagreement Penalty ──
     # When signals contradict each other strongly, confidence is LOW → pull score down
