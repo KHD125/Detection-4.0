@@ -687,6 +687,9 @@ def _compute_single_trajectory(h: dict) -> dict:
     _r3m_val = next((float(v) for v in reversed(_ret_3m_raw) if v is not None and not np.isnan(v)), None)
     _r6m_val = next((float(v) for v in reversed(_ret_6m_raw) if v is not None and not np.isnan(v)), None)
 
+    # Compute avg_pct early — needed by floors below AND by adaptive weights later
+    avg_pct = float(np.mean(pcts))
+
     # v5.2 FIX: Velocity floor — r3m checked FIRST (more current momentum).
     # ANALYSIS: 14/28 missed 3m-gainers had vel<45. 3m gainers are MORE relevant
     # to current momentum than 6m, but v5.1 checked r6m first with higher floor.
@@ -718,7 +721,6 @@ def _compute_single_trajectory(h: dict) -> dict:
         resilience = min(100.0, resilience + resilience_bonus)
 
     # ── Select Adaptive Weights Based on Percentile Tier ──
-    avg_pct = float(np.mean(pcts))
     weights = _get_adaptive_weights(avg_pct, current_pct=pcts[-1])
 
     # ── Composite Score (Adaptive Weighted) ──
