@@ -189,6 +189,25 @@ MOMENTUM_DECAY = {
     'mild_threshold': 15,            # Decay score above this = mild
 }
 
+# Return Conviction Boost Configuration (v4.0)
+# When ret_3m and/or ret_6m are strongly positive, directly boost T-Score.
+# Analysis showed correlation(rank, ret_3m) was only -0.221 — our system
+# was barely considering actual returns. These stocks with ret_3m=+68% were
+# ranked at 449. This multiplier fixes that disconnect.
+RETURN_CONVICTION = {
+    'min_weeks': 4,                  # Minimum data weeks
+    'r3m_strong': 25.0,              # ret_3m above this = strong conviction
+    'r3m_moderate': 10.0,            # ret_3m above this = moderate conviction
+    'r6m_strong': 40.0,              # ret_6m above this = institutional conviction
+    'r6m_moderate': 15.0,            # ret_6m above this = moderate institutional
+    'dual_strong_boost': 1.15,       # Both ret_3m + ret_6m strongly positive
+    'dual_moderate_boost': 1.08,     # Both moderately positive
+    'single_strong_boost': 1.07,     # Only one is strong
+    'single_moderate_boost': 1.03,   # Only one is moderate
+    'negative_penalty': 0.96,        # Both negative → penalize
+    'deep_negative_penalty': 0.92,   # Both deeply negative (< -10%)
+}
+
 # Sector Alpha Configuration (v2.3)
 SECTOR_ALPHA = {
     'min_sector_stocks': 3,          # Minimum stocks in sector for alpha calc
@@ -689,6 +708,14 @@ def _compute_single_trajectory(h: dict) -> dict:
     pre_price_score = trajectory_score
     trajectory_score = float(np.clip(trajectory_score * price_multiplier, 0, 100))
 
+    # ── Return Conviction Boost (v4.0) ──
+    # Direct return-based multiplier. Fixes the disconnect where stocks with
+    # ret_3m=+68% were ranked at 449 because rank-based components couldn't
+    # capture actual price appreciation. Correlation(rank, ret_3m) was -0.221.
+    conviction_multiplier, conviction_label = _calc_return_conviction(ret_3m, ret_6m, n)
+    pre_conviction_score = trajectory_score
+    trajectory_score = float(np.clip(trajectory_score * conviction_multiplier, 0, 100))
+
     # ── Momentum Decay Warning (v2.3) ──
     # Catches stocks with good rank but deteriorating returns
     from_high = h.get('from_high_pct', [])
@@ -753,6 +780,10 @@ def _compute_single_trajectory(h: dict) -> dict:
     signal_parts = []
     if price_tag:
         signal_parts.append(price_tag)
+    if conviction_label == 'RETURN_STRONG':
+        signal_parts.append('🔥')
+    elif conviction_label == 'RETURN_WEAK':
+        signal_parts.append('💧')
     if decay_tag:
         signal_parts.append(decay_tag)
     signal_tags = ''.join(signal_parts)
@@ -776,6 +807,9 @@ def _compute_single_trajectory(h: dict) -> dict:
         'price_label': price_label,
         'price_tag': price_tag,
         'pre_price_score': round(pre_price_score, 2),
+        'conviction_multiplier': round(conviction_multiplier, 3),
+        'conviction_label': conviction_label,
+        'pre_conviction_score': round(pre_conviction_score, 2),
         'decay_score': decay_score,
         'decay_multiplier': round(decay_multiplier, 3),
         'decay_label': decay_label,
@@ -807,6 +841,8 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'price_alignment': 50.0, 'price_multiplier': 1.0,
         'price_label': 'NEUTRAL', 'price_tag': '',
         'pre_price_score': 0,
+        'conviction_multiplier': 1.0, 'conviction_label': '',
+        'pre_conviction_score': 0,
         'decay_score': 0, 'decay_multiplier': 1.0,
         'decay_label': '', 'decay_tag': '',
         'pre_decay_score': 0,
@@ -1289,6 +1325,94 @@ def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
     return multiplier, label, decay_score
 
 
+# ── Return Conviction Boost Engine (v4.0) ──
+
+def _calc_return_conviction(ret_3m: List[float], ret_6m: List[float],
+                            n_weeks: int) -> Tuple[float, str]:
+    """
+    Direct Return-Based Conviction Multiplier (v4.0).
+    
+    PROBLEM SOLVED: Our T-Score used rank-percentile-based components exclusively.
+    Stocks with ret_3m=+68% and ret_6m=+86% could still rank at 449 because
+    their rank trajectory was volatile (swinging between top-50 and bottom-500).
+    Correlation(rank, ret_3m) was only -0.221 — near zero.
+    
+    SOLUTION: Directly reward stocks whose ACTUAL RETURNS prove they're winners,
+    regardless of rank volatility. This is a multiplicative boost applied after
+    all rank-based scoring.
+    
+    SIGNALS:
+      - Both ret_3m and ret_6m strongly positive → ×1.15 max (dual confirmation)
+      - Only one strong → ×1.07 (single timeframe)
+      - Both negative → penalty (confirmed underperformance)
+    
+    Returns: (multiplier, label)
+    """
+    cfg = RETURN_CONVICTION
+    
+    if n_weeks < cfg['min_weeks']:
+        return 1.0, ''
+    
+    # Get latest valid values
+    def _latest_valid(lst):
+        if not lst:
+            return None
+        for v in reversed(lst):
+            if v is not None and not np.isnan(v):
+                return float(v)
+        return None
+    
+    r3m = _latest_valid(ret_3m)
+    r6m = _latest_valid(ret_6m)
+    
+    if r3m is None and r6m is None:
+        return 1.0, ''
+    
+    # Classify each timeframe
+    r3m_strong = r3m is not None and r3m >= cfg['r3m_strong']
+    r3m_moderate = r3m is not None and r3m >= cfg['r3m_moderate']
+    r3m_negative = r3m is not None and r3m < -5
+    r3m_deep_neg = r3m is not None and r3m < -10
+    
+    r6m_strong = r6m is not None and r6m >= cfg['r6m_strong']
+    r6m_moderate = r6m is not None and r6m >= cfg['r6m_moderate']
+    r6m_negative = r6m is not None and r6m < -5
+    r6m_deep_neg = r6m is not None and r6m < -10
+    
+    # ── Dual confirmation (both timeframes agree) ──
+    if r3m_strong and r6m_strong:
+        return cfg['dual_strong_boost'], 'RETURN_STRONG'
+    
+    if r3m_strong and r6m_moderate:
+        # Strong 3m + moderate 6m = good but not max
+        return (cfg['dual_strong_boost'] + cfg['dual_moderate_boost']) / 2, 'RETURN_STRONG'
+    
+    if r3m_moderate and r6m_strong:
+        # Moderate 3m + strong 6m = institutional conviction
+        return (cfg['dual_strong_boost'] + cfg['dual_moderate_boost']) / 2, 'RETURN_STRONG'
+    
+    if r3m_moderate and r6m_moderate:
+        return cfg['dual_moderate_boost'], 'RETURN_MODERATE'
+    
+    # ── Single timeframe strong ──
+    if r3m_strong:
+        return cfg['single_strong_boost'], 'RETURN_MODERATE'
+    if r6m_strong:
+        return cfg['single_strong_boost'], 'RETURN_MODERATE'
+    
+    # ── Single timeframe moderate ──
+    if r3m_moderate or r6m_moderate:
+        return cfg['single_moderate_boost'], ''
+    
+    # ── Negative signals ──
+    if r3m_deep_neg and r6m_deep_neg:
+        return cfg['deep_negative_penalty'], 'RETURN_WEAK'
+    if r3m_negative and r6m_negative:
+        return cfg['negative_penalty'], 'RETURN_WEAK'
+    
+    return 1.0, ''
+
+
 # ── Hurst Exponent Engine (v3.0) ──
 
 def _estimate_hurst(series: List[float]) -> float:
@@ -1423,8 +1547,16 @@ def _calc_positional_quality(pcts: List[float], n: int) -> float:
     recent_avg = np.mean(pcts[-recent_window:])
     overall_avg = np.mean(pcts)
     
-    # Time-weighted blend
-    raw_pct = 0.55 * current_pct + 0.25 * recent_avg + 0.20 * overall_avg
+    # v4.0: Recency-biased positional scoring
+    # Problem found: stocks that improved recently were penalized by early bad weeks.
+    # e.g. stock at avg_pct=66 with current_pct=89 was dragged down by old data.
+    # Solution: Reduce overall weight to 10%, boost current to 60%.
+    # For late movers (recent >> overall), further reduce overall to 5%.
+    is_late_mover = recent_avg > overall_avg + 15
+    if is_late_mover:
+        raw_pct = 0.60 * current_pct + 0.35 * recent_avg + 0.05 * overall_avg
+    else:
+        raw_pct = 0.60 * current_pct + 0.30 * recent_avg + 0.10 * overall_avg
     
     # Non-linear sigmoid boost for top positions
     # This makes rank 5 vs rank 50 vs rank 200 properly differentiated
@@ -1564,7 +1696,14 @@ def _calc_acceleration(pcts: List[float], n: int, window: int = 3) -> float:
 
 def _calc_consistency_adaptive(pcts: List[float], n: int) -> float:
     """
-    Position-Aware Consistency + Information Ratio (v3.0).
+    Position-Aware Consistency + Information Ratio (v4.0).
+    
+    v4.0 UPGRADE: Added Directional Volatility Discount.
+    Problem found: 24/30 missed gainers were VOLATILE pattern (pct_range=86).
+    These stocks swing rank 50→500→100 as they gain. The old consistency
+    function crushed them with std-based penalty. But if the DIRECTION is
+    improving (2nd-half avg < 1st-half avg ranks), the volatility is a
+    FEATURE of rapid improvement, not a bug. Discount the penalty by 30%.
     
     UPGRADE: Blends position-aware band consistency with Information Ratio,
     the quant-finance gold standard for risk-adjusted consistency.
@@ -1579,6 +1718,28 @@ def _calc_consistency_adaptive(pcts: List[float], n: int) -> float:
     positive_ratio = np.sum(changes > 0) / len(changes)
     avg_pct = np.mean(pcts)
     current_pct = pcts[-1]
+
+    # === v4.0: DIRECTIONAL VOLATILITY DISCOUNT ===
+    # If recent performance > overall AND current is above average:
+    # The stock is volatile but IMPROVING → reduce consistency penalty
+    volatility_discount = 1.0  # default: no discount
+    if n >= 6:
+        half = n // 2
+        first_half_avg = float(np.mean(pcts[:half]))
+        second_half_avg = float(np.mean(pcts[half:]))
+        is_improving = second_half_avg > first_half_avg + 5
+        is_currently_high = current_pct > avg_pct
+        
+        if is_improving and is_currently_high:
+            # Discount: reduce std-based penalty by 30%
+            # This means std is treated as 70% of actual value
+            volatility_discount = 0.70
+        elif is_improving:
+            # Improving but not currently at top — 15% discount
+            volatility_discount = 0.85
+    
+    # Apply discount to std for consistency calculations
+    effective_std = std * volatility_discount
 
     # === INFORMATION RATIO COMPONENT ===
     ir_cfg = INFO_RATIO_CONFIG
@@ -1606,12 +1767,12 @@ def _calc_consistency_adaptive(pcts: List[float], n: int) -> float:
         pct_range = max(pcts) - min(pcts)
         band_score = float(np.clip(100 - pct_range * 1.67, 0, 100))
         time_at_top = sum(1 for p in pcts if p >= 80) / len(pcts) * 100
-        vol_bonus = float(np.clip(100 - std * 5, 0, 100))
+        vol_bonus = float(np.clip(100 - effective_std * 5, 0, 100))
         # Elite: 30% band, 25% time-at-top, 20% low-vol, 25% IR
         return 0.30 * band_score + 0.25 * time_at_top + 0.20 * vol_bonus + 0.25 * ir_score
     
     elif avg_pct >= 60:
-        stability = float(np.clip(100 - std * 2, 0, 100))
+        stability = float(np.clip(100 - effective_std * 2, 0, 100))
         direction = positive_ratio * 100
         trajectory_lift = min((pcts[-1] - pcts[0]) / 20.0 * 10, 15)
         # Strong: 35% stability, 30% direction, 35% IR
@@ -1619,7 +1780,7 @@ def _calc_consistency_adaptive(pcts: List[float], n: int) -> float:
         return float(np.clip(base + trajectory_lift, 0, 100))
     
     else:
-        stability = float(np.clip(100 - std * 2, 0, 100))
+        stability = float(np.clip(100 - effective_std * 2, 0, 100))
         direction = positive_ratio * 100
         # Lower: 35% stability, 30% direction, 35% IR
         return 0.35 * stability + 0.30 * direction + 0.35 * ir_score
