@@ -189,17 +189,20 @@ MOMENTUM_DECAY = {
     'mild_threshold': 15,            # Decay score above this = mild
 }
 
-# Return Conviction Boost Configuration (v4.0)
+# Return Conviction Boost Configuration (v4.1)
 # When ret_3m and/or ret_6m are strongly positive, directly boost T-Score.
-# Analysis showed correlation(rank, ret_3m) was only -0.221 — our system
-# was barely considering actual returns. These stocks with ret_3m=+68% were
-# ranked at 449. This multiplier fixes that disconnect.
+# v4.0 Analysis: Corr(rank, ret_3m) was -0.221 → added conviction boost.
+# v4.1 Analysis (6m-gainers): Corr(T-Score, ret_6m) was only 0.088.
+#   17 stocks with ret_6m>30% had conv<1.08 because r6m_strong was 40%.
+#   Added extreme tier for r6m≥80% and lowered thresholds.
 RETURN_CONVICTION = {
     'min_weeks': 4,                  # Minimum data weeks
     'r3m_strong': 25.0,              # ret_3m above this = strong conviction
     'r3m_moderate': 10.0,            # ret_3m above this = moderate conviction
-    'r6m_strong': 40.0,              # ret_6m above this = institutional conviction
-    'r6m_moderate': 15.0,            # ret_6m above this = moderate institutional
+    'r6m_extreme': 80.0,             # ret_6m above this = extreme institutional (NEW v4.1)
+    'r6m_strong': 30.0,              # ret_6m above this = institutional (was 40)
+    'r6m_moderate': 10.0,            # ret_6m above this = moderate institutional (was 15)
+    'extreme_r6m_boost': 1.10,       # Extreme r6m even when r3m is negative (NEW v4.1)
     'dual_strong_boost': 1.15,       # Both ret_3m + ret_6m strongly positive
     'dual_moderate_boost': 1.08,     # Both moderately positive
     'single_strong_boost': 1.07,     # Only one is strong
@@ -667,6 +670,31 @@ def _compute_single_trajectory(h: dict) -> dict:
     acceleration = _calc_acceleration(pcts, n)
     consistency = _calc_consistency_adaptive(pcts, n)  # Position-aware consistency
     resilience = _calc_resilience(pcts, n)
+
+    # ── Return-Enhanced Component Floors (v4.1) ──
+    # PROBLEM: 30/43 missed 6m-gainers had velocity<45 despite ret_6m>20%.
+    # Velocity gap was 30.8 pts — the SINGLE BIGGEST component gap.
+    # These stocks made massive gains but pulled back recently, cratering velocity.
+    # FIX: Use actual returns to set a floor on velocity and boost resilience.
+    # Returns prove the stock IS winning even if rank trajectory is volatile.
+    _ret_3m_raw = h.get('ret_3m', [])
+    _ret_6m_raw = h.get('ret_6m', [])
+    _r3m_val = next((float(v) for v in reversed(_ret_3m_raw) if v is not None and not np.isnan(v)), None)
+    _r6m_val = next((float(v) for v in reversed(_ret_6m_raw) if v is not None and not np.isnan(v)), None)
+
+    if _r6m_val is not None and _r6m_val >= 30 and pcts[-1] > 60:
+        velocity = max(velocity, 45.0)  # Strong 6m return + still ranked well
+    elif _r3m_val is not None and _r3m_val >= 20 and pcts[-1] > 50:
+        velocity = max(velocity, 40.0)  # Strong 3m return + reasonably ranked
+
+    # Return-enhanced resilience: high 6m returns prove fundamental strength
+    # even if the stock pulled back from its peak rank
+    if _r6m_val is not None and _r6m_val >= 30:
+        resilience_bonus = min(15.0, _r6m_val / 6.0)  # Up to +15 pts
+        resilience = min(100.0, resilience + resilience_bonus)
+    elif _r3m_val is not None and _r3m_val >= 20:
+        resilience_bonus = min(10.0, _r3m_val / 4.0)  # Up to +10 pts
+        resilience = min(100.0, resilience + resilience_bonus)
 
     # ── Select Adaptive Weights Based on Percentile Tier ──
     avg_pct = float(np.mean(pcts))
@@ -1374,10 +1402,17 @@ def _calc_return_conviction(ret_3m: List[float], ret_6m: List[float],
     r3m_negative = r3m is not None and r3m < -5
     r3m_deep_neg = r3m is not None and r3m < -10
     
+    r6m_extreme = r6m is not None and r6m >= cfg['r6m_extreme']  # v4.1
     r6m_strong = r6m is not None and r6m >= cfg['r6m_strong']
     r6m_moderate = r6m is not None and r6m >= cfg['r6m_moderate']
     r6m_negative = r6m is not None and r6m < -5
     r6m_deep_neg = r6m is not None and r6m < -10
+    
+    # ── Extreme r6m override (v4.1) ──
+    # Stocks with ret_6m ≥ 80% (e.g., 204%, 160%) have massive institutional
+    # conviction over 6 months. Even if ret_3m is negative (they peaked and
+    # pulled back), the 6m return proves fundamental strength.
+    # Force minimum boost of 1.10, or use higher if dual-qualified.
     
     # ── Dual confirmation (both timeframes agree) ──
     if r3m_strong and r6m_strong:
@@ -1393,6 +1428,10 @@ def _calc_return_conviction(ret_3m: List[float], ret_6m: List[float],
     
     if r3m_moderate and r6m_moderate:
         return cfg['dual_moderate_boost'], 'RETURN_MODERATE'
+    
+    # ── Extreme r6m even with weak/negative r3m (v4.1) ──
+    if r6m_extreme:
+        return cfg['extreme_r6m_boost'], 'RETURN_STRONG'
     
     # ── Single timeframe strong ──
     if r3m_strong:
