@@ -2508,7 +2508,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         csv_data = table_df.drop(columns=['Trajectory'], errors='ignore').to_csv(index=False)
         st.download_button(
             label="⬇️ Download CSV", data=csv_data,
-            file_name=f"trajectory_rankings_{metadata.get('latest_date','export')}.csv",
+            file_name=f"trajectory_rankings_{metadata.get('last_date','export')}.csv",
             mime='text/csv', key='csv_download'
         )
 
