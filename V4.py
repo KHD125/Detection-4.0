@@ -154,8 +154,8 @@ ADAPTIVE_WEIGHTS = {
 ELITE_BONUS = {
     'top3_sustained': {'pct_threshold': 97, 'history_ratio': 0.60, 'floor': 88},
     'top5_sustained': {'pct_threshold': 95, 'history_ratio': 0.60, 'floor': 82},
-    'top10_sustained': {'pct_threshold': 90, 'history_ratio': 0.55, 'floor': 75},
-    'top20_sustained': {'pct_threshold': 80, 'history_ratio': 0.50, 'floor': 68}
+    'top10_sustained': {'pct_threshold': 90, 'history_ratio': 0.60, 'floor': 73},
+    'top20_sustained': {'pct_threshold': 85, 'history_ratio': 0.55, 'floor': 65}
 }
 
 # Return-Based Price-Rank Alignment Configuration (v3.0 — EMA-smoothed, 3-signal, recency-weighted)
@@ -163,8 +163,8 @@ PRICE_ALIGNMENT = {
     'noise_band_stable': 2.0,        # Ignore rank moves < this for stable stocks
     'noise_band_normal': 1.0,        # Ignore rank moves < this for normal stocks
     'min_weeks': 4,                  # Minimum weeks needed for alignment calculation
-    'multiplier_max_boost': 1.12,    # Maximum upward multiplier (widened from 1.08)
-    'multiplier_max_penalty': 0.85,  # Maximum downward multiplier (widened from 0.92)
+    'multiplier_max_boost': 1.08,    # Maximum upward multiplier (v5.3: reduced from 1.12)
+    'multiplier_max_penalty': 0.88,  # Maximum downward multiplier (v5.3: tightened from 0.85)
     'confirmed_threshold': 72,       # Alignment score above this = PRICE_CONFIRMED
     'divergent_threshold': 35,       # Alignment score below this = PRICE_DIVERGENT
     'ema_span': 3,                   # EMA span for smoothing ret_7d (3-week)
@@ -206,12 +206,12 @@ RETURN_CONVICTION = {
     'r6m_ultra': 50.0,               # ret_6m above this = ultra conviction (NEW v5.1)
     'r6m_strong': 30.0,              # ret_6m above this = institutional
     'r6m_moderate': 10.0,            # ret_6m above this = moderate institutional
-    'extreme_r6m_boost': 1.14,       # Extreme r6m (≥80%) even with negative r3m (was 1.10)
-    'ultra_r6m_boost': 1.12,         # Ultra r6m (≥50%) even with negative r3m (NEW v5.1)
-    'dual_strong_boost': 1.15,       # Both ret_3m + ret_6m strongly positive
-    'dual_moderate_boost': 1.08,     # Both moderately positive
-    'single_strong_boost': 1.07,     # Only one is strong
-    'single_moderate_boost': 1.03,   # Only one is moderate
+    'extreme_r6m_boost': 1.10,       # Extreme r6m (≥80%) even with negative r3m (v5.3: was 1.14)
+    'ultra_r6m_boost': 1.08,         # Ultra r6m (≥50%) even with negative r3m (v5.3: was 1.12)
+    'dual_strong_boost': 1.10,       # Both ret_3m + ret_6m strongly positive (v5.3: was 1.15)
+    'dual_moderate_boost': 1.05,     # Both moderately positive (v5.3: was 1.08)
+    'single_strong_boost': 1.05,     # Only one is strong (v5.3: was 1.07)
+    'single_moderate_boost': 1.02,   # Only one is moderate (v5.3: was 1.03)
     'negative_penalty': 0.96,        # Both negative → penalize
     'deep_negative_penalty': 0.92,   # Both deeply negative (< -10%)
 }
@@ -748,7 +748,6 @@ def _compute_single_trajectory(h: dict) -> dict:
     # Determines if the rank trend will PERSIST or REVERT.
     # H > 0.55: trending → boost. H < 0.42: mean-reverting → penalize uptrends.
     hurst_multiplier = _calc_hurst_multiplier(pcts, trend)
-    trajectory_score = float(np.clip(trajectory_score * hurst_multiplier, 0, 100))
 
     # ── Price-Rank Alignment Multiplier (v3.0 — EMA-smoothed, 3-signal) ──
     ret_7d = h.get('ret_7d', [])
@@ -756,35 +755,26 @@ def _compute_single_trajectory(h: dict) -> dict:
     ret_3m = h.get('ret_3m', [])
     ret_6m = h.get('ret_6m', [])
     price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct, ret_3m, ret_6m)
-    pre_price_score = trajectory_score
-    trajectory_score = float(np.clip(trajectory_score * price_multiplier, 0, 100))
 
     # ── Return Conviction Boost (v4.0) ──
     # Direct return-based multiplier. Fixes the disconnect where stocks with
     # ret_3m=+68% were ranked at 449 because rank-based components couldn't
     # capture actual price appreciation. Correlation(rank, ret_3m) was -0.221.
     conviction_multiplier, conviction_label = _calc_return_conviction(ret_3m, ret_6m, n)
-    pre_conviction_score = trajectory_score
-    trajectory_score = float(np.clip(trajectory_score * conviction_multiplier, 0, 100))
 
-    # ── 3M Momentum Surge Multiplier (v5.2) ──
-    # PROBLEM: RUBICON has r3m=26%, all components 63-100, score=69.5 but rank=523.
-    # Every component is "good but not great" — no individual component is
-    # exceptional enough to push it up. But r3m>20% + current_pct>65 PROVES
-    # the stock gained significantly. The rank trajectory LAGS the price reality.
+    # ── v5.3: Surge Multiplier REMOVED — it double-counted conviction's r3m signal ──
     surge_multiplier = 1.0
     surge_label = ''
-    if _r3m_val is not None and _r3m_val >= 20.0 and pcts[-1] >= 65:
-        if _r3m_val >= 35.0:
-            surge_multiplier = 1.10
-            surge_label = 'SURGE_STRONG'
-        elif _r3m_val >= 25.0:
-            surge_multiplier = 1.07
-            surge_label = 'SURGE_MODERATE'
-        else:
-            surge_multiplier = 1.04
-            surge_label = 'SURGE_MILD'
-    trajectory_score = float(np.clip(trajectory_score * surge_multiplier, 0, 100))
+
+    # ── v5.3: Apply all multipliers with TOTAL CAP ──
+    # PROBLEM: price(×1.08) × conviction(×1.10) × hurst(×1.06) = ×1.26 total
+    # This turns a C-grade base (57) into S-grade (72). Multipliers should CONFIRM
+    # trajectory quality, not substitute for it. Cap total at ×1.18 boost / ×0.82 penalty.
+    pre_price_score = trajectory_score  # Save for diagnostics
+    combined_mult = hurst_multiplier * price_multiplier * conviction_multiplier
+    combined_mult = float(np.clip(combined_mult, 0.82, 1.18))
+    trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
+    pre_conviction_score = pre_price_score  # For diagnostics
 
     # ── Momentum Decay Warning (v2.3) ──
     # Catches stocks with good rank but deteriorating returns
@@ -880,8 +870,8 @@ def _compute_single_trajectory(h: dict) -> dict:
         'conviction_multiplier': round(conviction_multiplier, 3),
         'conviction_label': conviction_label,
         'pre_conviction_score': round(pre_conviction_score, 2),
-        'surge_multiplier': round(surge_multiplier, 3),
-        'surge_label': surge_label,
+        'surge_multiplier': 1.0,  # v5.3: removed, kept for compat
+        'surge_label': '',
         'decay_score': decay_score,
         'decay_multiplier': round(decay_multiplier, 3),
         'decay_label': decay_label,
@@ -990,8 +980,8 @@ def _apply_elite_bonus(score: float, pcts: List[float], n: int) -> float:
         
         if ratio >= required_ratio:
             # Apply floor, but also scale slightly above floor based on actual ratio
-            # e.g., 90% of weeks at top3% → higher than 60% of weeks at top3%
-            bonus_extra = (ratio - required_ratio) / (1.0 - required_ratio + 0.01) * 8
+            # v5.3: reduced bonus_extra from 8 to 4 to prevent over-inflation
+            bonus_extra = (ratio - required_ratio) / (1.0 - required_ratio + 0.01) * 4
             effective_floor = floor + bonus_extra
             score = max(score, effective_floor)
             break  # Only apply highest qualifying tier
@@ -1727,16 +1717,17 @@ def _calc_trend(pcts: List[float], n: int) -> float:
     # Normalize: +2 percentile/week = 100, -2 = 0
     raw_score = float(np.clip(slope / 2.0 * 50 + 50, 0, 100))
     
-    # v2.0 Elite Floor: top-positioned stocks get a minimum trend score
+    # v5.3: Reduced trend floors — were inflating ~30% of stocks.
+    # Old floors (70/65/58/52) prevented top stocks from EVER showing weak trend.
     recent_avg_pct = np.mean(pcts[-min(4, n):])
     if recent_avg_pct > 95:
-        raw_score = max(raw_score, 70)
+        raw_score = max(raw_score, 62)   # v5.3: was 70
     elif recent_avg_pct > 90:
-        raw_score = max(raw_score, 65)
+        raw_score = max(raw_score, 57)   # v5.3: was 65
     elif recent_avg_pct > 80:
-        raw_score = max(raw_score, 58)
+        raw_score = max(raw_score, 52)   # v5.3: was 58
     elif recent_avg_pct > 70:
-        raw_score = max(raw_score, 52)
+        raw_score = max(raw_score, 48)   # v5.3: was 52
     
     return raw_score
 
@@ -1769,15 +1760,16 @@ def _calc_velocity_adaptive(pcts: List[float], n: int, window: int = 4) -> float
     # Position-relative adjustment:
     # At high percentiles, holding steady is an ACHIEVEMENT
     # Difficulty multiplier: higher position = harder to improve = bonus for holding
+    # v5.3: Reduced hold_bonus — was inflating velocity for top stocks (B-grade had
+    # HIGHER velocity than S-grade because mid-range movers scored 77.5 vs elite's 73.8).
     if current_pct >= 95:
-        # Top 5%: holding = good (bonus 15), small dip forgiven
-        hold_bonus = 15.0
-        change_sensitivity = 0.6  # Less sensitive to small changes
+        hold_bonus = 8.0           # v5.3: was 15 — too generous
+        change_sensitivity = 0.7   # v5.3: was 0.6
     elif current_pct >= 85:
-        hold_bonus = 10.0
-        change_sensitivity = 0.75
+        hold_bonus = 5.0           # v5.3: was 10
+        change_sensitivity = 0.8   # v5.3: was 0.75
     elif current_pct >= 70:
-        hold_bonus = 5.0
+        hold_bonus = 2.0           # v5.3: was 5
         change_sensitivity = 0.9
     else:
         hold_bonus = 0.0
@@ -1856,14 +1848,12 @@ def _calc_acceleration(pcts: List[float], n: int, window: int = 3) -> float:
     # (Tighter than old ±2 because WLS is smoother, so real accelerations are smaller)
     raw_score = float(np.clip(accel_slope / 1.5 * 50 + 50, 0, 100))
 
-    # Step 3: Position-relative adjustment
-    # At high percentiles, maintaining velocity = achievement (mirror velocity logic)
+    # Step 3: Position-relative adjustment (v5.3: floors reduced)
     current_pct = pcts[-1]
     if current_pct >= 92:
-        # Top stocks: not decelerating = good → floor at 45
-        raw_score = max(raw_score, 45.0)
+        raw_score = max(raw_score, 42.0)   # v5.3: was 45
     elif current_pct >= 80:
-        raw_score = max(raw_score, 42.0)
+        raw_score = max(raw_score, 40.0)   # v5.3: was 42
 
     return float(np.clip(raw_score, 0, 100))
 
