@@ -2403,6 +2403,15 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         sectors = sorted(top_sectors)
         selected_sectors = st.multiselect("Sector", sectors, default=[], placeholder="All", key='sb_sector')
 
+        # Industry filter (dynamic — cascades from category/sector selection)
+        industry_pool = traj_df
+        if selected_cats:
+            industry_pool = industry_pool[industry_pool['category'].isin(selected_cats)]
+        if selected_sectors:
+            industry_pool = industry_pool[industry_pool['sector'].isin(selected_sectors)]
+        industries = sorted(industry_pool['industry'].dropna().loc[lambda s: s.str.strip() != ''].unique().tolist())
+        selected_industries = st.multiselect("Industry", industries, default=[], placeholder="All", key='sb_industry')
+
         # Price Alignment filter
         pa_options = ['All', '💰 Confirmed', '⚠️ Divergent', '➖ Neutral']
         selected_pa = st.selectbox("Price Alignment", pa_options, index=0, key='sb_pa')
@@ -2431,6 +2440,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
     return {
         'categories': selected_cats,
         'sectors': selected_sectors,
+        'industries': selected_industries,
         'price_alignment': selected_pa,
         'momentum_decay': selected_md,
         'min_weeks': min_weeks,
@@ -2450,6 +2460,10 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     # Sector
     if filters['sectors']:
         df = df[df['sector'].isin(filters['sectors'])]
+
+    # Industry
+    if filters.get('industries'):
+        df = df[df['industry'].isin(filters['industries'])]
 
     # Price Alignment
     pa = filters.get('price_alignment', 'All')
