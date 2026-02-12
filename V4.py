@@ -118,35 +118,40 @@ INFO_RATIO_CONFIG = {
 
 # Base weights (used for mid-range stocks, percentile 40-70)
 BASE_WEIGHTS = {
-    'positional': 0.25,
-    'trend': 0.20,
-    'velocity': 0.15,
-    'acceleration': 0.10,
-    'consistency': 0.15,
-    'resilience': 0.15
+    'positional': 0.22,
+    'trend': 0.17,
+    'velocity': 0.13,
+    'acceleration': 0.08,
+    'consistency': 0.13,
+    'resilience': 0.12,
+    'return_quality': 0.15
 }
 
-# Adaptive weight profiles by percentile tier
+# Adaptive weight profiles by percentile tier (v6.0: 7 components)
 ADAPTIVE_WEIGHTS = {
-    # Elite (avg pct > 90): Position IS the score. Movement is maintenance.
+    # Elite (avg pct > 90): Position IS the score. Returns confirm dominance.
     'elite': {
-        'positional': 0.45, 'trend': 0.12, 'velocity': 0.08,
-        'acceleration': 0.05, 'consistency': 0.18, 'resilience': 0.12
+        'positional': 0.40, 'trend': 0.10, 'velocity': 0.07,
+        'acceleration': 0.04, 'consistency': 0.16, 'resilience': 0.10,
+        'return_quality': 0.13
     },
-    # Strong (avg pct 70-90): Balanced — good position + should keep improving
+    # Strong (avg pct 70-90): Balanced — good position + returns should back it up
     'strong': {
-        'positional': 0.32, 'trend': 0.18, 'velocity': 0.12,
-        'acceleration': 0.08, 'consistency': 0.16, 'resilience': 0.14
+        'positional': 0.28, 'trend': 0.16, 'velocity': 0.10,
+        'acceleration': 0.07, 'consistency': 0.14, 'resilience': 0.12,
+        'return_quality': 0.13
     },
-    # Mid (avg pct 40-70): Movement-focused — need to prove trajectory
+    # Mid (avg pct 40-70): Movement + returns — prove trajectory with gains
     'mid': {
-        'positional': 0.18, 'trend': 0.22, 'velocity': 0.20,
-        'acceleration': 0.12, 'consistency': 0.14, 'resilience': 0.14
+        'positional': 0.15, 'trend': 0.19, 'velocity': 0.17,
+        'acceleration': 0.10, 'consistency': 0.12, 'resilience': 0.12,
+        'return_quality': 0.15
     },
-    # Bottom (avg pct < 40): Acceleration-heavy — are they turning around?
+    # Bottom (avg pct < 40): Returns matter most — are gains materializing?
     'bottom': {
-        'positional': 0.10, 'trend': 0.20, 'velocity': 0.25,
-        'acceleration': 0.18, 'consistency': 0.12, 'resilience': 0.15
+        'positional': 0.08, 'trend': 0.17, 'velocity': 0.21,
+        'acceleration': 0.15, 'consistency': 0.10, 'resilience': 0.12,
+        'return_quality': 0.17
     }
 }
 
@@ -158,7 +163,7 @@ ELITE_BONUS = {
     'top20_sustained': {'pct_threshold': 85, 'history_ratio': 0.55, 'floor': 65}
 }
 
-# Return-Based Price-Rank Alignment Configuration (v3.0 — EMA-smoothed, 3-signal, recency-weighted)
+# Return-Based Price-Rank Alignment Configuration (v6.0 — 2-signal, no conviction)
 PRICE_ALIGNMENT = {
     'noise_band_stable': 2.0,        # Ignore rank moves < this for stable stocks
     'noise_band_normal': 1.0,        # Ignore rank moves < this for normal stocks
@@ -189,31 +194,15 @@ MOMENTUM_DECAY = {
     'mild_threshold': 15,            # Decay score above this = mild
 }
 
-# Return Conviction Boost Configuration (v4.1)
-# When ret_3m and/or ret_6m are strongly positive, directly boost T-Score.
-# v4.0 Analysis: Corr(rank, ret_3m) was -0.221 → added conviction boost.
-# v4.1 Analysis (6m-gainers): Corr(T-Score, ret_6m) was only 0.088.
-#   17 stocks with ret_6m>30% had conv<1.08 because r6m_strong was 40%.
-#   Added extreme tier for r6m≥80% and lowered thresholds.
-# v5.1 Analysis: Corr(T-Score, ret_6m) was only 0.207 — still weak.
-#   32 missed gainers, many with ret_6m>30% but crushed by accel/decay.
-#   Added ultra_r6m tier for >=50% and raised extreme boost.
-RETURN_CONVICTION = {
-    'min_weeks': 4,                  # Minimum data weeks
-    'r3m_strong': 25.0,              # ret_3m above this = strong conviction
-    'r3m_moderate': 10.0,            # ret_3m above this = moderate conviction
-    'r6m_extreme': 80.0,             # ret_6m above this = extreme institutional
-    'r6m_ultra': 50.0,               # ret_6m above this = ultra conviction (NEW v5.1)
-    'r6m_strong': 30.0,              # ret_6m above this = institutional
-    'r6m_moderate': 10.0,            # ret_6m above this = moderate institutional
-    'extreme_r6m_boost': 1.10,       # Extreme r6m (≥80%) even with negative r3m (v5.3: was 1.14)
-    'ultra_r6m_boost': 1.08,         # Ultra r6m (≥50%) even with negative r3m (v5.3: was 1.12)
-    'dual_strong_boost': 1.10,       # Both ret_3m + ret_6m strongly positive (v5.3: was 1.15)
-    'dual_moderate_boost': 1.05,     # Both moderately positive (v5.3: was 1.08)
-    'single_strong_boost': 1.05,     # Only one is strong (v5.3: was 1.07)
-    'single_moderate_boost': 1.02,   # Only one is moderate (v5.3: was 1.03)
-    'negative_penalty': 0.96,        # Both negative → penalize
-    'deep_negative_penalty': 0.92,   # Both deeply negative (< -10%)
+# ── Return Quality Component Configuration (v6.0) ──
+# ARCHITECTURE CHANGE: Returns are now a dedicated 7th scoring component.
+# Previously returns leaked through 5 doors (velocity floor, acceleration floor,
+# resilience bonus, conviction multiplier, price alignment signal 3).
+# Now one clean component: _calc_return_quality() → 0 to 100.
+# 4 sub-signals: 3M return (30%), 6M return (30%), short-term momentum (20%),
+# return health / cross-timeframe agreement (20%).
+RETURN_QUALITY = {
+    'min_weeks': 3,                  # Minimum data weeks for scoring
 }
 
 # Sector Alpha Configuration (v2.3)
@@ -668,7 +657,7 @@ def _compute_single_trajectory(h: dict) -> dict:
 
     pcts = ranks_to_percentiles(ranks, totals)
 
-    # ── 6-Component Scores (v2.1 Adaptive) ──
+    # ── 7-Component Scores (v6.0 — ReturnQuality added) ──
     positional = _calc_positional_quality(pcts, n)
     trend = _calc_trend(pcts, n)
     velocity = _calc_velocity_adaptive(pcts, n)  # Position-relative velocity
@@ -676,61 +665,34 @@ def _compute_single_trajectory(h: dict) -> dict:
     consistency = _calc_consistency_adaptive(pcts, n)  # Position-aware consistency
     resilience = _calc_resilience(pcts, n)
 
-    # ── Return-Enhanced Component Floors (v4.1) ──
-    # PROBLEM: 30/43 missed 6m-gainers had velocity<45 despite ret_6m>20%.
-    # Velocity gap was 30.8 pts — the SINGLE BIGGEST component gap.
-    # These stocks made massive gains but pulled back recently, cratering velocity.
-    # FIX: Use actual returns to set a floor on velocity and boost resilience.
-    # Returns prove the stock IS winning even if rank trajectory is volatile.
-    _ret_3m_raw = h.get('ret_3m', [])
-    _ret_6m_raw = h.get('ret_6m', [])
-    _r3m_val = next((float(v) for v in reversed(_ret_3m_raw) if v is not None and not np.isnan(v)), None)
-    _r6m_val = next((float(v) for v in reversed(_ret_6m_raw) if v is not None and not np.isnan(v)), None)
+    # ── v6.0: Return floors REMOVED — returns are now a dedicated component ──
+    # Previously returns leaked through 5 doors: velocity floor, acceleration floor,
+    # resilience bonus, conviction multiplier, price alignment signal 3.
+    # Now: one clean component handles ALL return information.
 
-    # Compute avg_pct early — needed by floors below AND by adaptive weights later
+    # Compute avg_pct — needed by adaptive weights and return quality
     avg_pct = float(np.mean(pcts))
 
-    # v5.2 FIX: Velocity floor — r3m checked FIRST (more current momentum).
-    # ANALYSIS: 14/28 missed 3m-gainers had vel<45. 3m gainers are MORE relevant
-    # to current momentum than 6m, but v5.1 checked r6m first with higher floor.
-    # MIDWESTLTD: r3m=40% but vel=40 because floor was only 40. Now gets 48.
-    # Lower avg_pct gates: late movers have avg_pct~55-65 by definition.
-    if _r3m_val is not None and _r3m_val >= 25 and (pcts[-1] > 50 or avg_pct > 55):
-        velocity = max(velocity, 48.0)  # Strong 3m return = CURRENT momentum
-    elif _r6m_val is not None and _r6m_val >= 30 and (pcts[-1] > 60 or avg_pct > 70):
-        velocity = max(velocity, 45.0)  # Strong 6m return + proven position
-    elif _r3m_val is not None and _r3m_val >= 15 and (pcts[-1] > 45 or avg_pct > 55):
-        velocity = max(velocity, 42.0)  # Moderate 3m still deserves support
-
-    # v5.2 FIX: Acceleration floor — r3m checked FIRST, higher floors.
-    # ANALYSIS: 12/28 missed 3m-gainers had accel<45. Stocks gaining 15-40%
-    # over 3m naturally show deceleration (they rose fast, now consolidating).
-    if _r3m_val is not None and _r3m_val >= 25 and (pcts[-1] > 45 or avg_pct > 55):
-        acceleration = max(acceleration, 47.0)  # 3m acceleration is MORE relevant
-    elif _r6m_val is not None and _r6m_val >= 30 and (pcts[-1] > 50 or avg_pct > 65):
-        acceleration = max(acceleration, 45.0)
-    elif _r3m_val is not None and _r3m_val >= 15 and (pcts[-1] > 45 or avg_pct > 50):
-        acceleration = max(acceleration, 42.0)
-
-    # v5.2: Return-enhanced resilience — r3m bonus raised to match importance
-    if _r6m_val is not None and _r6m_val >= 30:
-        resilience_bonus = min(15.0, _r6m_val / 6.0)  # Up to +15 pts
-        resilience = min(100.0, resilience + resilience_bonus)
-    elif _r3m_val is not None and _r3m_val >= 15:
-        resilience_bonus = min(13.0, _r3m_val / 3.0)  # Up to +13 pts (was +10)
-        resilience = min(100.0, resilience + resilience_bonus)
+    # ── Return Quality Component (v6.0 — Dedicated 7th Component) ──
+    ret_7d = h.get('ret_7d', [])
+    ret_30d = h.get('ret_30d', [])
+    ret_3m = h.get('ret_3m', [])
+    ret_6m = h.get('ret_6m', [])
+    from_high = h.get('from_high_pct', [])
+    return_quality = _calc_return_quality(ret_3m, ret_6m, ret_7d, ret_30d, from_high, avg_pct, n)
 
     # ── Select Adaptive Weights Based on Percentile Tier ──
     weights = _get_adaptive_weights(avg_pct, current_pct=pcts[-1])
 
-    # ── Composite Score (Adaptive Weighted) ──
+    # ── Composite Score (7-Component Adaptive Weighted) ──
     trajectory_score = (
         weights['positional'] * positional +
         weights['trend'] * trend +
         weights['velocity'] * velocity +
         weights['acceleration'] * acceleration +
         weights['consistency'] * consistency +
-        weights['resilience'] * resilience
+        weights['resilience'] * resilience +
+        weights['return_quality'] * return_quality
     )
 
     # ── Elite Dominance Bonus ──
@@ -749,32 +711,26 @@ def _compute_single_trajectory(h: dict) -> dict:
     # H > 0.55: trending → boost. H < 0.42: mean-reverting → penalize uptrends.
     hurst_multiplier = _calc_hurst_multiplier(pcts, trend)
 
-    # ── Price-Rank Alignment Multiplier (v3.0 — EMA-smoothed, 3-signal) ──
-    ret_7d = h.get('ret_7d', [])
-    ret_30d = h.get('ret_30d', [])
-    ret_3m = h.get('ret_3m', [])
-    ret_6m = h.get('ret_6m', [])
+    # ── Price-Rank Alignment Multiplier (v6.0 — 2-signal, no return conviction) ──
     price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct, ret_3m, ret_6m)
 
-    # ── Return Conviction Boost (v4.0) ──
-    # Direct return-based multiplier. Fixes the disconnect where stocks with
-    # ret_3m=+68% were ranked at 449 because rank-based components couldn't
-    # capture actual price appreciation. Correlation(rank, ret_3m) was -0.221.
-    conviction_multiplier, conviction_label = _calc_return_conviction(ret_3m, ret_6m, n)
+    # ── v6.0: Conviction multiplier REMOVED — returns handled by ReturnQuality component ──
+    conviction_multiplier = 1.0
+    conviction_label = ''
 
     # ── v5.3: Surge Multiplier REMOVED — it double-counted conviction's r3m signal ──
     surge_multiplier = 1.0
     surge_label = ''
 
-    # ── v5.3: Apply all multipliers with TOTAL CAP ──
-    # PROBLEM: price(×1.08) × conviction(×1.10) × hurst(×1.06) = ×1.26 total
-    # This turns a C-grade base (57) into S-grade (72). Multipliers should CONFIRM
-    # trajectory quality, not substitute for it. Cap total at ×1.18 boost / ×0.82 penalty.
+    # ── v6.0: Apply multipliers with TOTAL CAP (hurst × price only) ──
+    # Conviction removed — no longer a multiplier. Returns flow through the
+    # 7th component (return_quality) with proper adaptive weighting.
+    # Cap: ×0.85 to ×1.15 (tighter range with only 2 multipliers)
     pre_price_score = trajectory_score  # Save for diagnostics
-    combined_mult = hurst_multiplier * price_multiplier * conviction_multiplier
-    combined_mult = float(np.clip(combined_mult, 0.82, 1.18))
+    combined_mult = hurst_multiplier * price_multiplier
+    combined_mult = float(np.clip(combined_mult, 0.85, 1.15))
     trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
-    pre_conviction_score = pre_price_score  # For diagnostics
+    pre_conviction_score = pre_price_score  # For diagnostics (compat)
 
     # ── Momentum Decay Warning (v2.3) ──
     # Catches stocks with good rank but deteriorating returns
@@ -837,13 +793,14 @@ def _compute_single_trajectory(h: dict) -> dict:
         decay_tag = '~'
 
     # Build signal tags column (combined indicator)
+    # v6.0: Use return_quality score instead of conviction_label
     signal_parts = []
     if price_tag:
         signal_parts.append(price_tag)
-    if conviction_label == 'RETURN_STRONG':
-        signal_parts.append('🔥')
-    elif conviction_label == 'RETURN_WEAK':
-        signal_parts.append('💧')
+    if return_quality >= 75:
+        signal_parts.append('🔥')       # Strong returns
+    elif return_quality <= 30:
+        signal_parts.append('💧')       # Weak returns
     if decay_tag:
         signal_parts.append(decay_tag)
     signal_tags = ''.join(signal_parts)
@@ -856,6 +813,7 @@ def _compute_single_trajectory(h: dict) -> dict:
         'acceleration': round(acceleration, 2),
         'consistency': round(consistency, 2),
         'resilience': round(resilience, 2),
+        'return_quality': round(return_quality, 2),
         'hurst': round(_estimate_hurst(pcts), 3) if n >= HURST_CONFIG['min_weeks'] else 0.5,
         'confidence': round(confidence, 3),
         'grade': grade,
@@ -867,8 +825,8 @@ def _compute_single_trajectory(h: dict) -> dict:
         'price_label': price_label,
         'price_tag': price_tag,
         'pre_price_score': round(pre_price_score, 2),
-        'conviction_multiplier': round(conviction_multiplier, 3),
-        'conviction_label': conviction_label,
+        'conviction_multiplier': 1.0,    # v6.0: removed, kept for compat
+        'conviction_label': '',           # v6.0: removed, kept for compat
         'pre_conviction_score': round(pre_conviction_score, 2),
         'surge_multiplier': 1.0,  # v5.3: removed, kept for compat
         'surge_label': '',
@@ -897,6 +855,7 @@ def _empty_trajectory(ranks, totals, pcts, n):
     return {
         'trajectory_score': 0, 'positional': 0, 'trend': 50, 'velocity': 50,
         'acceleration': 50, 'consistency': 50, 'resilience': 50,
+        'return_quality': 50,
         'hurst': 0.5, 'confidence': BAYESIAN_CONFIDENCE['min_confidence'],
         'grade': 'F', 'grade_emoji': '📉',
         'pattern_key': 'new_entry', 'pattern': '💎 New Entry',
@@ -1010,6 +969,192 @@ def _ema_smooth(values: List[float], span: int = 3) -> List[float]:
     return smoothed
 
 
+# ── Return Quality Component (v6.0) ──
+
+def _calc_return_quality(ret_3m_list: List[float], ret_6m_list: List[float],
+                         ret_7d_list: List[float], ret_30d_list: List[float],
+                         from_high_list: List[float], avg_pct: float, n: int) -> float:
+    """
+    Return Quality — Dedicated 7th scoring component (v6.0).
+
+    ARCHITECTURE: Replaces 5 scattered return touchpoints (velocity floor,
+    acceleration floor, resilience bonus, conviction multiplier, price alignment
+    signal 3) with a single clean component (0-100).
+
+    4 SUB-SIGNALS:
+      Signal 1 (30%): 3-Month Return Score — medium-term momentum quality
+      Signal 2 (30%): 6-Month Return Score — institutional horizon confirmation
+      Signal 3 (20%): Short-Term Momentum — ret_7d + ret_30d recency signal
+      Signal 4 (20%): Return Health — cross-timeframe agreement + from-high distance
+
+    Returns: float (0-100), where 50 = neutral, >70 = strong, <30 = weak.
+    """
+    if n < RETURN_QUALITY.get('min_weeks', 3):
+        return 50.0
+
+    def _latest_valid(lst):
+        """Get latest non-None, non-NaN value from a list."""
+        if not lst:
+            return None
+        for v in reversed(lst):
+            if v is not None and not np.isnan(v):
+                return float(v)
+        return None
+
+    r3m = _latest_valid(ret_3m_list)
+    r6m = _latest_valid(ret_6m_list)
+    r7d = _latest_valid(ret_7d_list)
+    r30d = _latest_valid(ret_30d_list)
+    fh = _latest_valid(from_high_list)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Signal 1: 3-Month Return Score (30%)
+    # Captures medium-term momentum. Sigmoid-like mapping from return %
+    # to 0-100. Position-aware: elite stocks SHOULD have gains.
+    # ═══════════════════════════════════════════════════════════════════
+    if r3m is not None:
+        if r3m >= 40:
+            s1 = 92.0 + min((r3m - 40) / 60 * 8, 8.0)     # 92-100
+        elif r3m >= 25:
+            s1 = 78.0 + (r3m - 25) / 15 * 14               # 78-92
+        elif r3m >= 15:
+            s1 = 65.0 + (r3m - 15) / 10 * 13               # 65-78
+        elif r3m >= 5:
+            s1 = 52.0 + (r3m - 5) / 10 * 13                # 52-65
+        elif r3m >= 0:
+            s1 = 42.0 + r3m / 5 * 10                       # 42-52
+        elif r3m >= -10:
+            s1 = 25.0 + (r3m + 10) / 10 * 17               # 25-42
+        elif r3m >= -25:
+            s1 = 10.0 + (r3m + 25) / 15 * 15               # 10-25
+        else:
+            s1 = max(5.0, 10.0 + (r3m + 25) / 25 * 5)      # 5-10
+    else:
+        s1 = 50.0
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Signal 2: 6-Month Return Score (30%)
+    # Captures institutional-horizon quality. Wider range since 6m returns
+    # span -50% to +150% typically. Strong 6m = proven gainer.
+    # ═══════════════════════════════════════════════════════════════════
+    if r6m is not None:
+        if r6m >= 80:
+            s2 = 93.0 + min((r6m - 80) / 120 * 7, 7.0)     # 93-100
+        elif r6m >= 50:
+            s2 = 80.0 + (r6m - 50) / 30 * 13               # 80-93
+        elif r6m >= 30:
+            s2 = 65.0 + (r6m - 30) / 20 * 15               # 65-80
+        elif r6m >= 10:
+            s2 = 50.0 + (r6m - 10) / 20 * 15               # 50-65
+        elif r6m >= 0:
+            s2 = 40.0 + r6m / 10 * 10                       # 40-50
+        elif r6m >= -15:
+            s2 = 22.0 + (r6m + 15) / 15 * 18               # 22-40
+        elif r6m >= -30:
+            s2 = 10.0 + (r6m + 30) / 15 * 12               # 10-22
+        else:
+            s2 = max(5.0, 10.0 + (r6m + 30) / 30 * 5)      # 5-10
+    else:
+        s2 = 50.0
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Signal 3: Short-Term Momentum (20%)
+    # ret_7d (35%) + ret_30d (65%). Recent price action quality.
+    # Higher weight on 30d because 7d is noisy.
+    # ═══════════════════════════════════════════════════════════════════
+    st_parts = []
+    st_weights = []
+
+    if r7d is not None:
+        if r7d >= 5:
+            st7 = 85.0 + min((r7d - 5) / 10 * 15, 15.0)
+        elif r7d >= 2:
+            st7 = 68.0 + (r7d - 2) / 3 * 17
+        elif r7d >= 0:
+            st7 = 52.0 + r7d / 2 * 16
+        elif r7d >= -2:
+            st7 = 38.0 + (r7d + 2) / 2 * 14
+        elif r7d >= -5:
+            st7 = 20.0 + (r7d + 5) / 3 * 18
+        else:
+            st7 = max(5.0, 20.0 + (r7d + 5) / 10 * 15)
+        st_parts.append(st7)
+        st_weights.append(0.35)
+
+    if r30d is not None:
+        if r30d >= 15:
+            st30 = 85.0 + min((r30d - 15) / 20 * 15, 15.0)
+        elif r30d >= 5:
+            st30 = 65.0 + (r30d - 5) / 10 * 20
+        elif r30d >= 0:
+            st30 = 50.0 + r30d / 5 * 15
+        elif r30d >= -5:
+            st30 = 35.0 + (r30d + 5) / 5 * 15
+        elif r30d >= -15:
+            st30 = 15.0 + (r30d + 15) / 10 * 20
+        else:
+            st30 = max(5.0, 15.0 + (r30d + 15) / 20 * 10)
+        st_parts.append(st30)
+        st_weights.append(0.65)
+
+    if st_parts:
+        total_stw = sum(st_weights)
+        s3 = sum(p * w for p, w in zip(st_parts, st_weights)) / total_stw
+    else:
+        s3 = 50.0
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Signal 4: Return Health (20%)
+    # 4a (55%): Cross-timeframe agreement — r3m and r6m same direction?
+    # 4b (45%): Distance from 52-week high — how far has it corrected?
+    # ═══════════════════════════════════════════════════════════════════
+    health_parts = []
+
+    # 4a: Cross-timeframe agreement
+    if r3m is not None and r6m is not None:
+        both_pos = r3m > 0 and r6m > 0
+        both_neg = r3m < -5 and r6m < -5
+        if both_pos:
+            # Both positive — strength depends on magnitude
+            agree = min(80.0 + (r3m + r6m) / 4, 100.0)
+        elif both_neg:
+            agree = max(10.0, 30.0 + (r3m + r6m) / 4)
+        elif (r3m > 0) != (r6m > 0):
+            # Disagreement: transition zone — 3m improving but 6m still negative, or vice versa
+            agree = 35.0
+        else:
+            agree = 50.0
+        health_parts.append(('agree', agree, 0.55))
+
+    # 4b: Distance from 52-week high
+    if fh is not None:
+        if fh >= 0:
+            fh_score = 90.0       # At or near high
+        elif fh >= -5:
+            fh_score = 78.0       # Very close to high
+        elif fh >= -10:
+            fh_score = 65.0       # Normal pullback
+        elif fh >= -20:
+            fh_score = 48.0       # Moderate correction
+        elif fh >= -30:
+            fh_score = 32.0       # Significant correction
+        else:
+            fh_score = max(10.0, 32.0 + (fh + 30) / 30 * 22)  # Deep correction
+        health_parts.append(('fh', fh_score, 0.45))
+
+    if health_parts:
+        total_hw = sum(w for _, _, w in health_parts)
+        s4 = sum(v * w for _, v, w in health_parts) / total_hw
+    else:
+        s4 = 50.0
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Final Composite: weighted blend of 4 sub-signals
+    # ═══════════════════════════════════════════════════════════════════
+    score = 0.30 * s1 + 0.30 * s2 + 0.20 * s3 + 0.20 * s4
+    return float(np.clip(score, 0, 100))
+
+
 def _return_to_conviction(avg_ret: float, avg_pct: float) -> float:
     """Convert an average return (3m or 6m) to a conviction score (0-100).
     Position-aware: high-ranked stocks SHOULD have positive returns."""
@@ -1042,22 +1187,18 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
                           ret_3m: Optional[List[float]] = None,
                           ret_6m: Optional[List[float]] = None) -> Tuple[float, str, float]:
     """
-    Return-Based Price-Rank Alignment Multiplier (v3.1).
+    Return-Based Price-Rank Alignment Multiplier (v6.0 — 2-signal).
 
-    UPGRADES from v3.0:
-      • EMA-smoothed ret_7d (3-week) — eliminates single-week noise spikes
-      • Recency weighting — last 4 weeks count 2× in directional agreement
-      • Signal 3: Cross-timeframe conviction (ret_3m + ret_6m) — institutional confirmation
-      • Wider multiplier range — ×0.85 to ×1.12 for stronger signal impact
-      • Signal disagreement penalty — contradicting signals reduce confidence
+    v6.0 CHANGE: Signal 3 (Cross-Timeframe Conviction via ret_3m + ret_6m)
+    REMOVED. Returns now handled by dedicated ReturnQuality component.
+    Price alignment is purely about SHORT-TERM price-vs-rank agreement.
 
-    THREE SIGNALS:
+    TWO SIGNALS:
 
-    Signal 1 — EMA-Smoothed Directional Agreement (40%)
-    Signal 2 — Return Quality Confirmation via ret_30d (30%)
-    Signal 3 — Cross-Timeframe Conviction via ret_3m + ret_6m (30%)
+    Signal 1 — EMA-Smoothed Directional Agreement (55%)
+    Signal 2 — Return Quality Confirmation via ret_30d (45%)
 
-    MULTIPLIER RANGE: ×0.85 (strong divergence) to ×1.12 (strong confirmation)
+    MULTIPLIER RANGE: ×0.88 (strong divergence) to ×1.08 (strong confirmation)
 
     Returns: (multiplier, label, alignment_score)
     """
@@ -1168,100 +1309,22 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
     else:
         quality_score = 50.0
 
-    # ── Signal 3: Cross-Timeframe Conviction (30%) — ret_3m + ret_6m ──
-    # ret_3m = medium-term trend. ret_6m = institutional horizon confirmation.
-    # When both agree (both positive or both negative) = high conviction.
-    # When they disagree = transition zone, reduce confidence.
-    recent_r3m = [q[2] for q in quads[-recent_window:]
-                  if q[2] is not None and not np.isnan(q[2])]
-    recent_r6m = [q[3] for q in quads[-recent_window:]
-                  if q[3] is not None and not np.isnan(q[3])]
+    # ── v6.0: Signal 3 (Cross-Timeframe Conviction) REMOVED ──
+    # Returns are now handled by the dedicated ReturnQuality component.
+    # Price alignment is purely about short-term price-vs-rank agreement.
 
-    has_r3m = len(recent_r3m) > 0
-    has_r6m = len(recent_r6m) > 0
-    avg_r3m = float(np.mean(recent_r3m)) if has_r3m else None
-    avg_r6m = float(np.mean(recent_r6m)) if has_r6m else None
-
-    if has_r3m and has_r6m:
-        # ── Both timeframes available: cross-timeframe scoring ──
-        # Score each independently, then blend with agreement bonus/penalty
-        r3m_score = _return_to_conviction(avg_r3m, avg_pct)
-        r6m_score = _return_to_conviction(avg_r6m, avg_pct)
-
-        # Cross-timeframe agreement bonus
-        both_positive = avg_r3m > 0 and avg_r6m > 0
-        both_negative = avg_r3m < -5 and avg_r6m < -5
-        if both_positive:
-            cross_bonus = 8.0   # Both confirm — strong conviction
-        elif both_negative:
-            cross_bonus = -8.0  # Both negative — strong divergence
-        elif (avg_r3m > 0) != (avg_r6m > 0):
-            cross_bonus = -4.0  # Disagree — transition zone
-        else:
-            cross_bonus = 0.0
-
-        # Blend: 55% ret_3m (more recent) + 45% ret_6m (institutional)
-        conviction_score = float(np.clip(
-            0.55 * r3m_score + 0.45 * r6m_score + cross_bonus, 0, 100
-        ))
-    elif has_r3m:
-        # Only ret_3m available
-        conviction_score = _return_to_conviction(avg_r3m, avg_pct)
-    elif has_r6m:
-        # Only ret_6m available (rare for short histories)
-        conviction_score = _return_to_conviction(avg_r6m, avg_pct)
-    else:
-        conviction_score = 50.0  # No data — neutral
-
-    # ── Signal 3b: Conviction Momentum (direction of ret_3m + ret_6m trend) ──
-    # Detects building vs fading momentum across both timeframes
-    all_r3m = [q[2] for q in quads if q[2] is not None and not np.isnan(q[2])]
-    all_r6m = [q[3] for q in quads if q[3] is not None and not np.isnan(q[3])]
-    conviction_momentum = 0.0
-    if len(all_r3m) >= 3:
-        tail = all_r3m[-3:]
-        r3m_delta = tail[-1] - tail[0]
-        if r3m_delta > 10:
-            conviction_momentum += 10.0
-        elif r3m_delta > 3:
-            conviction_momentum += 5.0
-        elif r3m_delta > -3:
-            conviction_momentum += 0.0
-        elif r3m_delta > -10:
-            conviction_momentum -= 5.0
-        else:
-            conviction_momentum -= 10.0
-    if len(all_r6m) >= 3:
-        tail6 = all_r6m[-3:]
-        r6m_delta = tail6[-1] - tail6[0]
-        if r6m_delta > 15:
-            conviction_momentum += 8.0   # 6m accelerating strongly
-        elif r6m_delta > 5:
-            conviction_momentum += 4.0
-        elif r6m_delta > -5:
-            conviction_momentum += 0.0
-        elif r6m_delta > -15:
-            conviction_momentum -= 4.0
-        else:
-            conviction_momentum -= 8.0   # 6m decelerating hard
-    # Clamp total momentum adjustment
-    conviction_momentum = float(np.clip(conviction_momentum, -15.0, 15.0))
-    conviction_score = float(np.clip(conviction_score + conviction_momentum, 0, 100))
-
-    # ── Signal Disagreement Penalty ──
-    # When signals contradict each other strongly, confidence is LOW → pull score down
-    # E.g., Signal1=80, Signal2=20, Signal3=50 → signals are unreliable
-    signals = [dir_score, quality_score, conviction_score]
-    signal_spread = max(signals) - min(signals)
+    # ── Signal Disagreement Penalty (2 signals) ──
+    signals = [dir_score, quality_score]
+    signal_spread = abs(dir_score - quality_score)
     if signal_spread > 50:
-        disagreement_penalty = 6.0   # Strong contradiction
+        disagreement_penalty = 5.0   # Strong contradiction
     elif signal_spread > 30:
-        disagreement_penalty = 3.0   # Moderate contradiction
+        disagreement_penalty = 2.5   # Moderate contradiction
     else:
         disagreement_penalty = 0.0   # Signals agree — no penalty
 
-    # ── Composite Alignment Score (3 signals + penalties) ──
-    alignment = 0.40 * dir_score + 0.30 * quality_score + 0.30 * conviction_score - disagreement_penalty
+    # ── Composite Alignment Score (v6.0: 2 signals) ──
+    alignment = 0.55 * dir_score + 0.45 * quality_score - disagreement_penalty
     alignment = float(np.clip(alignment, 0, 100))
 
     # ── Convert to Multiplier (wider range: ×0.85 to ×1.12) ──
@@ -1409,106 +1472,13 @@ def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
     return multiplier, label, decay_score
 
 
-# ── Return Conviction Boost Engine (v4.0) ──
+# ── Return Conviction Boost Engine (v4.0) — DEPRECATED in v6.0 ──
+# Returns now handled by ReturnQuality component. Function kept for backward compat.
 
 def _calc_return_conviction(ret_3m: List[float], ret_6m: List[float],
                             n_weeks: int) -> Tuple[float, str]:
-    """
-    Direct Return-Based Conviction Multiplier (v4.0).
-    
-    PROBLEM SOLVED: Our T-Score used rank-percentile-based components exclusively.
-    Stocks with ret_3m=+68% and ret_6m=+86% could still rank at 449 because
-    their rank trajectory was volatile (swinging between top-50 and bottom-500).
-    Correlation(rank, ret_3m) was only -0.221 — near zero.
-    
-    SOLUTION: Directly reward stocks whose ACTUAL RETURNS prove they're winners,
-    regardless of rank volatility. This is a multiplicative boost applied after
-    all rank-based scoring.
-    
-    SIGNALS:
-      - Both ret_3m and ret_6m strongly positive → ×1.15 max (dual confirmation)
-      - Only one strong → ×1.07 (single timeframe)
-      - Both negative → penalty (confirmed underperformance)
-    
-    Returns: (multiplier, label)
-    """
-    cfg = RETURN_CONVICTION
-    
-    if n_weeks < cfg['min_weeks']:
-        return 1.0, ''
-    
-    # Get latest valid values
-    def _latest_valid(lst):
-        if not lst:
-            return None
-        for v in reversed(lst):
-            if v is not None and not np.isnan(v):
-                return float(v)
-        return None
-    
-    r3m = _latest_valid(ret_3m)
-    r6m = _latest_valid(ret_6m)
-    
-    if r3m is None and r6m is None:
-        return 1.0, ''
-    
-    # Classify each timeframe
-    r3m_strong = r3m is not None and r3m >= cfg['r3m_strong']
-    r3m_moderate = r3m is not None and r3m >= cfg['r3m_moderate']
-    r3m_negative = r3m is not None and r3m < -5
-    r3m_deep_neg = r3m is not None and r3m < -10
-    
-    r6m_extreme = r6m is not None and r6m >= cfg['r6m_extreme']  # v4.1
-    r6m_ultra = r6m is not None and r6m >= cfg['r6m_ultra']      # v5.1: ≥50%
-    r6m_strong = r6m is not None and r6m >= cfg['r6m_strong']
-    r6m_moderate = r6m is not None and r6m >= cfg['r6m_moderate']
-    r6m_negative = r6m is not None and r6m < -5
-    r6m_deep_neg = r6m is not None and r6m < -10
-    
-    # ── Extreme r6m override (v4.1, boosted v5.1) ──
-    # Stocks with ret_6m ≥ 50-80% have massive institutional conviction.
-    # Even if ret_3m is negative (peaked and pulled back), 6m return proves
-    # fundamental strength. v5.1: Added ultra tier (≥50%) and raised extreme boost.
-    
-    # ── Dual confirmation (both timeframes agree) ──
-    if r3m_strong and r6m_strong:
-        return cfg['dual_strong_boost'], 'RETURN_STRONG'
-    
-    if r3m_strong and r6m_moderate:
-        # Strong 3m + moderate 6m = good but not max
-        return (cfg['dual_strong_boost'] + cfg['dual_moderate_boost']) / 2, 'RETURN_STRONG'
-    
-    if r3m_moderate and r6m_strong:
-        # Moderate 3m + strong 6m = institutional conviction
-        return (cfg['dual_strong_boost'] + cfg['dual_moderate_boost']) / 2, 'RETURN_STRONG'
-    
-    if r3m_moderate and r6m_moderate:
-        return cfg['dual_moderate_boost'], 'RETURN_MODERATE'
-    
-    # ── Extreme r6m even with weak/negative r3m (v4.1) ──
-    if r6m_extreme:
-        return cfg['extreme_r6m_boost'], 'RETURN_STRONG'
-    
-    # ── Ultra r6m (≥50%) even with weak/negative r3m (v5.1) ──
-    if r6m_ultra:
-        return cfg['ultra_r6m_boost'], 'RETURN_STRONG'
-    
-    # ── Single timeframe strong ──
-    if r3m_strong:
-        return cfg['single_strong_boost'], 'RETURN_MODERATE'
-    if r6m_strong:
-        return cfg['single_strong_boost'], 'RETURN_MODERATE'
-    
-    # ── Single timeframe moderate ──
-    if r3m_moderate or r6m_moderate:
-        return cfg['single_moderate_boost'], ''
-    
-    # ── Negative signals ──
-    if r3m_deep_neg and r6m_deep_neg:
-        return cfg['deep_negative_penalty'], 'RETURN_WEAK'
-    if r3m_negative and r6m_negative:
-        return cfg['negative_penalty'], 'RETURN_WEAK'
-    
+    """DEPRECATED v6.0: Returns handled by _calc_return_quality() component.
+    Always returns (1.0, '') — no-op multiplier."""
     return 1.0, ''
 
 
@@ -2539,7 +2509,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                          ('price_multiplier', 1.0), ('pre_price_score', 0),
                          ('pre_decay_score', 0), ('grade_emoji', '📉'),
                          ('pattern_key', 'neutral'), ('pattern', '➖ Neutral'),
-                         ('sector', ''),
+                         ('sector', ''), ('return_quality', 50),
                          ('company_name', ''), ('category', ''), ('industry', '')]:
         if col not in all_df.columns:
             all_df[col] = default
@@ -2597,7 +2567,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         sort_by = st.selectbox("Sort by", [
             'Trajectory Score', 'Current Rank', 'Rank Change', 'TMI',
             'Positional Quality', 'Best Rank', 'Streak', 'Trend', 'Velocity',
-            'Consistency', 'Price Alignment', 'Decay Score', 'Sector Alpha'
+            'Consistency', 'Return Quality', 'Price Alignment', 'Decay Score', 'Sector Alpha'
         ], key='rank_sort', label_visibility='collapsed')
     with ctl2:
         view_mode = st.selectbox("View", [
@@ -2628,6 +2598,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Trend': ('trend', False),
         'Velocity': ('velocity', False),
         'Consistency': ('consistency', False),
+        'Return Quality': ('return_quality', False),
         'Price Alignment': ('price_alignment', False),
         'Decay Score': ('decay_score', True),
         'Sector Alpha': ('sector_alpha_value', False),
@@ -2672,6 +2643,8 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Velocity': ('velocity', 'Velocity', 'Velocity component score', None),
         'Consistency': ('consistency', 'Consistency', 'Consistency component score', None),
         'Positional': ('positional', 'Positional', 'Positional quality score', None),
+        'RetQuality': ('return_quality', 'RetQuality', 'Return quality component (v6.0)',
+                     st.column_config.ProgressColumn('RetQuality', min_value=0, max_value=100, format="%.1f")),
         'Price Signal': ('price_label', 'Price Signal', 'Price alignment: CONFIRMED/DIVERGENT/NEUTRAL', None),
         'Decay':    ('decay_label', 'Decay', 'Momentum decay level: HIGH/MODERATE/MILD/CLEAN', None),
         'Alpha':    ('sector_alpha_tag', 'Alpha', 'Sector alpha classification', None),
@@ -2688,7 +2661,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
         'Complete': ['Pro Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
                      'Grade', 'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
-                     'Trend', 'Velocity', 'Consistency', 'Positional', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
+                     'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
     }
 
     # ── Custom view: user picks columns ──
@@ -3091,10 +3064,10 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         stock_avg_pct = (1 - avg_pct_val / max(avg_total, 1)) * 100
         adp_w = _get_adaptive_weights(stock_avg_pct)
         comp_data = {
-            'Component': ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience'],
-            'Wt': [f"{adp_w[k]*100:.0f}%" for k in ['positional','trend','velocity','acceleration','consistency','resilience']],
-            'Score': [row['positional'], row['trend'], row['velocity'], row['acceleration'], row['consistency'], row['resilience']],
-            'Contrib': [round(row[k] * adp_w[k], 1) for k in ['positional','trend','velocity','acceleration','consistency','resilience']]
+            'Component': ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience', 'RetQuality'],
+            'Wt': [f"{adp_w[k]*100:.0f}%" for k in ['positional','trend','velocity','acceleration','consistency','resilience','return_quality']],
+            'Score': [row['positional'], row['trend'], row['velocity'], row['acceleration'], row['consistency'], row['resilience'], row.get('return_quality', 50)],
+            'Contrib': [round(row[k] * adp_w[k], 1) for k in ['positional','trend','velocity','acceleration','consistency','resilience','return_quality']]
         }
         st.dataframe(pd.DataFrame(comp_data), column_config={
             'Score': st.column_config.ProgressColumn('Score', min_value=0, max_value=100, format="%.1f")
@@ -3346,10 +3319,10 @@ def _render_price_chart(h: dict, ticker: str):
 
 
 def _render_radar_chart(row):
-    """Render radar/spider chart for component scores (6 components)"""
-    categories = ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience']
+    """Render radar/spider chart for component scores (7 components, v6.0)"""
+    categories = ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience', 'RetQuality']
     values = [row['positional'], row['trend'], row['velocity'], row['acceleration'],
-              row['consistency'], row['resilience']]
+              row['consistency'], row['resilience'], row.get('return_quality', 50)]
     values_closed = values + [values[0]]  # Close the polygon
     cats_closed = categories + [categories[0]]
 
@@ -3357,7 +3330,7 @@ def _render_radar_chart(row):
 
     # Reference circle at 50
     fig.add_trace(go.Scatterpolar(
-        r=[50] * 6,
+        r=[50] * 7,
         theta=cats_closed,
         mode='lines',
         line=dict(color='rgba(255,255,255,0.15)', width=1, dash='dash'),
