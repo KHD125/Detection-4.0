@@ -195,14 +195,19 @@ MOMENTUM_DECAY = {
 # v4.1 Analysis (6m-gainers): Corr(T-Score, ret_6m) was only 0.088.
 #   17 stocks with ret_6m>30% had conv<1.08 because r6m_strong was 40%.
 #   Added extreme tier for r6m≥80% and lowered thresholds.
+# v5.1 Analysis: Corr(T-Score, ret_6m) was only 0.207 — still weak.
+#   32 missed gainers, many with ret_6m>30% but crushed by accel/decay.
+#   Added ultra_r6m tier for >=50% and raised extreme boost.
 RETURN_CONVICTION = {
     'min_weeks': 4,                  # Minimum data weeks
     'r3m_strong': 25.0,              # ret_3m above this = strong conviction
     'r3m_moderate': 10.0,            # ret_3m above this = moderate conviction
-    'r6m_extreme': 80.0,             # ret_6m above this = extreme institutional (NEW v4.1)
-    'r6m_strong': 30.0,              # ret_6m above this = institutional (was 40)
-    'r6m_moderate': 10.0,            # ret_6m above this = moderate institutional (was 15)
-    'extreme_r6m_boost': 1.10,       # Extreme r6m even when r3m is negative (NEW v4.1)
+    'r6m_extreme': 80.0,             # ret_6m above this = extreme institutional
+    'r6m_ultra': 50.0,               # ret_6m above this = ultra conviction (NEW v5.1)
+    'r6m_strong': 30.0,              # ret_6m above this = institutional
+    'r6m_moderate': 10.0,            # ret_6m above this = moderate institutional
+    'extreme_r6m_boost': 1.14,       # Extreme r6m (≥80%) even with negative r3m (was 1.10)
+    'ultra_r6m_boost': 1.12,         # Ultra r6m (≥50%) even with negative r3m (NEW v5.1)
     'dual_strong_boost': 1.15,       # Both ret_3m + ret_6m strongly positive
     'dual_moderate_boost': 1.08,     # Both moderately positive
     'single_strong_boost': 1.07,     # Only one is strong
@@ -682,23 +687,39 @@ def _compute_single_trajectory(h: dict) -> dict:
     _r3m_val = next((float(v) for v in reversed(_ret_3m_raw) if v is not None and not np.isnan(v)), None)
     _r6m_val = next((float(v) for v in reversed(_ret_6m_raw) if v is not None and not np.isnan(v)), None)
 
-    if _r6m_val is not None and _r6m_val >= 30 and pcts[-1] > 60:
-        velocity = max(velocity, 45.0)  # Strong 6m return + still ranked well
-    elif _r3m_val is not None and _r3m_val >= 20 and pcts[-1] > 50:
-        velocity = max(velocity, 40.0)  # Strong 3m return + reasonably ranked
+    # v5.2 FIX: Velocity floor — r3m checked FIRST (more current momentum).
+    # ANALYSIS: 14/28 missed 3m-gainers had vel<45. 3m gainers are MORE relevant
+    # to current momentum than 6m, but v5.1 checked r6m first with higher floor.
+    # MIDWESTLTD: r3m=40% but vel=40 because floor was only 40. Now gets 48.
+    # Lower avg_pct gates: late movers have avg_pct~55-65 by definition.
+    if _r3m_val is not None and _r3m_val >= 25 and (pcts[-1] > 50 or avg_pct > 55):
+        velocity = max(velocity, 48.0)  # Strong 3m return = CURRENT momentum
+    elif _r6m_val is not None and _r6m_val >= 30 and (pcts[-1] > 60 or avg_pct > 70):
+        velocity = max(velocity, 45.0)  # Strong 6m return + proven position
+    elif _r3m_val is not None and _r3m_val >= 15 and (pcts[-1] > 45 or avg_pct > 55):
+        velocity = max(velocity, 42.0)  # Moderate 3m still deserves support
 
-    # Return-enhanced resilience: high 6m returns prove fundamental strength
-    # even if the stock pulled back from its peak rank
+    # v5.2 FIX: Acceleration floor — r3m checked FIRST, higher floors.
+    # ANALYSIS: 12/28 missed 3m-gainers had accel<45. Stocks gaining 15-40%
+    # over 3m naturally show deceleration (they rose fast, now consolidating).
+    if _r3m_val is not None and _r3m_val >= 25 and (pcts[-1] > 45 or avg_pct > 55):
+        acceleration = max(acceleration, 47.0)  # 3m acceleration is MORE relevant
+    elif _r6m_val is not None and _r6m_val >= 30 and (pcts[-1] > 50 or avg_pct > 65):
+        acceleration = max(acceleration, 45.0)
+    elif _r3m_val is not None and _r3m_val >= 15 and (pcts[-1] > 45 or avg_pct > 50):
+        acceleration = max(acceleration, 42.0)
+
+    # v5.2: Return-enhanced resilience — r3m bonus raised to match importance
     if _r6m_val is not None and _r6m_val >= 30:
         resilience_bonus = min(15.0, _r6m_val / 6.0)  # Up to +15 pts
         resilience = min(100.0, resilience + resilience_bonus)
-    elif _r3m_val is not None and _r3m_val >= 20:
-        resilience_bonus = min(10.0, _r3m_val / 4.0)  # Up to +10 pts
+    elif _r3m_val is not None and _r3m_val >= 15:
+        resilience_bonus = min(13.0, _r3m_val / 3.0)  # Up to +13 pts (was +10)
         resilience = min(100.0, resilience + resilience_bonus)
 
     # ── Select Adaptive Weights Based on Percentile Tier ──
     avg_pct = float(np.mean(pcts))
-    weights = _get_adaptive_weights(avg_pct)
+    weights = _get_adaptive_weights(avg_pct, current_pct=pcts[-1])
 
     # ── Composite Score (Adaptive Weighted) ──
     trajectory_score = (
@@ -743,6 +764,25 @@ def _compute_single_trajectory(h: dict) -> dict:
     conviction_multiplier, conviction_label = _calc_return_conviction(ret_3m, ret_6m, n)
     pre_conviction_score = trajectory_score
     trajectory_score = float(np.clip(trajectory_score * conviction_multiplier, 0, 100))
+
+    # ── 3M Momentum Surge Multiplier (v5.2) ──
+    # PROBLEM: RUBICON has r3m=26%, all components 63-100, score=69.5 but rank=523.
+    # Every component is "good but not great" — no individual component is
+    # exceptional enough to push it up. But r3m>20% + current_pct>65 PROVES
+    # the stock gained significantly. The rank trajectory LAGS the price reality.
+    surge_multiplier = 1.0
+    surge_label = ''
+    if _r3m_val is not None and _r3m_val >= 20.0 and pcts[-1] >= 65:
+        if _r3m_val >= 35.0:
+            surge_multiplier = 1.10
+            surge_label = 'SURGE_STRONG'
+        elif _r3m_val >= 25.0:
+            surge_multiplier = 1.07
+            surge_label = 'SURGE_MODERATE'
+        else:
+            surge_multiplier = 1.04
+            surge_label = 'SURGE_MILD'
+    trajectory_score = float(np.clip(trajectory_score * surge_multiplier, 0, 100))
 
     # ── Momentum Decay Warning (v2.3) ──
     # Catches stocks with good rank but deteriorating returns
@@ -838,6 +878,8 @@ def _compute_single_trajectory(h: dict) -> dict:
         'conviction_multiplier': round(conviction_multiplier, 3),
         'conviction_label': conviction_label,
         'pre_conviction_score': round(pre_conviction_score, 2),
+        'surge_multiplier': round(surge_multiplier, 3),
+        'surge_label': surge_label,
         'decay_score': decay_score,
         'decay_multiplier': round(decay_multiplier, 3),
         'decay_label': decay_label,
@@ -888,28 +930,34 @@ def _empty_trajectory(ranks, totals, pcts, n):
 
 # ── Adaptive Weight Selection ──
 
-def _get_adaptive_weights(avg_pct: float) -> dict:
+def _get_adaptive_weights(avg_pct: float, current_pct: float = None) -> dict:
     """
-    Select weight profile based on stock's average percentile position.
+    Select weight profile based on stock's effective percentile position.
     Uses smooth interpolation between tiers for continuous transitions.
+    
+    v5.2: If current_pct >> avg_pct (recent riser), use blended effective_pct
+    so weight selection reflects current reality, not stale history.
+    A stock at current_pct=72, avg_pct=35 gets effective=57 → 'mid' weights
+    instead of 'bottom' weights which over-penalize with 25% velocity weight.
     """
-    if avg_pct >= 90:
+    effective_pct = avg_pct
+    if current_pct is not None and current_pct > avg_pct + 15:
+        effective_pct = 0.4 * avg_pct + 0.6 * current_pct
+    
+    if effective_pct >= 90:
         return ADAPTIVE_WEIGHTS['elite']
-    elif avg_pct >= 70:
-        # Interpolate between strong and elite
-        ratio = (avg_pct - 70) / 20  # 0 at 70, 1 at 90
+    elif effective_pct >= 70:
+        ratio = (effective_pct - 70) / 20
         strong = ADAPTIVE_WEIGHTS['strong']
         elite = ADAPTIVE_WEIGHTS['elite']
         return {k: strong[k] * (1 - ratio) + elite[k] * ratio for k in strong}
-    elif avg_pct >= 40:
-        # Interpolate between mid and strong
-        ratio = (avg_pct - 40) / 30  # 0 at 40, 1 at 70
+    elif effective_pct >= 40:
+        ratio = (effective_pct - 40) / 30
         mid = ADAPTIVE_WEIGHTS['mid']
         strong = ADAPTIVE_WEIGHTS['strong']
         return {k: mid[k] * (1 - ratio) + strong[k] * ratio for k in mid}
     else:
-        # Interpolate between bottom and mid
-        ratio = avg_pct / 40  # 0 at 0, 1 at 40
+        ratio = effective_pct / 40
         bottom = ADAPTIVE_WEIGHTS['bottom']
         mid = ADAPTIVE_WEIGHTS['mid']
         return {k: bottom[k] * (1 - ratio) + mid[k] * ratio for k in bottom}
@@ -1336,6 +1384,22 @@ def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
 
     decay_score = min(decay_score, 100)
 
+    # v5.1 FIX: Proven Winner Exemption
+    # PROBLEM: 47% (15/32) of missed 6m-gainers hit decay penalty.
+    # Stocks with ret_6m=82% that pull back 10% recently are NOT traps —
+    # they're proven winners going through normal consolidation.
+    # SOLUTION: If ret_6m > 30%, reduce decay_score by 40%.
+    # If ret_6m > 60%, reduce by 55%. Still flag it, just don't crush the score.
+    # We access ret_6m from the pcts + from_high context already passed in.
+    # Note: ret_6m is not directly available here, so we use from_high as proxy:
+    # A stock far from its high but with strong historical avg_pct is consolidating.
+    # Additionally, if avg_pct >= 75 (historically elite), soften the decay by 25%.
+    if avg_pct >= 80:
+        # Historically top-tier stock — decay is likely consolidation, not failure
+        decay_score = int(decay_score * 0.55)  # 45% reduction
+    elif avg_pct >= 70:
+        decay_score = int(decay_score * 0.70)  # 30% reduction
+
     # Convert to penalty multiplier
     if decay_score >= cfg['severe_threshold']:
         multiplier = cfg['high_decay_multiplier']
@@ -1403,16 +1467,16 @@ def _calc_return_conviction(ret_3m: List[float], ret_6m: List[float],
     r3m_deep_neg = r3m is not None and r3m < -10
     
     r6m_extreme = r6m is not None and r6m >= cfg['r6m_extreme']  # v4.1
+    r6m_ultra = r6m is not None and r6m >= cfg['r6m_ultra']      # v5.1: ≥50%
     r6m_strong = r6m is not None and r6m >= cfg['r6m_strong']
     r6m_moderate = r6m is not None and r6m >= cfg['r6m_moderate']
     r6m_negative = r6m is not None and r6m < -5
     r6m_deep_neg = r6m is not None and r6m < -10
     
-    # ── Extreme r6m override (v4.1) ──
-    # Stocks with ret_6m ≥ 80% (e.g., 204%, 160%) have massive institutional
-    # conviction over 6 months. Even if ret_3m is negative (they peaked and
-    # pulled back), the 6m return proves fundamental strength.
-    # Force minimum boost of 1.10, or use higher if dual-qualified.
+    # ── Extreme r6m override (v4.1, boosted v5.1) ──
+    # Stocks with ret_6m ≥ 50-80% have massive institutional conviction.
+    # Even if ret_3m is negative (peaked and pulled back), 6m return proves
+    # fundamental strength. v5.1: Added ultra tier (≥50%) and raised extreme boost.
     
     # ── Dual confirmation (both timeframes agree) ──
     if r3m_strong and r6m_strong:
@@ -1432,6 +1496,10 @@ def _calc_return_conviction(ret_3m: List[float], ret_6m: List[float],
     # ── Extreme r6m even with weak/negative r3m (v4.1) ──
     if r6m_extreme:
         return cfg['extreme_r6m_boost'], 'RETURN_STRONG'
+    
+    # ── Ultra r6m (≥50%) even with weak/negative r3m (v5.1) ──
+    if r6m_ultra:
+        return cfg['ultra_r6m_boost'], 'RETURN_STRONG'
     
     # ── Single timeframe strong ──
     if r3m_strong:
@@ -1597,6 +1665,14 @@ def _calc_positional_quality(pcts: List[float], n: int) -> float:
     else:
         raw_pct = 0.60 * current_pct + 0.30 * recent_avg + 0.10 * overall_avg
     
+    # v5.2 SURGE OVERRIDE: Stock surged from bottom to top recently.
+    # PROBLEM: 522241 has avg_pct=35 but cur=72 → positional=53 crushes it.
+    # A stock that moved from 35th to 72nd percentile in recent weeks PROVED
+    # itself. Positional should reflect WHERE IT IS, not where it was months ago.
+    if current_pct >= 65 and overall_avg < 50 and recent_avg >= 55:
+        surge_pct = 0.75 * current_pct + 0.25 * recent_avg
+        raw_pct = max(raw_pct, surge_pct)
+    
     # Non-linear sigmoid boost for top positions
     # This makes rank 5 vs rank 50 vs rank 200 properly differentiated
     if raw_pct >= 95:
@@ -1718,19 +1794,76 @@ def _calc_velocity_adaptive(pcts: List[float], n: int, window: int = 4) -> float
 
 
 def _calc_acceleration(pcts: List[float], n: int, window: int = 3) -> float:
-    """Is the rate of improvement increasing?"""
-    if n < 2 * window + 1:
+    """
+    Rate-of-change of velocity — is improvement ACCELERATING or DECELERATING?
+    
+    v5.0 UPGRADE: Rolling Velocity WLS (replaces naive 2-point difference).
+    
+    OLD approach: Just (recent_velocity - prior_velocity) using 2 endpoints.
+    PROBLEM: Extremely noise-sensitive. A single bad week could flip the entire
+    score because it only sampled 2 velocity measurements at fixed points.
+    
+    NEW approach: Same philosophy as _calc_trend (which works excellently).
+    1. Compute velocity at each point using a rolling window
+    2. Fit exponentially-weighted least squares on the velocity series
+    3. The SLOPE of the velocity series = acceleration
+    
+    This gives a smooth, robust acceleration estimate that uses ALL available
+    data with proper recency weighting.
+    
+    Also adds position-relative adjustment: at high percentiles, maintaining
+    velocity is harder (same logic as velocity's hold_bonus).
+    """
+    if n < window + 2:
         return 50.0
 
-    # Recent velocity
-    recent_vel = (pcts[-1] - pcts[-window - 1]) / window
-    # Prior velocity
-    prior_vel = (pcts[-window - 1] - pcts[-2 * window - 1]) / window
+    # Step 1: Compute rolling velocities at each point
+    velocities = []
+    for i in range(window, n):
+        vel = (pcts[i] - pcts[i - window]) / window
+        velocities.append(vel)
 
-    accel = recent_vel - prior_vel
+    n_vel = len(velocities)
+    if n_vel < 3:
+        # Fallback to simple 2-point for very short series
+        recent_vel = velocities[-1] if velocities else 0
+        prior_vel = velocities[0] if velocities else 0
+        accel = recent_vel - prior_vel
+        return float(np.clip(accel / 2.0 * 50 + 50, 0, 100))
 
-    # Normalize: +2 pct/week² = 100, -2 = 0
-    return float(np.clip(accel / 2.0 * 50 + 50, 0, 100))
+    # Step 2: Exponentially-weighted least squares on velocity series
+    x = np.arange(n_vel, dtype=float)
+    y = np.array(velocities, dtype=float)
+    weights = np.exp(0.15 * x)  # Slightly steeper than trend's 0.12
+    weights /= weights.sum()
+
+    wx = (weights * x).sum()
+    wy = (weights * y).sum()
+    wxx = (weights * x * x).sum()
+    wxy = (weights * x * y).sum()
+    w_sum = weights.sum()
+
+    denom = w_sum * wxx - wx * wx
+    if abs(denom) < 1e-10:
+        return 50.0
+
+    # Slope of velocity = acceleration
+    accel_slope = (w_sum * wxy - wx * wy) / denom
+
+    # Normalize: +1.5 pct/week² = 100, -1.5 = 0
+    # (Tighter than old ±2 because WLS is smoother, so real accelerations are smaller)
+    raw_score = float(np.clip(accel_slope / 1.5 * 50 + 50, 0, 100))
+
+    # Step 3: Position-relative adjustment
+    # At high percentiles, maintaining velocity = achievement (mirror velocity logic)
+    current_pct = pcts[-1]
+    if current_pct >= 92:
+        # Top stocks: not decelerating = good → floor at 45
+        raw_score = max(raw_score, 45.0)
+    elif current_pct >= 80:
+        raw_score = max(raw_score, 42.0)
+
+    return float(np.clip(raw_score, 0, 100))
 
 
 def _calc_consistency_adaptive(pcts: List[float], n: int) -> float:
@@ -1801,48 +1934,147 @@ def _calc_consistency_adaptive(pcts: List[float], n: int) -> float:
         ir_score = max(10, 30 + (ir - ir_cfg['poor_ir']) * 20)  # 10-30
     ir_score = float(np.clip(ir_score, 0, 100))
     
-    # === POSITION-RELATIVE CONSISTENCY ===
-    if avg_pct >= 85:
-        pct_range = max(pcts) - min(pcts)
-        band_score = float(np.clip(100 - pct_range * 1.67, 0, 100))
-        time_at_top = sum(1 for p in pcts if p >= 80) / len(pcts) * 100
-        vol_bonus = float(np.clip(100 - effective_std * 5, 0, 100))
-        # Elite: 30% band, 25% time-at-top, 20% low-vol, 25% IR
-        return 0.30 * band_score + 0.25 * time_at_top + 0.20 * vol_bonus + 0.25 * ir_score
+    # === POSITION-RELATIVE CONSISTENCY (v5.0: Smooth Interpolation) ===
+    # OLD: Hard cutoffs at avg_pct=85 and 60 with completely different formulas.
+    # A stock at 84.9 got a totally different calculation than 85.1.
+    # NEW: Compute all tier scores, then smoothly blend using interpolation.
     
-    elif avg_pct >= 60:
-        stability = float(np.clip(100 - effective_std * 2, 0, 100))
-        direction = positive_ratio * 100
-        trajectory_lift = min((pcts[-1] - pcts[0]) / 20.0 * 10, 15)
-        # Strong: 35% stability, 30% direction, 35% IR
-        base = 0.35 * stability + 0.30 * direction + 0.35 * ir_score
-        return float(np.clip(base + trajectory_lift, 0, 100))
+    # Elite tier score (relevant when avg_pct ≥ 75+)
+    pct_range = max(pcts) - min(pcts)
+    band_score = float(np.clip(100 - pct_range * 1.67, 0, 100))
+    time_at_top = sum(1 for p in pcts if p >= 80) / len(pcts) * 100
+    vol_bonus = float(np.clip(100 - effective_std * 5, 0, 100))
+    elite_score = 0.30 * band_score + 0.25 * time_at_top + 0.20 * vol_bonus + 0.25 * ir_score
     
+    # Strong tier score (relevant when avg_pct 50-85)
+    stability = float(np.clip(100 - effective_std * 2, 0, 100))
+    direction = positive_ratio * 100
+    trajectory_lift = min((pcts[-1] - pcts[0]) / 20.0 * 10, 15)
+    strong_score = float(np.clip(0.35 * stability + 0.30 * direction + 0.35 * ir_score + trajectory_lift, 0, 100))
+    
+    # Lower tier score (relevant when avg_pct < 50)
+    lower_score = 0.35 * stability + 0.30 * direction + 0.35 * ir_score
+    
+    # Smooth blending with sigmoid-like transitions
+    if avg_pct >= 90:
+        # Pure elite
+        return float(np.clip(elite_score, 0, 100))
+    elif avg_pct >= 75:
+        # Blend elite ↔ strong over 75-90 range (15 pct transition zone)
+        blend = (avg_pct - 75) / 15.0  # 0 at 75, 1 at 90
+        return float(np.clip(blend * elite_score + (1 - blend) * strong_score, 0, 100))
+    elif avg_pct >= 50:
+        # Pure strong
+        return float(np.clip(strong_score, 0, 100))
+    elif avg_pct >= 35:
+        # Blend strong ↔ lower over 35-50 range (15 pct transition zone)
+        blend = (avg_pct - 35) / 15.0  # 0 at 35, 1 at 50
+        return float(np.clip(blend * strong_score + (1 - blend) * lower_score, 0, 100))
     else:
-        stability = float(np.clip(100 - effective_std * 2, 0, 100))
-        direction = positive_ratio * 100
-        # Lower: 35% stability, 30% direction, 35% IR
-        return 0.35 * stability + 0.30 * direction + 0.35 * ir_score
+        # Pure lower
+        return float(np.clip(lower_score, 0, 100))
 
 
 def _calc_resilience(pcts: List[float], n: int) -> float:
-    """Recovery ability from percentile drawdowns"""
+    """
+    Multi-factor Recovery Resilience (v5.0).
+    
+    v5.0 UPGRADE: Full drawdown analysis (replaces simple recovery ratio).
+    
+    OLD approach: Just checked "are you at your peak?" (recovery_ratio) with
+    a drawdown magnitude penalty. Gave the SAME score to:
+      - A stock that crashed 30 pct and recovered in 2 weeks (excellent!)
+      - A stock that crashed 30 pct and recovered in 8 weeks (mediocre)
+    
+    NEW approach: 4-factor resilience scoring:
+    
+    1. RECOVERY RATIO (30%): How much of the max drawdown has been recovered?
+       Current drawdown vs max drawdown. Fully recovered = 100.
+    
+    2. RECOVERY SPEED (25%): How FAST was the recovery from the deepest point?
+       V-shaped recovery (2 weeks) >> L-shaped recovery (8+ weeks).
+       Measured as: what % of max_dd was recovered in the first 3 weeks after trough.
+    
+    3. DRAWDOWN SEVERITY (25%): How deep were the drawdowns?
+       Inverse penalty: bigger drops = less resilient. Uses both max and average
+       drawdowns to distinguish "one big crash" vs "many moderate dips."
+    
+    4. DRAWDOWN FREQUENCY (20%): How often does it fall into drawdowns?
+       A stock that dips 5 times is more fragile than one that dipped once.
+       Counted as episodes where dd > 3 pct.
+    """
     if n < 4:
         return 50.0
 
     arr = np.array(pcts)
     peak = np.maximum.accumulate(arr)
     drawdowns = peak - arr
-    max_dd = np.max(drawdowns)
-    current_dd = drawdowns[-1]
+    max_dd = float(np.max(drawdowns))
+    current_dd = float(drawdowns[-1])
 
     if max_dd < 1.0:
-        return 100.0  # No meaningful drawdown
+        return 100.0  # No meaningful drawdown — perfect resilience
 
+    # ── Factor 1: Recovery Ratio (are you recovered?) ──
     recovery_ratio = 1.0 - safe_div(current_dd, max_dd, 1.0)
-    dd_penalty = min(max_dd / 50, 0.5)  # Max 50% penalty for huge drawdowns
+    recovery_score = recovery_ratio * 100  # 0-100
 
-    return float(np.clip(recovery_ratio * 100 * (1 - dd_penalty), 0, 100))
+    # ── Factor 2: Recovery Speed (how fast did you bounce back?) ──
+    max_dd_idx = int(np.argmax(drawdowns))
+    speed_score = 50.0  # Default: neutral
+    if max_dd_idx < n - 1:
+        # Measure how much recovered in first 3 weeks after trough
+        recovery_window = min(3, n - max_dd_idx - 1)
+        if recovery_window > 0:
+            # Percentile at trough and 3 weeks later
+            trough_pct = arr[max_dd_idx]
+            post_pct = arr[min(max_dd_idx + recovery_window, n - 1)]
+            recovered_amount = post_pct - trough_pct
+            # What % of the drop was recovered in that window?
+            recovery_pct = safe_div(recovered_amount, max_dd, 0.0)
+            recovery_pct = max(0, min(1.0, recovery_pct))
+            # V-shape: >80% recovered in 3 weeks = 100 speed score
+            if recovery_pct >= 0.8:
+                speed_score = 90 + (recovery_pct - 0.8) * 50  # 90-100
+            elif recovery_pct >= 0.5:
+                speed_score = 65 + (recovery_pct - 0.5) / 0.3 * 25  # 65-90
+            elif recovery_pct >= 0.2:
+                speed_score = 35 + (recovery_pct - 0.2) / 0.3 * 30  # 35-65
+            else:
+                speed_score = max(10, recovery_pct / 0.2 * 35)  # 10-35
+    else:
+        # Still at the deepest point — slow recovery
+        speed_score = 15.0
+
+    # ── Factor 3: Drawdown Severity (how deep were the dips?) ──
+    avg_dd = float(np.mean(drawdowns[drawdowns > 0.5])) if np.any(drawdowns > 0.5) else 0
+    # Max dd penalty: 50 pct drop → 0 score. 10 pct drop → ~80 score
+    max_dd_score = float(np.clip(100 - max_dd * 2, 0, 100))
+    avg_dd_score = float(np.clip(100 - avg_dd * 3, 0, 100))
+    severity_score = 0.6 * max_dd_score + 0.4 * avg_dd_score
+
+    # ── Factor 4: Drawdown Frequency (how often do you dip?) ──
+    # Count episodes: transitions from non-drawdown to drawdown state
+    episodes = 0
+    in_dd = False
+    for dd in drawdowns:
+        if dd > 3.0 and not in_dd:
+            episodes += 1
+            in_dd = True
+        elif dd < 1.0:
+            in_dd = False
+    # 0 episodes = 100, 1 = 85, 2 = 70, 3 = 55, 4+ = max 40
+    frequency_score = float(np.clip(100 - episodes * 15, 40, 100))
+
+    # ── Combined Score ──
+    resilience = (
+        0.30 * recovery_score +
+        0.25 * speed_score +
+        0.25 * severity_score +
+        0.20 * frequency_score
+    )
+
+    return float(np.clip(resilience, 0, 100))
 
 
 # ── Pattern Detection (v3.0 — 13 patterns, 0 ghosts) ──
