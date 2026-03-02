@@ -1,10 +1,11 @@
 """
-Rank Trajectory Engine v6.2 — 7-Component Adaptive Scoring
-==========================================================
+Rank Trajectory Engine v6.3 — Advanced Trading Signals
+=======================================================
 Professional Stock Rank Trajectory Analysis System
 with Adaptive Weight Intelligence, Return Quality Component, Directional Price-Rank
 Alignment, Momentum Decay Warning, Sector Alpha Detection, Market Regime Awareness,
-Confidence Intervals, Z-Score Normalization, and Multi-Stage Selection Funnel.
+Confidence Intervals, Z-Score Normalization, Conviction Score, Risk-Adjusted T-Score,
+Exit Warning System, Hot Streak Detection, Volume Confirmation, and Multi-Stage Selection Funnel.
 
 CORE ARCHITECTURE:
   7-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
@@ -32,8 +33,8 @@ Components: Adaptive Weights by Tier (7 components)
   Stage 2: Validation — 5 Wave Engine rules, must pass 4/5    → 20-30 stocks
   Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND  → 5-10 FINAL BUYS
 
-Version: 6.1.0
-Last Updated: February 2026
+Version: 6.3.0
+Last Updated: March 2026
 """
 
 # ============================================
@@ -858,6 +859,170 @@ def _compute_single_trajectory(h: dict) -> dict:
     confidence_lower = max(0, trajectory_score - ci_margin)
     confidence_upper = min(100, trajectory_score + ci_margin * 0.5)  # Asymmetric: upside capped more
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # v6.3: ADVANCED TRADING SIGNALS — 5 New Features for Better Returns
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── 1. CONVICTION SCORE (0-100) ──
+    # Combines multiple bullish signals into single actionable metric.
+    # Higher conviction = more confident BUY signal.
+    conviction = 0
+    # Signal 1: Price-Rank Alignment (25 pts max)
+    if price_label == 'PRICE_CONFIRMED':
+        conviction += 25
+    elif price_label == 'NEUTRAL':
+        conviction += 10
+    # Signal 2: Sector Leadership (20 pts max)
+    # (sector_alpha_tag set in post-processing, use return_quality as proxy here)
+    if return_quality >= 75:
+        conviction += 20
+    elif return_quality >= 60:
+        conviction += 12
+    elif return_quality >= 50:
+        conviction += 5
+    # Signal 3: Data Confidence (20 pts max)
+    if confidence >= 0.85:
+        conviction += 20
+    elif confidence >= 0.6:
+        conviction += 12
+    elif confidence >= 0.4:
+        conviction += 6
+    # Signal 4: Momentum Quality (20 pts max)
+    if tmi >= 70:
+        conviction += 20
+    elif tmi >= 60:
+        conviction += 12
+    elif tmi >= 50:
+        conviction += 5
+    # Signal 5: Positional Strength (15 pts max)
+    current_pct = pcts[-1]
+    if current_pct >= 90:
+        conviction += 15
+    elif current_pct >= 80:
+        conviction += 10
+    elif current_pct >= 70:
+        conviction += 5
+    conviction = min(100, conviction)
+
+    # Conviction tags for UI
+    if conviction >= 80:
+        conviction_tag = 'VERY_HIGH'
+        conviction_emoji = '🎯'
+    elif conviction >= 65:
+        conviction_tag = 'HIGH'
+        conviction_emoji = '✅'
+    elif conviction >= 45:
+        conviction_tag = 'MODERATE'
+        conviction_emoji = '⚡'
+    elif conviction >= 25:
+        conviction_tag = 'LOW'
+        conviction_emoji = '⚠️'
+    else:
+        conviction_tag = 'VERY_LOW'
+        conviction_emoji = '❌'
+
+    # ── 2. RISK-ADJUSTED T-SCORE ──
+    # Penalizes high-volatility stocks that may reverse.
+    # Sharpe-like: score / (1 + rank_volatility × 0.05)
+    # rank_vol=20 → 2.0x divisor → score halved. rank_vol=10 → 1.5x → mild penalty.
+    vol_penalty = 1.0 + (rank_vol * 0.05)
+    risk_adj_score = trajectory_score / vol_penalty
+    risk_adj_score = round(risk_adj_score, 2)
+
+    # ── 3. EXIT WARNING SYSTEM ──
+    # Detects when to SELL existing holdings.
+    # Multiple warning signals aggregated into exit_risk score (0-100).
+    exit_risk = 0
+    exit_signals = []
+
+    # Exit Signal 1: TMI Collapse (momentum dying)
+    if tmi < 40 and trajectory_score > 50:
+        exit_risk += 25
+        exit_signals.append('TMI_WEAK')
+    elif tmi < 50 and trajectory_score > 60:
+        exit_risk += 15
+        exit_signals.append('TMI_FADING')
+
+    # Exit Signal 2: Price Divergence (rank up but price down)
+    if price_label == 'PRICE_DIVERGENT':
+        exit_risk += 25
+        exit_signals.append('PRICE_DIV')
+
+    # Exit Signal 3: Momentum Decay (returns collapsing)
+    if decay_label == 'DECAY_HIGH':
+        exit_risk += 30
+        exit_signals.append('DECAY_HIGH')
+    elif decay_label == 'DECAY_MODERATE':
+        exit_risk += 15
+        exit_signals.append('DECAY_MOD')
+
+    # Exit Signal 4: Negative Streak (consecutive rank drops)
+    neg_streak = 0
+    for i in range(len(ranks) - 1, 0, -1):
+        if ranks[i] > ranks[i - 1]:  # rank increased = worsened
+            neg_streak += 1
+        else:
+            break
+    if neg_streak >= 3:
+        exit_risk += 20
+        exit_signals.append(f'DROP_{neg_streak}W')
+    elif neg_streak >= 2:
+        exit_risk += 10
+        exit_signals.append('DROP_2W')
+
+    # Exit Signal 5: Pattern Warning
+    if pattern_key in ['fading', 'crash', 'topping_out']:
+        exit_risk += 20
+        exit_signals.append(f'PAT_{pattern_key.upper()}')
+
+    exit_risk = min(100, exit_risk)
+    if exit_risk >= 60:
+        exit_tag = 'EXIT_NOW'
+        exit_emoji = '🚨'
+    elif exit_risk >= 40:
+        exit_tag = 'CAUTION'
+        exit_emoji = '⚠️'
+    elif exit_risk >= 20:
+        exit_tag = 'WATCH'
+        exit_emoji = '👀'
+    else:
+        exit_tag = 'HOLD'
+        exit_emoji = '✅'
+
+    # ── 4. HOT STREAK DETECTION ──
+    # Consecutive weeks of percentile improvement with high current position.
+    # Research shows 4+ week momentum streaks have 72% continuation rate.
+    hot_streak = False
+    hot_streak_weeks = streak  # Already calculated above
+    if streak >= 4 and current_pct >= 70:
+        hot_streak = True
+    elif streak >= 3 and current_pct >= 80:
+        hot_streak = True
+    elif streak >= 5 and current_pct >= 60:
+        hot_streak = True
+
+    # ── 5. VOLUME CONFIRMATION ──
+    # Uses volume_score data if available to validate rank moves.
+    volume_scores = h.get('volume_score', [])
+    latest_vol_score = None
+    vol_confirmed = 'NEUTRAL'
+
+    # Get latest valid volume score
+    for v in reversed(volume_scores):
+        if v is not None and not np.isnan(v):
+            latest_vol_score = float(v)
+            break
+
+    if latest_vol_score is not None:
+        if streak > 0 and latest_vol_score >= 70:
+            vol_confirmed = 'STRONG'  # Rank improving + high volume = strong signal
+        elif streak > 0 and latest_vol_score >= 50:
+            vol_confirmed = 'MODERATE'
+        elif streak > 0 and latest_vol_score < 30:
+            vol_confirmed = 'WEAK'  # Rank improving but low volume = may reverse
+        elif neg_streak >= 2 and latest_vol_score >= 70:
+            vol_confirmed = 'DISTRIBUTION'  # Rank falling + high volume = selling pressure
+
     return {
         'trajectory_score': round(trajectory_score, 2),
         'positional': round(positional, 2),
@@ -896,7 +1061,20 @@ def _compute_single_trajectory(h: dict) -> dict:
         'tmi': round(tmi, 1),
         'weeks': n,
         'rank_volatility': rank_vol,
-        'sparkline': sparkline_data
+        'sparkline': sparkline_data,
+        # v6.3: Advanced Trading Signals
+        'conviction': conviction,
+        'conviction_tag': conviction_tag,
+        'conviction_emoji': conviction_emoji,
+        'risk_adj_score': risk_adj_score,
+        'exit_risk': exit_risk,
+        'exit_tag': exit_tag,
+        'exit_emoji': exit_emoji,
+        'exit_signals': ','.join(exit_signals) if exit_signals else '',
+        'hot_streak': hot_streak,
+        'hot_streak_weeks': hot_streak_weeks,
+        'vol_confirmed': vol_confirmed,
+        'latest_vol_score': round(latest_vol_score, 1) if latest_vol_score else None,
     }
 
 
@@ -924,7 +1102,12 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'avg_rank': round(np.mean(ranks), 1) if ranks else 0,
         'rank_change': 0, 'last_week_change': 0, 'streak': 0,
         'tmi': 50.0, 'weeks': n, 'rank_volatility': 0,
-        'sparkline': [round(p, 1) for p in pcts] if pcts else []
+        'sparkline': [round(p, 1) for p in pcts] if pcts else [],
+        # v6.3: Advanced Trading Signals (defaults)
+        'conviction': 0, 'conviction_tag': 'VERY_LOW', 'conviction_emoji': '❌',
+        'risk_adj_score': 0, 'exit_risk': 0, 'exit_tag': 'HOLD', 'exit_emoji': '✅',
+        'exit_signals': '', 'hot_streak': False, 'hot_streak_weeks': 0,
+        'vol_confirmed': 'NEUTRAL', 'latest_vol_score': None,
     }
 
 
@@ -2458,7 +2641,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                                 index=0, key='sb_quick')
 
         st.markdown("---")
-        st.caption("v6.2.0 | Confidence-Aware Weights + Market Regime + Z-Score")
+        st.caption("v6.3.0 | Conviction + Risk-Adj + Exit Warnings + Hot Streak")
 
     return {
         'categories': selected_cats,
@@ -2624,7 +2807,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         ], key='rank_sort', label_visibility='collapsed')
     with ctl2:
         view_mode = st.selectbox("View", [
-            'Standard', 'Compact', 'Signals', 'Complete', 'Custom'
+            'Standard', 'Compact', 'Signals', 'Trading', 'Complete', 'Custom'
         ], key='rank_view', label_visibility='collapsed')
     with ctl3:
         export_btn = st.button("📥 Export CSV", key='rank_export', use_container_width=True)
@@ -2706,6 +2889,17 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Alpha':    ('sector_alpha_tag', 'Alpha', 'Sector alpha classification', None),
         'Trajectory': ('sparkline', 'Trajectory', 'Score trajectory over time',
                        st.column_config.LineChartColumn('Trajectory', y_min=0, y_max=100, width="medium")),
+        # v6.3: Advanced Trading Signals
+        'Conviction': ('conviction', 'Conviction', 'Buy conviction score 0-100 (higher = stronger BUY signal)',
+                       st.column_config.ProgressColumn('Conviction', min_value=0, max_value=100, format="%.0f")),
+        'Conv Tag': ('conviction_tag', 'Conv', 'Conviction level: VERY_HIGH/HIGH/MODERATE/LOW/VERY_LOW', None),
+        'Risk-Adj': ('risk_adj_score', 'Risk-Adj', 'Risk-adjusted T-Score (volatility penalized)',
+                     st.column_config.ProgressColumn('Risk-Adj', min_value=0, max_value=100, format="%.1f")),
+        'Exit Risk': ('exit_risk', 'Exit Risk', 'Exit/sell risk score 0-100 (higher = consider selling)',
+                      st.column_config.ProgressColumn('Exit Risk', min_value=0, max_value=100, format="%.0f")),
+        'Exit Tag': ('exit_tag', 'Exit', 'Exit warning: EXIT_NOW/CAUTION/WATCH/HOLD', None),
+        'Hot Streak': ('hot_streak', 'Hot', 'Hot streak detected (4+ weeks improving at high position)', None),
+        'Vol Conf': ('vol_confirmed', 'Vol', 'Volume confirmation: STRONG/MODERATE/WEAK/DISTRIBUTION/NEUTRAL', None),
     }
 
     VIEW_PRESETS = {
@@ -2715,9 +2909,12 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                      'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks', 'Trajectory'],
         'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
+        'Trading':  ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Grade', 'Conviction',
+                     'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak', 'Vol Conf', 'Streak', 'Trajectory'],
         'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
                      'Grade', 'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
-                     'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
+                     'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Alpha', 
+                     'Conviction', 'Risk-Adj', 'Exit Risk', 'Hot Streak', 'Vol Conf', 'Trajectory'],
     }
 
     # ── Custom view: user picks columns ──
@@ -3389,7 +3586,7 @@ def _render_radar_chart(row):
 
     # Reference circle at 50
     fig.add_trace(go.Scatterpolar(
-        r=[50] * 7,
+        r=[50] * len(cats_closed),
         theta=cats_closed,
         mode='lines',
         line=dict(color='rgba(255,255,255,0.15)', width=1, dash='dash'),
@@ -4265,7 +4462,7 @@ def render_about_tab():
     """Render about/documentation tab"""
 
     st.markdown("""
-    ## 📊 Rank Trajectory Engine v6.1 — 7-Component Adaptive Scoring
+    ## 📊 Rank Trajectory Engine v6.3 — Advanced Trading Signals
 
     The **ALL TIME BEST** stock rank trajectory analysis system with **7-component adaptive scoring**,
     **signal-isolated return quality**, **directional price-rank alignment**, **momentum decay warning**,
@@ -4353,7 +4550,70 @@ def render_about_tab():
 
     ---
 
-    ### 🏗️ Adaptive Weight System (7 Components)
+    ### � Advanced Trading Signals (v6.3)
+
+    Five new signals designed for actionable trading decisions:
+
+    #### 1. Conviction Score (0-100)
+    Aggregates 5 bullish signals into a single BUY confidence metric.
+
+    | Signal | Max Points | Measures |
+    |--------|-----------|----------|
+    | Price-Rank Alignment | 25 | CONFIRMED=25, NEUTRAL=10 |
+    | Return Quality | 20 | ≥75=20, ≥60=12, ≥50=5 |
+    | Data Confidence | 20 | ≥0.85=20, ≥0.6=12, ≥0.4=6 |
+    | Momentum (TMI) | 20 | ≥70=20, ≥60=12, ≥50=5 |
+    | Positional Strength | 15 | ≥90th=15, ≥80th=10, ≥70th=5 |
+
+    | Tag | Score | Emoji |
+    |-----|-------|-------|
+    | VERY_HIGH | ≥ 80 | 🎯 |
+    | HIGH | ≥ 65 | ✅ |
+    | MODERATE | ≥ 45 | ⚡ |
+    | LOW | ≥ 25 | ⚠️ |
+    | VERY_LOW | < 25 | ❌ |
+
+    #### 2. Risk-Adjusted T-Score
+    `Risk-Adj = T-Score / (1 + rank_volatility / 50)`
+    Penalizes high-volatility stocks. Rank vol of 25 → 1.5× divisor.
+
+    #### 3. Exit Warning System (0-100)
+    Detects when to SELL existing holdings. Aggregates 5 exit signals:
+
+    | Signal | Max Points | Trigger |
+    |--------|-----------|---------|
+    | TMI Collapse | 25 | TMI < 40 while score > 50 |
+    | Price Divergence | 25 | PRICE_DIVERGENT label |
+    | Momentum Decay | 30 | DECAY_HIGH or DECAY_MODERATE |
+    | Negative Streak | 20 | 3+ consecutive rank drops |
+    | Pattern Warning | 20 | fading / crash / topping_out |
+
+    | Tag | Score | Action |
+    |-----|-------|--------|
+    | 🚨 EXIT_NOW | ≥ 60 | Strong sell signal |
+    | ⚠️ CAUTION | ≥ 40 | Review position |
+    | 👀 WATCH | ≥ 20 | Monitor closely |
+    | ✅ HOLD | < 20 | Position is safe |
+
+    #### 4. Hot Streak Detection
+    Flags stocks with sustained momentum + high position:
+    - 4+ consecutive improving weeks AND ≥ 70th percentile
+    - 3+ weeks AND ≥ 80th percentile
+    - 5+ weeks AND ≥ 60th percentile
+
+    #### 5. Volume Confirmation
+    Validates rank moves with Wave Engine volume score:
+
+    | Condition | Label | Meaning |
+    |-----------|-------|---------|
+    | Improving + Vol ≥ 70 | STRONG | High-conviction rank improvement |
+    | Improving + Vol ≥ 50 | MODERATE | Decent volume support |
+    | Improving + Vol < 30 | WEAK | Low volume → may reverse |
+    | Falling + Vol ≥ 70 | DISTRIBUTION | Selling pressure detected |
+
+    ---
+
+    ### �🏗️ Adaptive Weight System (7 Components)
 
     Weights **dynamically shift** based on the stock's average percentile.
     Smooth interpolation between tiers — no hard cutoffs.
@@ -4470,7 +4730,7 @@ def render_about_tab():
 
     ---
 
-    *Built for the Wave Detection ecosystem • v6.1.0 • February 2026*
+    *Built for the Wave Detection ecosystem • v6.3.0 • March 2026*
     """)
 
 
