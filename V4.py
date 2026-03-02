@@ -559,10 +559,20 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
         traj['latest_patterns'] = h['patterns']
         results.append(traj)
 
-    # Build DataFrame and sort
+    # Build DataFrame and sort (v6.2: Confidence-Aware Ranking with Tie-Breakers)
+    # Primary: trajectory_score DESC
+    # Tie-breaker 1: confidence DESC (proven performers beat lucky streaks)
+    # Tie-breaker 2: consistency DESC (stable beats volatile at equal score+conf)
     traj_df = pd.DataFrame(results)
-    traj_df = traj_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
+    traj_df = traj_df.sort_values(
+        ['trajectory_score', 'confidence', 'consistency'],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
     traj_df.insert(0, 't_rank', range(1, len(traj_df) + 1))
+    
+    # Add T-Percentile: position as percentile of universe (higher = better)
+    total_stocks = len(traj_df)
+    traj_df['t_percentile'] = ((total_stocks - traj_df['t_rank']) / max(total_stocks - 1, 1) * 100).round(1)
 
     # ── Step 3b: Market Regime Awareness (v6.2) ──
     # Computes market-wide median trend/velocity to normalize for market moves.
@@ -724,8 +734,12 @@ def _compute_single_trajectory(h: dict) -> dict:
     from_high = h.get('from_high_pct', [])
     return_quality = _calc_return_quality(ret_3m, ret_6m, ret_7d, ret_30d, from_high, avg_pct, n)
 
-    # ── Select Adaptive Weights Based on Percentile Tier ──
-    weights = _get_adaptive_weights(avg_pct, current_pct=pcts[-1])
+    # ── v6.2: Compute confidence EARLY (needed for weight selection) ──
+    bc = BAYESIAN_CONFIDENCE
+    confidence = min(1.0, max(bc['min_confidence'], n / bc['full_confidence_weeks']))
+
+    # ── Select Adaptive Weights Based on Percentile Tier + Confidence (v6.2) ──
+    weights = _get_adaptive_weights(avg_pct, current_pct=pcts[-1], confidence=confidence)
 
     # ── Composite Score (7-Component Adaptive Weighted) ──
     trajectory_score = (
@@ -745,8 +759,7 @@ def _compute_single_trajectory(h: dict) -> dict:
     # ── Bayesian Confidence Shrinkage (v3.0) ──
     # Shrinks score toward population mean when data is insufficient.
     # 4-week lucky streak ≠ 16-week proven performer. This ensures that.
-    bc = BAYESIAN_CONFIDENCE
-    confidence = min(1.0, max(bc['min_confidence'], n / bc['full_confidence_weeks']))
+    # (confidence already computed above for weight selection)
     trajectory_score = confidence * trajectory_score + (1 - confidence) * bc['prior_mean']
 
     # ── Hurst Exponent Persistence Multiplier (v3.0) ──
@@ -917,7 +930,7 @@ def _empty_trajectory(ranks, totals, pcts, n):
 
 # ── Adaptive Weight Selection ──
 
-def _get_adaptive_weights(avg_pct: float, current_pct: float = None) -> dict:
+def _get_adaptive_weights(avg_pct: float, current_pct: float = None, confidence: float = None) -> dict:
     """
     Select weight profile based on stock's effective percentile position.
     Uses smooth interpolation between tiers for continuous transitions.
@@ -926,28 +939,74 @@ def _get_adaptive_weights(avg_pct: float, current_pct: float = None) -> dict:
     so weight selection reflects current reality, not stale history.
     A stock at current_pct=72, avg_pct=35 gets effective=57 → 'mid' weights
     instead of 'bottom' weights which over-penalize with 25% velocity weight.
+    
+    v6.2: Confidence-Aware Dynamic Weight Shifting.
+    Low-confidence stocks (few weeks): shift weight toward momentum signals
+    (velocity, acceleration, trend) — recent behavior is all we know.
+    High-confidence stocks (many weeks): shift weight toward stability signals
+    (positional, consistency, resilience) — proven track record matters more.
+    
+    Shift magnitude: ±5% max per component (preserves architecture stability).
     """
     effective_pct = avg_pct
     if current_pct is not None and current_pct > avg_pct + 15:
         effective_pct = 0.4 * avg_pct + 0.6 * current_pct
     
+    # Select base weights by percentile tier (unchanged logic)
     if effective_pct >= 90:
-        return ADAPTIVE_WEIGHTS['elite']
+        base_weights = ADAPTIVE_WEIGHTS['elite'].copy()
     elif effective_pct >= 70:
         ratio = (effective_pct - 70) / 20
         strong = ADAPTIVE_WEIGHTS['strong']
         elite = ADAPTIVE_WEIGHTS['elite']
-        return {k: strong[k] * (1 - ratio) + elite[k] * ratio for k in strong}
+        base_weights = {k: strong[k] * (1 - ratio) + elite[k] * ratio for k in strong}
     elif effective_pct >= 40:
         ratio = (effective_pct - 40) / 30
         mid = ADAPTIVE_WEIGHTS['mid']
         strong = ADAPTIVE_WEIGHTS['strong']
-        return {k: mid[k] * (1 - ratio) + strong[k] * ratio for k in mid}
+        base_weights = {k: mid[k] * (1 - ratio) + strong[k] * ratio for k in mid}
     else:
         ratio = effective_pct / 40
         bottom = ADAPTIVE_WEIGHTS['bottom']
         mid = ADAPTIVE_WEIGHTS['mid']
-        return {k: bottom[k] * (1 - ratio) + mid[k] * ratio for k in bottom}
+        base_weights = {k: bottom[k] * (1 - ratio) + mid[k] * ratio for k in bottom}
+    
+    # ── v6.2: Confidence-Aware Micro-Adjustment ──
+    # Skip if confidence not provided (backward compatible for UI calls)
+    if confidence is None:
+        return base_weights
+    
+    # Shift factor: -1 at confidence=0.25, 0 at confidence=0.625, +1 at confidence=1.0
+    # Low confidence → negative shift → boost momentum signals
+    # High confidence → positive shift → boost stability signals
+    shift_factor = (confidence - 0.625) / 0.375  # Range: -1 to +1
+    shift_factor = float(np.clip(shift_factor, -1.0, 1.0))
+    
+    # Define which components gain/lose weight based on confidence
+    # Momentum signals: velocity, acceleration, trend (gain weight when LOW confidence)
+    # Stability signals: positional, consistency, resilience (gain weight when HIGH confidence)
+    # return_quality: neutral (no shift)
+    
+    # Max shift per component: 5% (0.05)
+    max_shift = 0.05
+    
+    # Calculate shifts (positive shift_factor = boost stability, reduce momentum)
+    shifts = {
+        'positional': shift_factor * max_shift,       # +5% at high conf, -5% at low
+        'trend': -shift_factor * max_shift * 0.6,     # -3% at high conf, +3% at low
+        'velocity': -shift_factor * max_shift,        # -5% at high conf, +5% at low
+        'acceleration': -shift_factor * max_shift * 0.6,  # -3% at high conf, +3% at low
+        'consistency': shift_factor * max_shift * 0.8,    # +4% at high conf, -4% at low
+        'resilience': shift_factor * max_shift * 0.6,     # +3% at high conf, -3% at low
+        'return_quality': 0.0                             # Neutral — always relevant
+    }
+    
+    # Apply shifts and ensure weights stay positive
+    adjusted = {k: max(0.02, base_weights[k] + shifts[k]) for k in base_weights}
+    
+    # Renormalize to sum to 1.0 (critical for score integrity)
+    total = sum(adjusted.values())
+    return {k: v / total for k, v in adjusted.items()}
 
 
 def _apply_elite_bonus(score: float, pcts: List[float], n: int) -> float:
@@ -2399,7 +2458,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                                 index=0, key='sb_quick')
 
         st.markdown("---")
-        st.caption("v6.2.0 | Confidence Intervals + Market Regime + Z-Score Norm")
+        st.caption("v6.2.0 | Confidence-Aware Weights + Market Regime + Z-Score")
 
     return {
         'categories': selected_cats,
@@ -2576,10 +2635,13 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     filtered_df['t_rank'] = range(1, len(filtered_df) + 1)
     shown = len(filtered_df)
 
-    # ── Pro Rank = rank within full universe (stable, never changes with filters) ──
-    pro_rank_sorted = all_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
-    pro_rank_map = {t: i + 1 for i, t in enumerate(pro_rank_sorted['ticker'])}
-    filtered_df['pro_rank'] = filtered_df['ticker'].map(pro_rank_map).fillna(0).astype(int)
+    # ── T-Rank = rank within full universe (stable, never changes with filters) ──
+    t_rank_sorted = all_df.sort_values(
+        ['trajectory_score', 'confidence', 'consistency'],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+    t_rank_map = {t: i + 1 for i, t in enumerate(t_rank_sorted['ticker'])}
+    filtered_df['t_rank_universe'] = filtered_df['ticker'].map(t_rank_map).fillna(0).astype(int)
 
     sort_map = {
         'Trajectory Score': ('trajectory_score', False),
@@ -2610,7 +2672,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ── Column definitions for each view ──
     # Each: (df_col, display_name, tooltip, column_config_or_None)
     COL_DEFS = {
-        'Pro Rank': ('pro_rank', 'Pro Rank', 'Rank in full universe (all stocks, unfiltered)',
+        'T-Rank': ('t_rank_universe', 'T-Rank', 'Rank in full universe (all stocks, unfiltered)',
                      st.column_config.NumberColumn(width="small")),
         'Ticker':   ('ticker', 'Ticker', 'NSE ticker symbol', None),
         'Company':  ('company_name', 'Company', 'Company name (truncated)', None),
@@ -2647,13 +2709,13 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     }
 
     VIEW_PRESETS = {
-        'Compact':  ['Pro Rank', 'Ticker', '₹ Price', 'T-Score', 'Grade', 'Pattern',
+        'Compact':  ['T-Rank', 'Ticker', '₹ Price', 'T-Score', 'Grade', 'Pattern',
                      'Δ Total', 'Streak', 'Trajectory'],
-        'Standard': ['Pro Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
+        'Standard': ['T-Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks', 'Trajectory'],
-        'Signals':  ['Pro Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
+        'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
-        'Complete': ['Pro Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
+        'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
                      'Grade', 'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
     }
@@ -2913,11 +2975,11 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
 # ============================================
 
 def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, histories: dict, dates_iso: list):
-    """Search & Analyse — v3.0 (Price Trajectory, Pro Rank, Latest Price, Clean UI)
+    """Search & Analyse — v3.0 (Price Trajectory, T-Rank, Latest Price, Clean UI)
 
     Args:
         filtered_df: Category/sector-filtered stocks (for dropdown).
-        traj_df:     Full unfiltered data (for Pro Rank against universe).
+        traj_df:     Full unfiltered data (for T-Rank against universe).
     """
 
     # ── Search Input — dropdown shows only filtered stocks ──
@@ -2954,10 +3016,13 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     latest_price = h['prices'][-1] if h.get('prices') else 0
     pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
     total_stocks = h['total_per_week'][-1] if h.get('total_per_week') else 0
-    # Pro Rank = rank within full universe (all stocks, not filtered)
-    sorted_df = traj_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
-    pro_rank_idx = sorted_df[sorted_df['ticker'] == ticker].index
-    pro_rank = int(pro_rank_idx[0]) + 1 if len(pro_rank_idx) > 0 else 0
+    # T-Rank = rank within full universe (all stocks, not filtered)
+    sorted_df = traj_df.sort_values(
+        ['trajectory_score', 'confidence', 'consistency'],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+    t_rank_idx = sorted_df[sorted_df['ticker'] == ticker].index
+    t_rank = int(t_rank_idx[0]) + 1 if len(t_rank_idx) > 0 else 0
 
     pattern_key = row.get('pattern_key', 'neutral')
     p_emoji, p_name, p_desc = PATTERN_DEFS.get(pattern_key, ('➖', 'Neutral', ''))
@@ -2978,8 +3043,8 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             </div>
             <div style="display:flex; gap:20px; align-items:center;">
                 <div style="text-align:center;">
-                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Pro Rank</div>
-                    <div style="font-size:1.8rem; font-weight:800; color:#58a6ff;">#{pro_rank}</div>
+                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">T-Rank</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:#58a6ff;">#{t_rank}</div>
                     <div style="font-size:0.65rem; color:#484f58;">of {total_stocks}</div>
                 </div>
                 <div style="width:1px; height:50px; background:#30363d;"></div>
@@ -3585,10 +3650,13 @@ def render_funnel_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     if s3_pass > 0:
         final_buys = stage3[stage3['final_pass']].copy().reset_index(drop=True)
 
-        # Precompute Pro Rank map (T-Score sorted)
-        pro_rank_sorted = traj_df.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
-        pro_rank_map = {t: i + 1 for i, t in enumerate(pro_rank_sorted['ticker'])}
-        total_stocks = len(pro_rank_sorted)
+        # Precompute T-Rank map (Confidence-Aware Ranking)
+        t_rank_sorted = traj_df.sort_values(
+            ['trajectory_score', 'confidence', 'consistency'],
+            ascending=[False, False, False]
+        ).reset_index(drop=True)
+        t_rank_map = {t: i + 1 for i, t in enumerate(t_rank_sorted['ticker'])}
+        total_stocks = len(t_rank_sorted)
 
         # Card grid — 2 per row
         for i in range(0, len(final_buys), 2):
@@ -3603,7 +3671,7 @@ def render_funnel_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 p_emoji, p_name, _ = PATTERN_DEFS.get(p_key, ('➖', 'Neutral', ''))
                 p_color = PATTERN_COLORS.get(p_key, '#8b949e')
                 grade_color = {'S': '#FFD700', 'A': '#3fb950', 'B': '#58a6ff', 'C': '#d29922', 'D': '#FF5722', 'F': '#f85149'}.get(r['grade'], '#888')
-                pro_rank = pro_rank_map.get(r['ticker'], 0)
+                t_rank = t_rank_map.get(r['ticker'], 0)
 
                 with col:
                     st.markdown(f"""
@@ -3623,7 +3691,7 @@ def render_funnel_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                             </div>
                         </div>
                         <div style="display:flex; gap:12px; margin-top:10px; padding-top:8px; border-top:1px solid #21262d; flex-wrap:wrap;">
-                            <div><span style="color:#6e7681; font-size:0.65rem;">Pro Rank</span><br><span style="color:#58a6ff; font-weight:700;">#{pro_rank}</span></div>
+                            <div><span style="color:#6e7681; font-size:0.65rem;">T-Rank</span><br><span style="color:#58a6ff; font-weight:700;">#{t_rank}</span></div>
                             <div><span style="color:#6e7681; font-size:0.65rem;">Rank</span><br><span style="color:#e6edf3; font-weight:700;">#{r['current_rank']}</span></div>
                             <div><span style="color:#6e7681; font-size:0.65rem;">Grade</span><br><span style="color:{grade_color}; font-weight:700;">{r['grade_emoji']} {r['grade']}</span></div>
                             <div><span style="color:#6e7681; font-size:0.65rem;">TMI</span><br><span style="color:#e6edf3; font-weight:700;">{r['tmi']:.0f}</span></div>
