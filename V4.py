@@ -5405,11 +5405,22 @@ def main():
     cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
     if st.session_state.get('_traj_key') != cache_key:
         with st.spinner("📊 Computing trajectories across all weeks..."):
-            result = load_and_compute(uploaded_files)
+            try:
+                result = load_and_compute(uploaded_files)
+            except Exception as e:
+                st.error(f"❌ Computation error: {e}")
+                logger.exception("load_and_compute failed")
+                return
         st.session_state['_traj_key'] = cache_key
         st.session_state['_traj_result'] = result
 
-    result = st.session_state['_traj_result']
+    result = st.session_state.get('_traj_result')
+    if result is None or not isinstance(result, (tuple, list)) or len(result) != 4:
+        st.error("❌ Invalid computation result. Please re-upload your files.")
+        # Clear stale cache so next rerun recomputes
+        st.session_state.pop('_traj_key', None)
+        st.session_state.pop('_traj_result', None)
+        return
 
     if result[0] is None:
         st.error("❌ No valid data found in uploaded files. Ensure CSVs contain `rank` and `ticker` columns.")
