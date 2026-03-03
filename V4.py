@@ -1,19 +1,21 @@
 """
-Rank Trajectory Engine v7.0 — Next-Level Intelligence
+Rank Trajectory Engine v8.0 — Wave Signal Fusion
 =======================================================
 Professional Stock Rank Trajectory Analysis System
 with Adaptive Weight Intelligence, Return Quality Component, Directional Price-Rank
 Alignment, Momentum Decay Warning, Sector Alpha Detection, Market Regime Awareness,
 Confidence Intervals, Z-Score Normalization, Conviction Score, Risk-Adjusted T-Score,
-Exit Warning System, Hot Streak Detection, Volume Confirmation, Signal Confluence Detector,
-Forward Expectation Score, Momentum Half-Life, Regime-Conditional Scoring,
-Weekly Delta Dashboard, Backtesting Engine, Portfolio Correlation Matrix,
-Smart Watchlist, and Multi-Stage Selection Funnel.
+Exit Warning System, Hot Streak Detection, Volume Confirmation, Multi-Stage Selection Funnel,
+and WAVE SIGNAL FUSION ENGINE — Deep integration of 18 WAVE Detection signals.
 
 CORE ARCHITECTURE:
   7-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
-    → Hurst Persistence Multiplier → Directional Price-Rank Alignment
-    → Momentum Decay Penalty → Sector Alpha Tag
+    → Hurst Persistence Multiplier → Wave Signal Fusion Multiplier
+    → Directional Price-Rank Alignment → Momentum Decay Penalty → Sector Alpha Tag
+
+  Wave Signal Fusion: Cross-validates WAVE Detection scores with Trajectory calculations.
+    4 Fusion Signals: Confluence (35%) + Institutional Flow (30%) + Momentum Harmony (20%)
+    + Fundamental Quality (15%) → Fusion Multiplier ×0.92 to ×1.10
 
   Components: Positional, Trend, Velocity, Acceleration, Consistency,
               Resilience, ReturnQuality
@@ -36,7 +38,7 @@ Components: Adaptive Weights by Tier (7 components)
   Stage 2: Validation — 5 Wave Engine rules, must pass 4/5    → 20-30 stocks
   Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND  → 5-10 FINAL BUYS
 
-Version: 7.0.0
+Version: 6.3.0
 Last Updated: March 2026
 """
 
@@ -205,6 +207,44 @@ SECTOR_ALPHA = {
     'outperform_z': 0.5,             # Z-score above this = outperforming sector
     'aligned_z': -0.5,              # Z-score above this = aligned with sector
     'beta_sector_min': 60,           # Sector avg must be > this for beta detection
+}
+
+# ── Wave Signal Fusion Configuration (v8.0) ──
+# Cross-validates WAVE Detection's 18 ignored signals with Trajectory Engine calculations.
+# When BOTH systems agree a stock is strong → high conviction.
+# When they disagree → uncertainty flag.
+WAVE_FUSION = {
+    # Fusion signal weights (must sum to 1.0)
+    'confluence_weight': 0.35,           # Agreement between WAVE scoring and Trajectory
+    'flow_weight': 0.30,                 # Institutional money flow strength
+    'harmony_weight': 0.20,              # WAVE's momentum harmony (0-4)
+    'fundamental_weight': 0.15,          # EPS/PE quality gate
+
+    # Multiplier range
+    'max_boost': 1.10,                   # Maximum fusion boost (strong agreement)
+    'max_penalty': 0.92,                 # Maximum fusion penalty (strong conflict)
+    'neutral_zone_lo': 42,               # Below this → penalty
+    'neutral_zone_hi': 58,               # Above this → boost
+
+    # Confluence thresholds (WAVE vs Trajectory agreement)
+    'strong_agree_pct_diff': 10,         # Percentile difference for "strong agreement"
+    'agree_pct_diff': 25,                # Percentile difference for "agreement"
+    'disagree_pct_diff': 45,             # Percentile difference for "disagreement"
+
+    # Institutional flow scoring
+    'money_flow_strong': 50.0,           # money_flow_mm above this = strong flow
+    'money_flow_moderate': 10.0,         # money_flow_mm above this = moderate flow
+    'vmi_strong': 65,                    # VMI above this = strong volume-momentum
+    'vmi_moderate': 40,                  # VMI above this = moderate
+    'rvol_hot': 2.0,                     # RVOL above this = hot volume
+    'rvol_active': 1.2,                  # RVOL above this = active volume
+
+    # Fundamental quality thresholds
+    'eps_growth_strong': 20.0,           # EPS change % for "strong growth"
+    'eps_growth_moderate': 5.0,          # EPS change % for "moderate growth"
+    'pe_reasonable_max': 50.0,           # PE ratio ceiling for "reasonable"
+    'pe_value_max': 20.0,                # PE ratio ceiling for "value"
+    'pe_negative_penalty': True,         # Penalize negative PE (loss-making)
 }
 
 # Funnel Stage Defaults
@@ -452,14 +492,14 @@ def parse_date_from_filename(filename: str) -> Optional[datetime]:
     return datetime.strptime(match.group(1), '%Y-%m-%d') if match else None
 
 
-def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Optional[dict], Optional[list], Optional[dict], Optional[dict]]:
+def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Optional[dict], Optional[list], Optional[dict]]:
     """
     Master data pipeline: Process uploaded CSVs → Build histories → Compute trajectories.
-    Returns: (trajectory_df, histories, dates_iso, metadata, pct_series)
+    Returns: (trajectory_df, histories, dates_iso, metadata)
     """
     # ── Step 1: Parse uploaded CSVs ──
     if not uploaded_files:
-        return None, None, None, None, None
+        return None, None, None, None
 
     weekly_data = {}
     for ufile in uploaded_files:
@@ -479,7 +519,7 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
             logger.warning(f"Failed to load {ufile.name}: {e}")
 
     if not weekly_data:
-        return None, None, None, None, None
+        return None, None, None, None
 
     weekly_data = dict(sorted(weekly_data.items()))
     dates = sorted(weekly_data.keys())
@@ -509,6 +549,25 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                     'from_high_pct': [],      # v2.3: Distance from 52w high
                     'momentum_score': [],     # v2.3: Wave engine momentum score
                     'volume_score': [],       # v2.3: Wave engine volume score
+                    # ── v8.0: Wave Signal Fusion — 18 previously ignored columns ──
+                    'position_score': [],     # WAVE's 52-week position scoring
+                    'acceleration_score': [], # WAVE's momentum acceleration
+                    'breakout_score': [],     # WAVE's breakout detection (4 components)
+                    'rvol_score': [],         # WAVE's relative volume quality
+                    'pe': [],                 # Price/Earnings ratio
+                    'eps_current': [],        # Current EPS
+                    'eps_change_pct': [],     # EPS change percentage
+                    'from_low_pct': [],       # Distance from 52-week low
+                    'ret_1d': [],             # 1-day return (intraday momentum)
+                    'ret_1y': [],             # 1-year return (long-term trend)
+                    'rvol': [],               # Raw relative volume
+                    'vmi': [],                # Volume-Momentum Index
+                    'money_flow_mm': [],      # Money flow in millions
+                    'position_tension': [],   # Position tension metric
+                    'momentum_harmony': [],   # Momentum harmony (0-4)
+                    'eps_tier': [],           # EPS tier classification
+                    'pe_tier': [],            # PE tier classification
+                    'overall_market_strength': [],  # Market strength metric
                     'company_name': '', 'category': '', 'sector': '',
                     'industry': '', 'market_state': '', 'patterns': ''
                 }
@@ -533,7 +592,17 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                 ('ret_7d', 'ret_7d'), ('ret_30d', 'ret_30d'), ('ret_3m', 'ret_3m'),
                 ('ret_6m', 'ret_6m'),
                 ('from_high_pct', 'from_high_pct'), ('momentum_score', 'momentum_score'),
-                ('volume_score', 'volume_score')
+                ('volume_score', 'volume_score'),
+                # v8.0: Wave Signal Fusion — 18 previously ignored columns
+                ('position_score', 'position_score'), ('acceleration_score', 'acceleration_score'),
+                ('breakout_score', 'breakout_score'), ('rvol_score', 'rvol_score'),
+                ('pe', 'pe'), ('eps_current', 'eps_current'),
+                ('eps_change_pct', 'eps_change_pct'), ('from_low_pct', 'from_low_pct'),
+                ('ret_1d', 'ret_1d'), ('ret_1y', 'ret_1y'),
+                ('rvol', 'rvol'), ('vmi', 'vmi'),
+                ('money_flow_mm', 'money_flow_mm'), ('position_tension', 'position_tension'),
+                ('momentum_harmony', 'momentum_harmony'),
+                ('overall_market_strength', 'overall_market_strength'),
             ]:
                 col_val = row.get(col_name, None)
                 if col_val is not None and pd.notna(col_val):
@@ -549,6 +618,11 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                 val = row.get(fld, '')
                 if pd.notna(val) and str(val).strip():
                     h[fld] = str(val).strip()
+
+            # v8.0: Track tier classifications (string columns)
+            for tier_col in ['eps_tier', 'pe_tier']:
+                tier_val = row.get(tier_col, '')
+                h[tier_col].append(str(tier_val).strip() if pd.notna(tier_val) else '')
 
     # ── Step 3: Compute trajectories for all tickers ──
     results = []
@@ -683,76 +757,6 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
 
     traj_df['signal_tags'] = traj_df.apply(_add_alpha_signal, axis=1)
 
-    # ── Step 5: Regime-Conditional Scoring (v7.0) ──
-    # Z-score each stock's T-Score against the current market distribution.
-    # T-Score=70 when market avg=45 → z=+1.8 (genuinely strong)
-    # T-Score=70 when market avg=68 → z=+0.15 (just average)
-    mkt_score_mean = traj_df['trajectory_score'].mean()
-    mkt_score_std = max(traj_df['trajectory_score'].std(), 1.0)
-    traj_df['regime_z'] = ((traj_df['trajectory_score'] - mkt_score_mean) / mkt_score_std).round(2)
-    # Rescale to 0-100 for intuitive display: z=-3→0, z=0→50, z=+3→100
-    traj_df['regime_score'] = (50 + traj_df['regime_z'] * 16.67).clip(0, 100).round(1)
-    traj_df['regime_tag'] = traj_df['regime_z'].apply(
-        lambda z: 'EXCEPTIONAL' if z >= 2.0 else 'STRONG' if z >= 1.0
-        else 'ABOVE_AVG' if z >= 0.3 else 'MARKET_AVG' if z >= -0.3
-        else 'BELOW_AVG' if z >= -1.0 else 'WEAK'
-    )
-
-    # ── Step 6: Backtesting Data (v7.0) ──
-    # For each stock, compute forward returns at various horizons using historical prices.
-    # If stock had Grade S/A or EXIT_NOW N weeks ago, what happened to its price?
-    if len(dates) >= 4:
-        # Build per-ticker price series aligned to dates
-        price_by_ticker = {}
-        for ticker_bt, h_bt in histories.items():
-            price_map_bt = dict(zip(h_bt['dates'], h_bt['prices']))
-            price_by_ticker[ticker_bt] = price_map_bt
-
-        # For backtesting: compute what the PREVIOUS week's signals predicted
-        # We store the latest forward return info
-        def _backtest_row(row):
-            ticker_bt = row['ticker']
-            pm = price_by_ticker.get(ticker_bt, {})
-            if not pm or len(pm) < 4:
-                return pd.Series({'fwd_1w_ret': None, 'fwd_4w_ret': None, 'bt_accuracy': None})
-            date_list = sorted(pm.keys())
-            if len(date_list) < 2:
-                return pd.Series({'fwd_1w_ret': None, 'fwd_4w_ret': None, 'bt_accuracy': None})
-            # Use second-to-last → last as "1-week forward" return
-            # If we have enough history, 4 weeks back → last
-            last_price = pm[date_list[-1]]
-            prev_price = pm[date_list[-2]]
-            fwd_1w = round((last_price - prev_price) / max(prev_price, 0.01) * 100, 2)
-            if len(date_list) >= 5:
-                price_4w_ago = pm[date_list[-5]]
-                fwd_4w = round((last_price - price_4w_ago) / max(price_4w_ago, 0.01) * 100, 2)
-            else:
-                fwd_4w = None
-            # Accuracy: did the trajectory score direction match price direction?
-            bt_acc = None
-            h_bt = histories.get(ticker_bt, {})
-            if len(h_bt.get('ranks', [])) >= 4:
-                rank_improved = h_bt['ranks'][-2] > h_bt['ranks'][-1]  # rank number decreased = improved
-                price_improved = fwd_1w > 0
-                bt_acc = 1 if rank_improved == price_improved else 0
-            return pd.Series({'fwd_1w_ret': fwd_1w, 'fwd_4w_ret': fwd_4w, 'bt_accuracy': bt_acc})
-
-        bt_results = traj_df.apply(_backtest_row, axis=1)
-        traj_df['fwd_1w_ret'] = bt_results['fwd_1w_ret']
-        traj_df['fwd_4w_ret'] = bt_results['fwd_4w_ret']
-        traj_df['bt_accuracy'] = bt_results['bt_accuracy']
-    else:
-        traj_df['fwd_1w_ret'] = None
-        traj_df['fwd_4w_ret'] = None
-        traj_df['bt_accuracy'] = None
-
-    # ── Step 7: Portfolio Correlation Data (v7.0) ──
-    # Pre-compute percentile series for correlation matrix (used in UI)
-    pct_series = {}
-    for ticker_corr, h_corr in histories.items():
-        if len(h_corr['ranks']) >= 4:
-            pct_series[ticker_corr] = ranks_to_percentiles(h_corr['ranks'], h_corr['total_per_week'])
-
     # Metadata
     metadata = {
         'total_weeks': len(dates),
@@ -763,7 +767,369 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
         'avg_stocks_per_week': int(np.mean([len(weekly_data[d]) for d in dates]))
     }
 
-    return traj_df, histories, dates_iso, metadata, pct_series
+    return traj_df, histories, dates_iso, metadata
+
+
+# ============================================
+# WAVE SIGNAL FUSION ENGINE (v8.0)
+# ============================================
+# Deep integration of 18 previously ignored WAVE Detection signals.
+# Cross-validates WAVE's independent scoring with Trajectory Engine calculations.
+# 4 Fusion Signals → Fusion Score → Fusion Multiplier (×0.92 to ×1.10)
+
+def _latest_valid(lst, default=None):
+    """Get the latest non-NaN value from a history list."""
+    if not lst:
+        return default
+    for v in reversed(lst):
+        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+            return v
+    return default
+
+
+def _avg_recent(lst, window=4, default=None):
+    """Average of last `window` valid values."""
+    if not lst:
+        return default
+    valid = [v for v in lst[-window:] if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    return float(np.mean(valid)) if valid else default
+
+
+def _calc_wave_confluence(h: dict, traj_components: dict) -> float:
+    """
+    Wave Confluence Score — Agreement between WAVE Detection and Trajectory Engine.
+
+    CORE INSIGHT: WAVE Detection and Trajectory Engine independently analyze the same stock.
+    WAVE scores the stock's CURRENT state using cross-sectional analysis (vs all stocks this week).
+    Trajectory scores the stock's TRAJECTORY over time (how ranks change week-over-week).
+
+    When BOTH systems agree a stock is strong → HIGH confidence, genuine quality.
+    When they disagree → uncertain, one system may be lagging or wrong.
+
+    4 Cross-Validation Channels:
+      1. WAVE position_score vs Trajectory positional (40%)
+      2. WAVE acceleration_score vs Trajectory acceleration (25%)
+      3. WAVE breakout_score vs Trajectory velocity (20%)
+      4. WAVE momentum_score vs Trajectory trend (15%)
+
+    Each channel scores 0-100 based on agreement level.
+    """
+    cfg = WAVE_FUSION
+    channels = []
+
+    # ── Channel 1: Position Agreement (40%) ──
+    # WAVE position_score: 52-week range analysis (0-100)
+    # Trajectory positional: rank percentile quality over time (0-100)
+    wave_pos = _latest_valid(h.get('position_score', []))
+    traj_pos = traj_components.get('positional', 50)
+    if wave_pos is not None:
+        diff = abs(wave_pos - traj_pos)
+        if diff <= cfg['strong_agree_pct_diff']:
+            ch_score = 85 + (cfg['strong_agree_pct_diff'] - diff) / cfg['strong_agree_pct_diff'] * 15
+        elif diff <= cfg['agree_pct_diff']:
+            t = (diff - cfg['strong_agree_pct_diff']) / (cfg['agree_pct_diff'] - cfg['strong_agree_pct_diff'])
+            ch_score = 60 + (1 - t) * 25
+        elif diff <= cfg['disagree_pct_diff']:
+            t = (diff - cfg['agree_pct_diff']) / (cfg['disagree_pct_diff'] - cfg['agree_pct_diff'])
+            ch_score = 30 + (1 - t) * 30
+        else:
+            ch_score = max(5, 30 - (diff - cfg['disagree_pct_diff']) * 0.5)
+        # Boost if BOTH are high (agreement at the top matters more)
+        if wave_pos > 70 and traj_pos > 70:
+            ch_score = min(100, ch_score + 8)
+        channels.append(('position', ch_score, 0.40))
+
+    # ── Channel 2: Acceleration Agreement (25%) ──
+    # WAVE acceleration_score: momentum slope comparison (0-100)
+    # Trajectory acceleration: rate-of-change of velocity (0-100)
+    wave_accel = _latest_valid(h.get('acceleration_score', []))
+    traj_accel = traj_components.get('acceleration', 50)
+    if wave_accel is not None:
+        diff = abs(wave_accel - traj_accel)
+        if diff <= cfg['strong_agree_pct_diff']:
+            ch_score = 85 + (cfg['strong_agree_pct_diff'] - diff) / cfg['strong_agree_pct_diff'] * 15
+        elif diff <= cfg['agree_pct_diff']:
+            t = (diff - cfg['strong_agree_pct_diff']) / (cfg['agree_pct_diff'] - cfg['strong_agree_pct_diff'])
+            ch_score = 55 + (1 - t) * 30
+        elif diff <= cfg['disagree_pct_diff']:
+            t = (diff - cfg['agree_pct_diff']) / (cfg['disagree_pct_diff'] - cfg['agree_pct_diff'])
+            ch_score = 25 + (1 - t) * 30
+        else:
+            ch_score = max(5, 25 - (diff - cfg['disagree_pct_diff']) * 0.5)
+        channels.append(('acceleration', ch_score, 0.25))
+
+    # ── Channel 3: Breakout/Velocity Agreement (20%) ──
+    # WAVE breakout_score: 4-component breakout detection (0-100)
+    # Trajectory velocity: position-relative rank velocity (0-100)
+    wave_brk = _latest_valid(h.get('breakout_score', []))
+    traj_vel = traj_components.get('velocity', 50)
+    if wave_brk is not None:
+        # Breakout and velocity aren't 1:1 comparable, but high breakout + high velocity = strong
+        # Use harmonic-mean-like scoring: both need to be elevated for high score
+        combined = (wave_brk * 0.55 + traj_vel * 0.45)
+        if combined >= 75:
+            ch_score = 80 + (combined - 75) / 25 * 20
+        elif combined >= 55:
+            ch_score = 50 + (combined - 55) / 20 * 30
+        elif combined >= 35:
+            ch_score = 25 + (combined - 35) / 20 * 25
+        else:
+            ch_score = max(5, combined * 0.7)
+        channels.append(('breakout', ch_score, 0.20))
+
+    # ── Channel 4: Momentum/Trend Agreement (15%) ──
+    # WAVE momentum_score: 3-component momentum (raw sigmoid + consistency + quality)
+    # Trajectory trend: weighted linear regression of percentile trajectory
+    wave_mom = _latest_valid(h.get('momentum_score', []))
+    traj_trend = traj_components.get('trend', 50)
+    if wave_mom is not None:
+        diff = abs(wave_mom - traj_trend)
+        if diff <= cfg['strong_agree_pct_diff']:
+            ch_score = 80 + (cfg['strong_agree_pct_diff'] - diff) / cfg['strong_agree_pct_diff'] * 20
+        elif diff <= cfg['agree_pct_diff']:
+            t = (diff - cfg['strong_agree_pct_diff']) / (cfg['agree_pct_diff'] - cfg['strong_agree_pct_diff'])
+            ch_score = 50 + (1 - t) * 30
+        else:
+            ch_score = max(5, 50 - (diff - cfg['agree_pct_diff']) * 0.8)
+        channels.append(('momentum', ch_score, 0.15))
+
+    # ── Composite Confluence Score ──
+    if not channels:
+        return 50.0  # No WAVE data available → neutral
+
+    total_w = sum(w for _, _, w in channels)
+    confluence = sum(s * w for _, s, w in channels) / total_w
+    return float(np.clip(confluence, 0, 100))
+
+
+def _calc_institutional_flow(h: dict) -> float:
+    """
+    Institutional Flow Signal from WAVE Detection data.
+
+    Combines 4 volume/flow metrics that WAVE Detection computes but
+    RANK TRAJECTORY previously ignored. These signals indicate whether
+    rank improvements have institutional money backing them.
+
+    4 Components:
+      1. Money Flow MM (40%) — price × volume × rvol / 1M → smart money indicator
+      2. VMI (30%) — Volume-Momentum Index (acceleration + correlation + footprint)
+      3. RVOL Score (20%) — WAVE's relative volume quality score
+      4. Overall Market Strength (10%) — Market environment context
+
+    Returns: 0-100 score (higher = stronger institutional backing)
+    """
+    cfg = WAVE_FUSION
+    components = []
+
+    # ── Component 1: Money Flow (40%) ──
+    mf = _latest_valid(h.get('money_flow_mm', []))
+    if mf is not None:
+        if mf >= cfg['money_flow_strong']:
+            mf_score = 75 + min((mf - cfg['money_flow_strong']) / cfg['money_flow_strong'] * 25, 25)
+        elif mf >= cfg['money_flow_moderate']:
+            t = (mf - cfg['money_flow_moderate']) / (cfg['money_flow_strong'] - cfg['money_flow_moderate'])
+            mf_score = 40 + t * 35
+        elif mf > 0:
+            mf_score = max(10, mf / cfg['money_flow_moderate'] * 40)
+        else:
+            mf_score = 10.0
+        components.append(('money_flow', mf_score, 0.40))
+
+    # ── Component 2: VMI — Volume-Momentum Index (30%) ──
+    vmi = _latest_valid(h.get('vmi', []))
+    if vmi is not None:
+        if vmi >= cfg['vmi_strong']:
+            vmi_score = 75 + min((vmi - cfg['vmi_strong']) / 35 * 25, 25)
+        elif vmi >= cfg['vmi_moderate']:
+            t = (vmi - cfg['vmi_moderate']) / (cfg['vmi_strong'] - cfg['vmi_moderate'])
+            vmi_score = 40 + t * 35
+        elif vmi > 0:
+            vmi_score = max(10, vmi / cfg['vmi_moderate'] * 40)
+        else:
+            vmi_score = 10.0
+        components.append(('vmi', vmi_score, 0.30))
+
+    # ── Component 3: RVOL Score (20%) ──
+    rvol_s = _latest_valid(h.get('rvol_score', []))
+    if rvol_s is not None:
+        # WAVE rvol_score is already 0-100
+        components.append(('rvol_score', float(np.clip(rvol_s, 0, 100)), 0.20))
+
+    # ── Component 4: Overall Market Strength (10%) ──
+    oms = _latest_valid(h.get('overall_market_strength', []))
+    if oms is not None:
+        # overall_market_strength is typically 0-100
+        components.append(('market_strength', float(np.clip(oms, 0, 100)), 0.10))
+
+    if not components:
+        return 50.0  # No data → neutral
+
+    total_w = sum(w for _, _, w in components)
+    flow_score = sum(s * w for _, s, w in components) / total_w
+    return float(np.clip(flow_score, 0, 100))
+
+
+def _calc_fundamental_quality(h: dict) -> float:
+    """
+    Fundamental Quality Gate from WAVE Detection data.
+
+    NOT a primary scoring driver — just a quality confirmation/penalty.
+    This system is momentum-based; fundamentals serve as a sanity check.
+
+    3 Components:
+      1. EPS Growth (40%) — eps_change_pct trend: growing earnings = real strength
+      2. PE Reasonableness (30%) — not too high, not negative
+      3. EPS Tier (30%) — WAVE's tier classification quality
+
+    Returns: 0-100 score (50 = neutral, >60 = quality confirmed, <40 = fundamental concern)
+    """
+    cfg = WAVE_FUSION
+    components = []
+
+    # ── Component 1: EPS Growth (40%) ──
+    eps_chg = _latest_valid(h.get('eps_change_pct', []))
+    if eps_chg is not None:
+        if eps_chg >= cfg['eps_growth_strong']:
+            eps_score = 80 + min((eps_chg - cfg['eps_growth_strong']) / 30 * 20, 20)
+        elif eps_chg >= cfg['eps_growth_moderate']:
+            t = (eps_chg - cfg['eps_growth_moderate']) / (cfg['eps_growth_strong'] - cfg['eps_growth_moderate'])
+            eps_score = 55 + t * 25
+        elif eps_chg >= 0:
+            eps_score = 40 + eps_chg / cfg['eps_growth_moderate'] * 15
+        elif eps_chg >= -10:
+            eps_score = 25 + (eps_chg + 10) / 10 * 15
+        else:
+            eps_score = max(5, 25 + eps_chg * 0.5)  # Deeply negative
+        components.append(('eps_growth', float(np.clip(eps_score, 0, 100)), 0.40))
+
+    # ── Component 2: PE Reasonableness (30%) ──
+    pe = _latest_valid(h.get('pe', []))
+    if pe is not None:
+        if pe < 0 and cfg['pe_negative_penalty']:
+            pe_score = 20.0  # Loss-making company
+        elif pe == 0:
+            pe_score = 30.0  # No earnings data
+        elif pe <= cfg['pe_value_max']:
+            pe_score = 85.0  # Value territory
+        elif pe <= cfg['pe_reasonable_max']:
+            t = (pe - cfg['pe_value_max']) / (cfg['pe_reasonable_max'] - cfg['pe_value_max'])
+            pe_score = 60 + (1 - t) * 25  # Reasonable
+        elif pe <= 100:
+            pe_score = 35 + (100 - pe) / 50 * 25  # Getting expensive
+        else:
+            pe_score = max(10, 35 - (pe - 100) * 0.1)  # Very expensive
+        components.append(('pe', float(np.clip(pe_score, 0, 100)), 0.30))
+
+    # ── Component 3: EPS Tier (30%) ──
+    eps_tier = h.get('eps_tier', [])
+    latest_tier = eps_tier[-1] if eps_tier else ''
+    if latest_tier and isinstance(latest_tier, str) and latest_tier.strip():
+        tier_map = {
+            'STRONG_GROWTH': 90, 'GROWTH': 75, 'MODERATE': 60,
+            'STABLE': 55, 'DECLINING': 30, 'NEGATIVE': 15, 'LOSS': 10
+        }
+        # Fuzzy match — tier names may vary
+        tier_upper = latest_tier.upper().strip()
+        tier_score = 50.0  # Default
+        for key, val in tier_map.items():
+            if key in tier_upper:
+                tier_score = val
+                break
+        components.append(('eps_tier', tier_score, 0.30))
+
+    if not components:
+        return 50.0  # No fundamental data → neutral (don't penalize)
+
+    total_w = sum(w for _, _, w in components)
+    fund_score = sum(s * w for _, s, w in components) / total_w
+    return float(np.clip(fund_score, 0, 100))
+
+
+def _compute_wave_fusion(h: dict, traj_components: dict) -> dict:
+    """
+    Wave Signal Fusion Engine (v8.0) — Master fusion function.
+
+    Cross-validates WAVE Detection's 18 signals with Trajectory Engine calculations.
+    Produces a fusion multiplier applied to the trajectory score.
+
+    Pipeline:
+      1. Wave Confluence (35%) — agreement between WAVE and Trajectory scoring
+      2. Institutional Flow (30%) — money flow + VMI + RVOL strength
+      3. Momentum Harmony (20%) — WAVE's 5-check harmony score (0-4)
+      4. Fundamental Quality (15%) — EPS growth + PE reasonableness
+
+    Returns dict with all fusion metrics.
+    """
+    cfg = WAVE_FUSION
+
+    # ── Signal 1: Wave Confluence (35%) ──
+    confluence = _calc_wave_confluence(h, traj_components)
+
+    # ── Signal 2: Institutional Flow (30%) ──
+    inst_flow = _calc_institutional_flow(h)
+
+    # ── Signal 3: Momentum Harmony (20%) ──
+    harmony_raw = _latest_valid(h.get('momentum_harmony', []), 2.0)
+    # WAVE momentum_harmony is 0-4 (0=full disagreement, 4=full harmony)
+    harmony_score = float(np.clip(harmony_raw / 4.0 * 100, 0, 100))
+
+    # ── Signal 4: Fundamental Quality (15%) ──
+    fund_quality = _calc_fundamental_quality(h)
+
+    # ── Composite Fusion Score ──
+    fusion_score = (
+        cfg['confluence_weight'] * confluence +
+        cfg['flow_weight'] * inst_flow +
+        cfg['harmony_weight'] * harmony_score +
+        cfg['fundamental_weight'] * fund_quality
+    )
+    fusion_score = float(np.clip(fusion_score, 0, 100))
+
+    # ── Convert to Multiplier (smooth curve) ──
+    lo = cfg['neutral_zone_lo']
+    hi = cfg['neutral_zone_hi']
+    if fusion_score >= hi:
+        t = (fusion_score - hi) / max(100 - hi, 1)
+        multiplier = 1.0 + t * (cfg['max_boost'] - 1.0)
+    elif fusion_score <= lo:
+        t = fusion_score / max(lo, 1)
+        multiplier = cfg['max_penalty'] + t * (1.0 - cfg['max_penalty'])
+    else:
+        multiplier = 1.0
+    multiplier = float(np.clip(multiplier, cfg['max_penalty'], cfg['max_boost']))
+
+    # ── Classification Label ──
+    if fusion_score >= 75:
+        label = 'WAVE_STRONG'
+    elif fusion_score >= 60:
+        label = 'WAVE_CONFIRMED'
+    elif fusion_score >= 40:
+        label = 'WAVE_NEUTRAL'
+    elif fusion_score >= 25:
+        label = 'WAVE_WEAK'
+    else:
+        label = 'WAVE_CONFLICT'
+
+    # ── Supplementary signals for downstream use ──
+    position_tension = _latest_valid(h.get('position_tension', []), 0)
+    from_low = _latest_valid(h.get('from_low_pct', []))
+    ret_1d = _latest_valid(h.get('ret_1d', []))
+    ret_1y = _latest_valid(h.get('ret_1y', []))
+
+    return {
+        'wave_fusion_score': round(fusion_score, 1),
+        'wave_fusion_multiplier': round(multiplier, 4),
+        'wave_fusion_label': label,
+        'wave_confluence': round(confluence, 1),
+        'wave_inst_flow': round(inst_flow, 1),
+        'wave_harmony': round(harmony_score, 1),
+        'wave_harmony_raw': round(harmony_raw, 1) if harmony_raw is not None else 2.0,
+        'wave_fundamental': round(fund_quality, 1),
+        'wave_position_tension': round(position_tension, 2) if position_tension else 0,
+        'wave_from_low': round(from_low, 1) if from_low is not None else None,
+        'wave_ret_1d': round(ret_1d, 2) if ret_1d is not None else None,
+        'wave_ret_1y': round(ret_1y, 2) if ret_1y is not None else None,
+    }
 
 
 # ============================================
@@ -841,15 +1207,26 @@ def _compute_single_trajectory(h: dict) -> dict:
     # H > 0.55: trending → boost. H < 0.42: mean-reverting → penalize uptrends.
     hurst_multiplier = _calc_hurst_multiplier(pcts, trend)
 
+    # ── v8.0: Wave Signal Fusion Multiplier ──
+    # Cross-validates WAVE Detection's 18 signals with Trajectory calculations.
+    # Produces ×0.92 to ×1.10 based on agreement level.
+    traj_components = {
+        'positional': positional, 'trend': trend, 'velocity': velocity,
+        'acceleration': acceleration, 'consistency': consistency,
+        'resilience': resilience, 'return_quality': return_quality,
+    }
+    wave_fusion = _compute_wave_fusion(h, traj_components)
+    wave_fusion_multiplier = wave_fusion['wave_fusion_multiplier']
+
     # ── Price-Rank Alignment Multiplier (v6.1 — purely directional) ──
     price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct)
 
-    # ── v6.1: Apply multipliers with TOTAL CAP (hurst × price only) ──
-    # Theoretical range: hurst(0.94-1.06) × price(0.88-1.08) = 0.827-1.145
-    # Symmetric cap: ×0.855 to ×1.145 (matches theoretical extremes)
+    # ── v8.0: Apply multipliers with TOTAL CAP (hurst × wave_fusion × price) ──
+    # Theoretical range: hurst(0.94-1.06) × fusion(0.92-1.10) × price(0.88-1.08) = 0.761-1.258
+    # Symmetric cap: ×0.82 to ×1.18 (generous but bounded)
     pre_price_score = trajectory_score  # Save for diagnostics
-    combined_mult = hurst_multiplier * price_multiplier
-    combined_mult = float(np.clip(combined_mult, 0.855, 1.145))
+    combined_mult = hurst_multiplier * wave_fusion_multiplier * price_multiplier
+    combined_mult = float(np.clip(combined_mult, 0.82, 1.18))
     trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
 
     # ── Momentum Decay Warning (v6.1) ──
@@ -921,6 +1298,12 @@ def _compute_single_trajectory(h: dict) -> dict:
         signal_parts.append('💧')       # Weak returns
     if decay_tag:
         signal_parts.append(decay_tag)
+    # v8.0: Wave fusion signal tag
+    wf_label = wave_fusion.get('wave_fusion_label', 'WAVE_NEUTRAL')
+    if wf_label == 'WAVE_STRONG':
+        signal_parts.append('🌊')
+    elif wf_label == 'WAVE_CONFLICT':
+        signal_parts.append('🔇')
     signal_tags = ''.join(signal_parts)
 
     # ── Confidence Intervals (v6.2) ──
@@ -939,42 +1322,58 @@ def _compute_single_trajectory(h: dict) -> dict:
     # ── 1. CONVICTION SCORE (0-100) ──
     # Combines multiple bullish signals into single actionable metric.
     # Higher conviction = more confident BUY signal.
+    # v8.0: Enhanced with Wave Fusion signals.
     conviction = 0
-    # Signal 1: Price-Rank Alignment (25 pts max)
+    # Signal 1: Price-Rank Alignment (20 pts max) — reduced from 25 to make room for wave signals
     if price_label == 'PRICE_CONFIRMED':
-        conviction += 25
+        conviction += 20
     elif price_label == 'NEUTRAL':
-        conviction += 10
-    # Signal 2: Sector Leadership (20 pts max)
-    # (sector_alpha_tag set in post-processing, use return_quality as proxy here)
+        conviction += 8
+    # Signal 2: Sector Leadership (15 pts max)
     if return_quality >= 75:
-        conviction += 20
+        conviction += 15
     elif return_quality >= 60:
-        conviction += 12
+        conviction += 9
     elif return_quality >= 50:
-        conviction += 5
-    # Signal 3: Data Confidence (20 pts max)
+        conviction += 4
+    # Signal 3: Data Confidence (15 pts max)
     if confidence >= 0.85:
-        conviction += 20
+        conviction += 15
     elif confidence >= 0.6:
-        conviction += 12
+        conviction += 9
     elif confidence >= 0.4:
-        conviction += 6
-    # Signal 4: Momentum Quality (20 pts max)
+        conviction += 4
+    # Signal 4: Momentum Quality (15 pts max)
     if tmi >= 70:
-        conviction += 20
+        conviction += 15
     elif tmi >= 60:
-        conviction += 12
+        conviction += 9
     elif tmi >= 50:
-        conviction += 5
-    # Signal 5: Positional Strength (15 pts max)
+        conviction += 4
+    # Signal 5: Positional Strength (10 pts max)
     current_pct = pcts[-1]
     if current_pct >= 90:
-        conviction += 15
-    elif current_pct >= 80:
         conviction += 10
+    elif current_pct >= 80:
+        conviction += 7
     elif current_pct >= 70:
-        conviction += 5
+        conviction += 4
+    # v8.0 Signal 6: Wave Confluence Agreement (15 pts max)
+    wf_confluence = wave_fusion.get('wave_confluence', 50)
+    if wf_confluence >= 75:
+        conviction += 15
+    elif wf_confluence >= 60:
+        conviction += 10
+    elif wf_confluence >= 45:
+        conviction += 4
+    # v8.0 Signal 7: Institutional Flow (10 pts max)
+    wf_flow = wave_fusion.get('wave_inst_flow', 50)
+    if wf_flow >= 70:
+        conviction += 10
+    elif wf_flow >= 55:
+        conviction += 6
+    elif wf_flow >= 40:
+        conviction += 2
     conviction = min(100, conviction)
 
     # Conviction tags for UI
@@ -1048,6 +1447,21 @@ def _compute_single_trajectory(h: dict) -> dict:
         exit_risk += 20
         exit_signals.append(f'PAT_{pattern_key.upper()}')
 
+    # v8.0 Exit Signal 6: Position Tension (from WAVE Detection)
+    # High position tension near top = likely reversal
+    wf_tension = wave_fusion.get('wave_position_tension', 0)
+    if wf_tension is not None and wf_tension > 0.7 and current_pct >= 70:
+        exit_risk += 15
+        exit_signals.append('HIGH_TENSION')
+    elif wf_tension is not None and wf_tension > 0.5 and current_pct >= 80:
+        exit_risk += 8
+        exit_signals.append('MOD_TENSION')
+
+    # v8.0 Exit Signal 7: Wave Fusion Conflict (systems disagree)
+    if wf_label == 'WAVE_CONFLICT' and trajectory_score > 50:
+        exit_risk += 12
+        exit_signals.append('WAVE_CONFLICT')
+
     exit_risk = min(100, exit_risk)
     if exit_risk >= 60:
         exit_tag = 'EXIT_NOW'
@@ -1096,108 +1510,12 @@ def _compute_single_trajectory(h: dict) -> dict:
         elif neg_streak >= 2 and latest_vol_score >= 70:
             vol_confirmed = 'DISTRIBUTION'  # Rank falling + high volume = selling pressure
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # v7.0: NEXT-LEVEL INTELLIGENCE — 3 New Computation-Layer Features
-    # ══════════════════════════════════════════════════════════════════════════
-
-    # ── 6. SIGNAL CONFLUENCE DETECTOR ──
-    # Counts independent bullish signals firing simultaneously.
-    # When 7+ of 9 signals align, historical hit rate is 2-3x higher.
-    confluence_signals = [
-        conviction >= 65,                                      # High conviction
-        hot_streak,                                            # On a winning streak
-        price_label == 'PRICE_CONFIRMED',                      # Price backs rank
-        decay_label == '',                                     # No momentum decay
-        exit_tag == 'HOLD',                                    # No exit warnings
-        tmi >= 70,                                             # Strong momentum
-        vol_confirmed in ('STRONG', 'MODERATE'),               # Volume backs it
-        pattern_key in ('rocket', 'breakout', 'momentum_building', 'stable_elite'),
-        current_pct >= 80,                                     # Top 20% position
-    ]
-    confluence_count = sum(confluence_signals)
-    if confluence_count >= 7:
-        confluence_tag = 'PERFECT_SETUP'
-        confluence_emoji = '💎'
-    elif confluence_count >= 5:
-        confluence_tag = 'STRONG'
-        confluence_emoji = '🔥'
-    elif confluence_count >= 3:
-        confluence_tag = 'PARTIAL'
-        confluence_emoji = '⚡'
-    else:
-        confluence_tag = 'WEAK'
-        confluence_emoji = '💤'
-
-    # ── 7. FORWARD EXPECTATION SCORE (-100 to +100) ──
-    # Predictive: combines LEADING indicators to estimate next-week direction.
-    # Positive = expect improvement. Negative = expect deterioration.
-    fwd_accel = (acceleration - 50) * 0.8            # >50 = accelerating (+40 max)
-    fwd_hurst = (hurst_multiplier - 1.0) * 500       # >1.0 = trending (+30 max)
-    fwd_decay = -30 if decay_label == 'DECAY_HIGH' else (-15 if decay_label == 'DECAY_MODERATE' else 5)
-    fwd_streak_val = min(streak, 5) * 6              # Streak momentum (+30 max)
-    fwd_pattern_bias = {
-        'rocket': 25, 'breakout': 20, 'momentum_building': 18,
-        'stable_elite': 15, 'at_peak': 5, 'steady_climber': 12,
-        'recovery': 10, 'consolidating': 0, 'new_entry': 0,
-        'neutral': 0, 'volatile': -5, 'topping_out': -15,
-        'fading': -20, 'crash': -30
-    }
-    fwd_pattern = fwd_pattern_bias.get(pattern_key, 0)
-    # Velocity trend: is velocity itself increasing? (compare recent vs older)
-    fwd_vel_trend = 0
-    if n >= 4:
-        recent_vel = np.mean(pcts[-2:]) - np.mean(pcts[-4:-2])
-        fwd_vel_trend = float(np.clip(recent_vel * 2, -20, 20))
-
-    forward_score = float(np.clip(
-        fwd_accel + fwd_hurst + fwd_decay + fwd_streak_val + fwd_pattern + fwd_vel_trend,
-        -100, 100
-    ))
-    forward_score = round(forward_score, 1)
-    if forward_score >= 40:
-        forward_tag = 'STRONG_UP'
-        forward_emoji = '🚀'
-    elif forward_score >= 15:
-        forward_tag = 'UP'
-        forward_emoji = '📈'
-    elif forward_score >= -15:
-        forward_tag = 'NEUTRAL'
-        forward_emoji = '➖'
-    elif forward_score >= -40:
-        forward_tag = 'DOWN'
-        forward_emoji = '📉'
-    else:
-        forward_tag = 'STRONG_DOWN'
-        forward_emoji = '💥'
-
-    # ── 8. MOMENTUM HALF-LIFE (estimated weeks until pattern likely changes) ──
-    # Uses pattern persistence heuristics based on historical pattern durations.
-    # Each pattern has an expected average duration. Given current age,
-    # survival_probability estimates likelihood of continuation.
-    pattern_avg_duration = {
-        'rocket': 4, 'breakout': 3, 'momentum_building': 5,
-        'stable_elite': 12, 'at_peak': 6, 'steady_climber': 8,
-        'recovery': 4, 'consolidating': 5, 'topping_out': 3,
-        'fading': 4, 'crash': 2, 'volatile': 6,
-        'new_entry': 2, 'neutral': 10,
-    }
-    avg_dur = pattern_avg_duration.get(pattern_key, 5)
-    # Estimate current pattern age from streak/consistency
-    # If streak > 0 and bullish pattern, streak ≈ pattern age
-    # If neg_streak > 0 and bearish pattern, neg_streak ≈ pattern age
-    if pattern_key in ('rocket', 'breakout', 'momentum_building', 'steady_climber', 'recovery'):
-        pattern_age = max(streak, 1)
-    elif pattern_key in ('fading', 'crash'):
-        pattern_age = max(neg_streak, 1)
-    elif pattern_key == 'stable_elite':
-        # Estimate from how long in top percentile
-        top_weeks = sum(1 for p in pcts if p >= 90)
-        pattern_age = max(top_weeks, 1)
-    else:
-        pattern_age = max(1, n // 3)  # Conservative estimate
-
-    half_life = max(1, avg_dur - pattern_age + 1)  # Remaining expected weeks
-    survival_prob = round(max(0.05, 1.0 - (pattern_age / max(avg_dur * 1.5, 1))), 2)
+    # v8.0: Cross-check with institutional flow for enhanced volume confirmation
+    wf_inst = wave_fusion.get('wave_inst_flow', 50)
+    if vol_confirmed == 'MODERATE' and wf_inst >= 70:
+        vol_confirmed = 'STRONG'   # Institutional flow confirms moderate volume
+    elif vol_confirmed == 'STRONG' and wf_inst < 30:
+        vol_confirmed = 'MODERATE'  # Institutional flow contradicts volume score
 
     return {
         'trajectory_score': round(trajectory_score, 2),
@@ -1251,16 +1569,19 @@ def _compute_single_trajectory(h: dict) -> dict:
         'hot_streak_weeks': hot_streak_weeks,
         'vol_confirmed': vol_confirmed,
         'latest_vol_score': round(latest_vol_score, 1) if latest_vol_score else None,
-        # v7.0: Next-Level Intelligence
-        'confluence_count': confluence_count,
-        'confluence_tag': confluence_tag,
-        'confluence_emoji': confluence_emoji,
-        'forward_score': forward_score,
-        'forward_tag': forward_tag,
-        'forward_emoji': forward_emoji,
-        'half_life': half_life,
-        'survival_prob': survival_prob,
-        'pattern_age': pattern_age,
+        # v8.0: Wave Signal Fusion
+        'wave_fusion_score': wave_fusion.get('wave_fusion_score', 50),
+        'wave_fusion_multiplier': wave_fusion.get('wave_fusion_multiplier', 1.0),
+        'wave_fusion_label': wave_fusion.get('wave_fusion_label', 'WAVE_NEUTRAL'),
+        'wave_confluence': wave_fusion.get('wave_confluence', 50),
+        'wave_inst_flow': wave_fusion.get('wave_inst_flow', 50),
+        'wave_harmony': wave_fusion.get('wave_harmony', 50),
+        'wave_harmony_raw': wave_fusion.get('wave_harmony_raw', 2.0),
+        'wave_fundamental': wave_fusion.get('wave_fundamental', 50),
+        'wave_position_tension': wave_fusion.get('wave_position_tension', 0),
+        'wave_from_low': wave_fusion.get('wave_from_low'),
+        'wave_ret_1d': wave_fusion.get('wave_ret_1d'),
+        'wave_ret_1y': wave_fusion.get('wave_ret_1y'),
     }
 
 
@@ -1294,10 +1615,12 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'risk_adj_score': 0, 'exit_risk': 0, 'exit_tag': 'HOLD', 'exit_emoji': '✅',
         'exit_signals': '', 'hot_streak': False, 'hot_streak_weeks': 0,
         'vol_confirmed': 'NEUTRAL', 'latest_vol_score': None,
-        # v7.0: Next-Level Intelligence (defaults)
-        'confluence_count': 0, 'confluence_tag': 'WEAK', 'confluence_emoji': '💤',
-        'forward_score': 0, 'forward_tag': 'NEUTRAL', 'forward_emoji': '➖',
-        'half_life': 1, 'survival_prob': 0.5, 'pattern_age': 0,
+        # v8.0: Wave Signal Fusion (defaults)
+        'wave_fusion_score': 50, 'wave_fusion_multiplier': 1.0,
+        'wave_fusion_label': 'WAVE_NEUTRAL', 'wave_confluence': 50,
+        'wave_inst_flow': 50, 'wave_harmony': 50, 'wave_harmony_raw': 2.0,
+        'wave_fundamental': 50, 'wave_position_tension': 0,
+        'wave_from_low': None, 'wave_ret_1d': None, 'wave_ret_1y': None,
     }
 
 
@@ -2831,7 +3154,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                                 index=0, key='sb_quick')
 
         st.markdown("---")
-        st.caption("v7.0.0 | Next-Level Intelligence + Signal Confluence + Forward Expectation")
+        st.caption("v8.0 | Wave Signal Fusion + 18 WAVE Signals")
 
     return {
         'categories': selected_cats,
@@ -2993,12 +3316,11 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         sort_by = st.selectbox("Sort by", [
             'Trajectory Score', 'Current Rank', 'Rank Change', 'TMI',
             'Positional Quality', 'Best Rank', 'Streak', 'Trend', 'Velocity',
-            'Consistency', 'Return Quality', 'Price Alignment', 'Decay Score', 'Sector Alpha',
-            'Confluence', 'Forward Score', 'Regime Score', 'Half-Life', 'Survival Probability'
+            'Consistency', 'Return Quality', 'Price Alignment', 'Decay Score', 'Sector Alpha'
         ], key='rank_sort', label_visibility='collapsed')
     with ctl2:
         view_mode = st.selectbox("View", [
-            'Standard', 'Compact', 'Signals', 'Trading', 'Intelligence', 'Complete', 'Custom'
+            'Standard', 'Compact', 'Signals', 'Trading', 'Complete', 'Custom'
         ], key='rank_view', label_visibility='collapsed')
     with ctl3:
         export_btn = st.button("📥 Export CSV", key='rank_export', use_container_width=True)
@@ -3032,11 +3354,6 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Price Alignment': ('price_alignment', False),
         'Decay Score': ('decay_score', True),
         'Sector Alpha': ('sector_alpha_value', False),
-        'Confluence': ('confluence_count', False),
-        'Forward Score': ('forward_score', False),
-        'Regime Score': ('regime_score', False),
-        'Half-Life': ('half_life', True),
-        'Survival Probability': ('survival_prob', False),
     }
     col_name, ascending = sort_map.get(sort_by, ('trajectory_score', False))
     display_df = filtered_df.sort_values(col_name, ascending=ascending).reset_index(drop=True)
@@ -3096,19 +3413,16 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Exit Tag': ('exit_tag', 'Exit', 'Exit warning: EXIT_NOW/CAUTION/WATCH/HOLD', None),
         'Hot Streak': ('hot_streak', 'Hot', 'Hot streak detected (4+ weeks improving at high position)', None),
         'Vol Conf': ('vol_confirmed', 'Vol', 'Volume confirmation: STRONG/MODERATE/WEAK/DISTRIBUTION/NEUTRAL', None),
-        # v7.0: Next-Level Intelligence
-        'Confluence': ('confluence_count', 'Conf', 'Signal confluence count (0-9, higher = more signals aligned)',
-                       st.column_config.NumberColumn(format="%d/9")),
-        'Conf Tag': ('confluence_tag', 'Setup', 'Confluence: PERFECT_SETUP/STRONG/PARTIAL/WEAK', None),
-        'Forward': ('forward_score', 'Fwd', 'Forward expectation score (-100 to +100)',
-                    st.column_config.NumberColumn(format="%+.0f")),
-        'Fwd Tag': ('forward_tag', 'Forecast', 'Forecast: STRONG_UP/UP/NEUTRAL/DOWN/STRONG_DOWN', None),
-        'Half-Life': ('half_life', 'HL', 'Estimated weeks until pattern change', None),
-        'Survival%': ('survival_prob', 'Surv', 'Pattern continuation probability',
-                      st.column_config.ProgressColumn('Surv', min_value=0, max_value=1.0, format="%.0f%%")),
-        'Regime': ('regime_tag', 'Regime', 'Regime-adjusted: EXCEPTIONAL/STRONG/ABOVE_AVG/MARKET_AVG/BELOW_AVG/WEAK', None),
-        'Regime Z': ('regime_z', 'RZ', 'Z-score vs market distribution (higher = more exceptional)',
-                     st.column_config.NumberColumn(format="%+.1fσ")),
+        # v8.0: Wave Signal Fusion
+        'Wave':     ('wave_fusion_score', 'Wave', 'Wave Signal Fusion score 0-100 (cross-system validation)',
+                     st.column_config.ProgressColumn('Wave', min_value=0, max_value=100, format="%.0f")),
+        'WF Label': ('wave_fusion_label', 'WF', 'Wave fusion: STRONG/CONFIRMED/NEUTRAL/WEAK/CONFLICT', None),
+        'Confluence': ('wave_confluence', 'Conf', 'Wave-Trajectory confluence agreement 0-100',
+                       st.column_config.ProgressColumn('Conf', min_value=0, max_value=100, format="%.0f")),
+        'Inst Flow': ('wave_inst_flow', 'Flow', 'Institutional money flow signal 0-100',
+                      st.column_config.ProgressColumn('Flow', min_value=0, max_value=100, format="%.0f")),
+        'Harmony':  ('wave_harmony', 'Harm', 'Momentum harmony score 0-100',
+                     st.column_config.ProgressColumn('Harm', min_value=0, max_value=100, format="%.0f")),
     }
 
     VIEW_PRESETS = {
@@ -3119,15 +3433,13 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
         'Trading':  ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Grade', 'Conviction',
-                     'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak', 'Vol Conf', 'Streak', 'Trajectory'],
-        'Intelligence': ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Grade',
-                     'Confluence', 'Conf Tag', 'Forward', 'Fwd Tag', 'Half-Life', 'Survival%',
-                     'Regime', 'Regime Z', 'Trajectory'],
+                     'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak', 'Vol Conf',
+                     'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Streak', 'Trajectory'],
         'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
                      'Grade', 'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Alpha', 
                      'Conviction', 'Risk-Adj', 'Exit Risk', 'Hot Streak', 'Vol Conf',
-                     'Confluence', 'Conf Tag', 'Forward', 'Fwd Tag', 'Half-Life', 'Regime', 'Regime Z', 'Trajectory'],
+                     'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Harmony', 'Trajectory'],
     }
 
     # ── Custom view: user picks columns ──
@@ -3628,6 +3940,86 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     # Latest Wave Detection Patterns
     if row.get('latest_patterns', ''):
         st.markdown(f'<div style="margin-top:8px;"><span style="color:#8b949e; font-size:0.72rem; text-transform:uppercase;">Wave Patterns:</span> <span class="pattern-tag">{row["latest_patterns"]}</span></div>', unsafe_allow_html=True)
+
+    # ── Wave Signal Fusion Detail ──
+    wf_score = row.get('wave_fusion_score', 50)
+    wf_label = row.get('wave_fusion_label', 'NEUTRAL')
+    wf_mult  = row.get('wave_fusion_multiplier', 1.0)
+    wf_conf  = row.get('wave_confluence', 50)
+    wf_flow  = row.get('wave_inst_flow', 50)
+    wf_harm  = row.get('wave_harmony', 50)
+    wf_fund  = row.get('wave_fundamental', 50)
+    wf_tension = row.get('wave_position_tension', 0)
+    wf_from_low = row.get('wave_from_low', 0)
+    wf_colors = {'WAVE_STRONG': '#00E676', 'WAVE_CONFIRMED': '#3fb950', 'WAVE_NEUTRAL': '#484f58',
+                 'WAVE_WEAK': '#FF9800', 'WAVE_CONFLICT': '#FF1744'}
+    wf_c = wf_colors.get(wf_label, '#484f58')
+    wf1, wf2, wf3 = st.columns(3)
+    with wf1:
+        st.markdown(f"""
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🌊 Wave Signal Fusion</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Fusion Score</span>
+                <span style="color:{wf_c}; font-weight:700;">{wf_score:.0f}/100</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Multiplier</span>
+                <span style="color:{wf_c}; font-weight:600;">×{wf_mult:.3f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">Classification</span>
+                <span style="color:{wf_c}; font-weight:700;">{wf_label.replace('WAVE_', '')}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with wf2:
+        _conf_c = '#3fb950' if wf_conf >= 65 else '#FF9800' if wf_conf < 40 else '#8b949e'
+        _flow_c = '#3fb950' if wf_flow >= 65 else '#FF9800' if wf_flow < 40 else '#8b949e'
+        st.markdown(f"""
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">📡 Fusion Signals</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Confluence</span>
+                <span style="color:{_conf_c}; font-weight:600;">{wf_conf:.0f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Inst. Flow</span>
+                <span style="color:{_flow_c}; font-weight:600;">{wf_flow:.0f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Harmony</span>
+                <span style="color:#8b949e; font-weight:600;">{wf_harm:.0f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">Fundamental</span>
+                <span style="color:#8b949e; font-weight:600;">{wf_fund:.0f}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with wf3:
+        _tens_c = '#FF1744' if wf_tension > 0.7 else '#FF9800' if wf_tension > 0.4 else '#3fb950'
+        st.markdown(f"""
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">⚡ Supplementary</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Position Tension</span>
+                <span style="color:{_tens_c}; font-weight:600;">{wf_tension:.2f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">From 52w Low</span>
+                <span style="color:#8b949e; font-weight:600;">{wf_from_low:.1f}%</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">1D Return</span>
+                <span style="color:#8b949e; font-weight:600;">{row.get('wave_ret_1d', 0):.2f}%</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">1Y Return</span>
+                <span style="color:#8b949e; font-weight:600;">{row.get('wave_ret_1y', 0):.1f}%</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("")
 
@@ -4549,934 +4941,6 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
 
 
 # ============================================
-# UI: WEEKLY DELTA DASHBOARD (v7.0)
-# ============================================
-
-def render_delta_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
-                     histories: dict, metadata: dict):
-    """Weekly Delta Dashboard — the command center for 'what changed this week?'
-    
-    Sections:
-      0. Market Pulse (regime + breadth + top-level stats)
-      1. Summary Metric Chips (big movers, alerts, signals)
-      2. Sector Heat Map (which sectors moved)
-      3. Biggest Rank Movers (gainers + losers side-by-side)
-      4. Grade Transitions (who upgraded / downgraded)
-      5. Pattern Shifts (pattern changed this week)
-      6. Signal Spotlight (Perfect Setups, Exit Nows, Hot Streaks)
-      7. Forward Forecast (Strong Up vs Strong Down)
-      8. New Entries
-    """
-
-    st.markdown('<div class="main-header">📊 WEEKLY DELTA DASHBOARD</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">What changed this week — transitions, flips, forecasts, and market pulse</div>',
-                unsafe_allow_html=True)
-
-    total_weeks = metadata.get('total_weeks', 0)
-    if total_weeks < 2:
-        st.info("📅 Need at least 2 weeks of data for delta analysis. Upload more CSV files to unlock this dashboard.")
-        return
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # DATA PREPARATION — compute deltas, transitions, pattern changes
-    # ══════════════════════════════════════════════════════════════════════════
-    GRADE_ORDER = {'S': 6, 'A': 5, 'B': 4, 'C': 3, 'D': 2, 'F': 1}
-
-    delta_rows = []
-    for _, row in all_df.iterrows():
-        ticker = row['ticker']
-        h = histories.get(ticker, {})
-        if not h:
-            continue
-
-        ranks = h.get('ranks', [])
-        prices = h.get('prices', [])
-        n = len(ranks)
-
-        # Rank delta (need ≥ 2 weeks)
-        if n >= 2:
-            curr_rank = ranks[-1]
-            prev_rank = ranks[-2]
-            rank_delta = int(prev_rank - curr_rank)  # positive = improved (rank number went down)
-        else:
-            rank_delta = 0
-
-        # Price delta (need ≥ 2 weeks with valid prices)
-        if len(prices) >= 2 and prices[-2] > 0:
-            price_pct = round((prices[-1] - prices[-2]) / prices[-2] * 100, 2)
-        else:
-            price_pct = 0.0
-
-        # T-Score delta (compare trajectory at n vs n-1 data points)
-        # We approximate via rank change direction + magnitude
-        t_score = float(row.get('trajectory_score', 0))
-
-        # Grade transition detection: infer previous grade from rank history
-        # Grade is based on T-Score, and we store current grade. For prev grade,
-        # we use the trajectory of the *penultimate* week's percentile position.
-        curr_grade = str(row.get('grade', 'F'))
-
-        # Previous grade estimation: use the rank 2 weeks ago vs universe to estimate tier
-        prev_grade = curr_grade  # default: no change
-        if n >= 3:
-            # 3+ weeks: we can compute a rough prev grade from the rank trajectory shape
-            prev_pcts = [100 * (1 - r / max(t, 1)) for r, t in
-                         zip(ranks[:-1], h.get('total_per_week', [len(ranks)]*(n-1)))]
-            avg_prev_pct = float(np.mean(prev_pcts[-min(len(prev_pcts), 4):]))
-            if avg_prev_pct >= 85:
-                prev_grade = 'S'
-            elif avg_prev_pct >= 70:
-                prev_grade = 'A'
-            elif avg_prev_pct >= 55:
-                prev_grade = 'B'
-            elif avg_prev_pct >= 40:
-                prev_grade = 'C'
-            elif avg_prev_pct >= 25:
-                prev_grade = 'D'
-            else:
-                prev_grade = 'F'
-
-        grade_upgraded = GRADE_ORDER.get(curr_grade, 0) > GRADE_ORDER.get(prev_grade, 0)
-        grade_downgraded = GRADE_ORDER.get(curr_grade, 0) < GRADE_ORDER.get(prev_grade, 0)
-
-        # Pattern change detection
-        pattern_hist = h.get('pattern_history', [])
-        curr_pattern = str(row.get('pattern', ''))
-        pattern_key = str(row.get('pattern_key', 'neutral'))
-        prev_pattern_raw = pattern_hist[-2] if len(pattern_hist) >= 2 else ''
-        pattern_changed = False
-        if prev_pattern_raw and curr_pattern:
-            # Compare the current engine-assigned pattern vs the previous week's Wave Engine pattern
-            # Since pattern_history stores external Wave patterns, compare pattern_key week-over-week
-            # But we only have the current computed pattern_key. Use sparkline slope change as proxy.
-            if n >= 3:
-                sparkline = row.get('sparkline', [])
-                if len(sparkline) >= 3:
-                    prev_slope = sparkline[-2] - sparkline[-3]
-                    curr_slope = sparkline[-1] - sparkline[-2]
-                    # Pattern shift = direction reversal with magnitude
-                    if (prev_slope > 3 and curr_slope < -3) or (prev_slope < -3 and curr_slope > 3):
-                        pattern_changed = True
-
-        # Streak status
-        streak = int(row.get('streak', 0))
-        neg_streak = int(row.get('rank_volatility', 0))  # proxy
-
-        delta_rows.append({
-            'ticker': ticker,
-            'company': str(row.get('company_name', ''))[:28],
-            'sector': str(row.get('sector', '')),
-            'category': str(row.get('category', '')),
-            'rank_delta': rank_delta,
-            'price_pct': price_pct,
-            't_score': t_score,
-            'grade': curr_grade,
-            'prev_grade': prev_grade,
-            'grade_up': grade_upgraded,
-            'grade_down': grade_downgraded,
-            'pattern': curr_pattern,
-            'pattern_key': pattern_key,
-            'pattern_changed': pattern_changed,
-            'conviction': float(row.get('conviction', 0)),
-            'conviction_tag': str(row.get('conviction_tag', 'VERY_LOW')),
-            'exit_risk': float(row.get('exit_risk', 0)),
-            'exit_tag': str(row.get('exit_tag', 'HOLD')),
-            'confluence_count': int(row.get('confluence_count', 0)),
-            'confluence_tag': str(row.get('confluence_tag', 'WEAK')),
-            'forward_score': float(row.get('forward_score', 0)),
-            'forward_tag': str(row.get('forward_tag', 'NEUTRAL')),
-            'regime_tag': str(row.get('regime_tag', 'MARKET_AVG')),
-            'regime_z': float(row.get('regime_z', 0)),
-            'half_life': int(row.get('half_life', 1)),
-            'survival_prob': float(row.get('survival_prob', 0.5)),
-            'hot_streak': bool(row.get('hot_streak', False)),
-            'tmi': float(row.get('tmi', 50)),
-            'streak': streak,
-            'weeks': int(row.get('weeks', 0)),
-            'vol_confirmed': str(row.get('vol_confirmed', 'NEUTRAL')),
-            'sparkline': row.get('sparkline', []),
-        })
-
-    if not delta_rows:
-        st.info("No delta data available — upload at least 2 weekly CSV files.")
-        return
-
-    delta_df = pd.DataFrame(delta_rows)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 0: MARKET PULSE — regime, breadth, overall health
-    # ══════════════════════════════════════════════════════════════════════════
-    regime = str(all_df['market_regime'].iloc[0]) if 'market_regime' in all_df.columns and len(all_df) > 0 else 'UNKNOWN'
-    regime_icon = {'BULL': '🟢', 'BEAR': '🔴', 'SIDEWAYS': '🟡'}.get(regime, '⚪')
-    regime_color = {'BULL': '#3fb950', 'BEAR': '#f85149', 'SIDEWAYS': '#d29922'}.get(regime, '#8b949e')
-
-    mkt_avg_score = float(all_df['trajectory_score'].mean()) if len(all_df) > 0 else 0
-    mkt_median_score = float(all_df['trajectory_score'].median()) if len(all_df) > 0 else 0
-
-    # Market breadth: % of stocks with positive rank delta
-    advancers = int((delta_df['rank_delta'] > 0).sum())
-    decliners = int((delta_df['rank_delta'] < 0).sum())
-    unchanged = int((delta_df['rank_delta'] == 0).sum())
-    total_delta = len(delta_df)
-    breadth_pct = round(advancers / max(total_delta, 1) * 100, 1)
-
-    # Average rank change this week
-    avg_rank_change = round(float(delta_df['rank_delta'].mean()), 1)
-    avg_price_change = round(float(delta_df['price_pct'].mean()), 2)
-
-    # Exceptional / Weak counts
-    exceptional_count = int((delta_df['regime_tag'] == 'EXCEPTIONAL').sum())
-    weak_count = int((delta_df['regime_tag'] == 'WEAK').sum())
-
-    st.markdown(f"""
-    <div style="background:linear-gradient(135deg, #0d1117 0%, #161b22 100%);border-radius:14px;
-                padding:20px 24px;border:1px solid #30363d;margin-bottom:16px;
-                box-shadow:0 4px 12px rgba(0,0,0,0.3);">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
-            <div>
-                <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;letter-spacing:1px;">Market Regime</div>
-                <div style="font-size:1.8rem;font-weight:900;color:{regime_color};line-height:1.1;">
-                    {regime_icon} {regime}
-                </div>
-            </div>
-            <div style="text-align:center;">
-                <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Market Avg T-Score</div>
-                <div style="font-size:1.6rem;font-weight:800;color:#e6edf3;">{mkt_avg_score:.1f}</div>
-                <div style="font-size:0.68rem;color:#6e7681;">Median: {mkt_median_score:.1f}</div>
-            </div>
-            <div style="text-align:center;">
-                <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Market Breadth</div>
-                <div style="font-size:1.6rem;font-weight:800;color:{'#3fb950' if breadth_pct >= 55 else '#f85149' if breadth_pct < 45 else '#d29922'};">
-                    {breadth_pct:.0f}%
-                </div>
-                <div style="font-size:0.68rem;color:#6e7681;">
-                    <span style="color:#3fb950;">▲{advancers}</span> · 
-                    <span style="color:#8b949e;">━{unchanged}</span> · 
-                    <span style="color:#f85149;">▼{decliners}</span>
-                </div>
-            </div>
-            <div style="text-align:center;">
-                <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Avg Rank Δ</div>
-                <div style="font-size:1.6rem;font-weight:800;color:{'#3fb950' if avg_rank_change > 0 else '#f85149' if avg_rank_change < 0 else '#8b949e'};">
-                    {avg_rank_change:+.1f}
-                </div>
-                <div style="font-size:0.68rem;color:#6e7681;">Price: {avg_price_change:+.2f}%</div>
-            </div>
-            <div style="text-align:center;">
-                <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Exceptional</div>
-                <div style="font-size:1.6rem;font-weight:800;color:#FFD700;">{exceptional_count}</div>
-                <div style="font-size:0.68rem;color:#6e7681;">Weak: <span style="color:#f85149;">{weak_count}</span></div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 1: SUMMARY CHIPS — quick-glance alert counters
-    # ══════════════════════════════════════════════════════════════════════════
-    big_gain = int((delta_df['rank_delta'] > 20).sum())
-    big_loss = int((delta_df['rank_delta'] < -20).sum())
-    new_entries_df = all_df[all_df['weeks'] == 1][['ticker', 'company_name', 'sector', 'trajectory_score', 'grade', 'pattern']].copy()
-    new_count = len(new_entries_df)
-    perfect_setups = int((delta_df['confluence_tag'] == 'PERFECT_SETUP').sum())
-    strong_conf = int((delta_df['confluence_tag'] == 'STRONG').sum())
-    exit_now_count = int((delta_df['exit_tag'] == 'EXIT_NOW').sum())
-    caution_count = int((delta_df['exit_tag'] == 'CAUTION').sum())
-    strong_up = int((delta_df['forward_tag'] == 'STRONG_UP').sum())
-    strong_down = int((delta_df['forward_tag'] == 'STRONG_DOWN').sum())
-    hot_count = int(delta_df['hot_streak'].sum())
-    grade_up_count = int(delta_df['grade_up'].sum())
-    grade_down_count = int(delta_df['grade_down'].sum())
-
-    def _chip(val, lbl, cls=''):
-        return (f'<div class="m-chip {cls}">'
-                f'<div class="m-val">{val}</div>'
-                f'<div class="m-lbl">{lbl}</div></div>')
-
-    chips_html = ''.join([
-        _chip(f'+{big_gain}', 'Big Climbers (Δ>20)', 'm-green' if big_gain > 0 else ''),
-        _chip(str(big_loss), 'Big Drops (Δ<-20)', 'm-red' if big_loss > 0 else ''),
-        _chip(f'💎 {perfect_setups}', 'Perfect Setup', 'm-green' if perfect_setups > 0 else ''),
-        _chip(f'🚨 {exit_now_count}', 'Exit Now', 'm-red' if exit_now_count > 0 else ''),
-        _chip(f'🚀 {strong_up}', 'Strong Up', 'm-green' if strong_up > 0 else ''),
-        _chip(f'💥 {strong_down}', 'Strong Down', 'm-red' if strong_down > 0 else ''),
-        _chip(f'🔥 {hot_count}', 'Hot Streaks', 'm-orange' if hot_count > 0 else ''),
-        _chip(str(new_count), 'New Entries', 'm-gold' if new_count > 0 else ''),
-    ])
-    st.markdown(f'<div class="m-strip">{chips_html}</div>', unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 2: SECTOR HEAT MAP — which sectors moved this week
-    # ══════════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🗺️ Sector Movement Heat Map</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Average rank change by sector this week · Green=improving · Red=declining</div>',
-                unsafe_allow_html=True)
-
-    sector_valid = delta_df[delta_df['sector'].str.len() > 0].copy()
-    if len(sector_valid) > 0 and sector_valid['sector'].nunique() >= 2:
-        sector_stats = sector_valid.groupby('sector').agg(
-            avg_delta=('rank_delta', 'mean'),
-            avg_price=('price_pct', 'mean'),
-            count=('ticker', 'count'),
-            avg_score=('t_score', 'mean'),
-            advancers=('rank_delta', lambda x: (x > 0).sum()),
-        ).reset_index()
-        sector_stats = sector_stats.sort_values('avg_delta', ascending=False)
-        sector_stats['breadth'] = (sector_stats['advancers'] / sector_stats['count'].clip(lower=1) * 100).round(0).astype(int)
-
-        # Plotly horizontal bar chart
-        colors = ['#3fb950' if v > 0 else '#f85149' for v in sector_stats['avg_delta']]
-        fig_sector = go.Figure(go.Bar(
-            y=sector_stats['sector'],
-            x=sector_stats['avg_delta'].round(1),
-            orientation='h',
-            marker_color=colors,
-            text=[f"{v:+.1f} ({b}% ▲)" for v, b in zip(sector_stats['avg_delta'], sector_stats['breadth'])],
-            textposition='auto',
-            textfont=dict(size=11, color='#e6edf3'),
-            hovertemplate='<b>%{y}</b><br>Avg Rank Δ: %{x:+.1f}<br>Stocks: %{customdata[0]}<br>Avg T-Score: %{customdata[1]:.1f}<extra></extra>',
-            customdata=sector_stats[['count', 'avg_score']].values,
-        ))
-        fig_sector.update_layout(
-            height=max(200, len(sector_stats) * 28 + 60),
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(t=10, b=20, l=140, r=25),
-            xaxis=dict(title='Avg Rank Change', zeroline=True, zerolinecolor='#30363d', gridcolor='#21262d'),
-            yaxis=dict(autorange='reversed', tickfont=dict(size=11)),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_sector, use_container_width=True)
-    else:
-        st.caption("Not enough sector diversity for heat map.")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 3: BIGGEST RANK MOVERS — gainers + losers side by side
-    # ══════════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🔄 Biggest Rank Movers This Week</div>', unsafe_allow_html=True)
-
-    top_gainers = delta_df.nlargest(12, 'rank_delta')
-    top_losers = delta_df.nsmallest(12, 'rank_delta')
-
-    g_col, l_col = st.columns(2)
-    with g_col:
-        st.markdown('<div style="color:#3fb950;font-weight:700;font-size:0.82rem;margin-bottom:6px;">⬆️ Gainers</div>',
-                    unsafe_allow_html=True)
-        if not top_gainers.empty and top_gainers.iloc[0]['rank_delta'] > 0:
-            tg = top_gainers[top_gainers['rank_delta'] > 0][
-                ['ticker', 'company', 'rank_delta', 'price_pct', 't_score', 'grade', 'confluence_tag']
-            ].copy()
-            tg.columns = ['Ticker', 'Company', 'Δ Rank', 'Δ Price%', 'T-Score', 'Grade', 'Setup']
-            st.dataframe(tg, column_config={
-                'Δ Rank': st.column_config.NumberColumn(format="%+d"),
-                'Δ Price%': st.column_config.NumberColumn(format="%+.1f%%"),
-                'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-            }, hide_index=True, use_container_width=True, height=min(422, max(150, len(tg) * 36 + 40)))
-        else:
-            st.markdown('<div style="color:#6e7681;text-align:center;padding:16px;">No rank gainers this week</div>',
-                        unsafe_allow_html=True)
-
-    with l_col:
-        st.markdown('<div style="color:#f85149;font-weight:700;font-size:0.82rem;margin-bottom:6px;">⬇️ Decliners</div>',
-                    unsafe_allow_html=True)
-        if not top_losers.empty and top_losers.iloc[0]['rank_delta'] < 0:
-            tl = top_losers[top_losers['rank_delta'] < 0][
-                ['ticker', 'company', 'rank_delta', 'price_pct', 't_score', 'grade', 'exit_tag']
-            ].copy()
-            tl.columns = ['Ticker', 'Company', 'Δ Rank', 'Δ Price%', 'T-Score', 'Grade', 'Exit']
-            st.dataframe(tl, column_config={
-                'Δ Rank': st.column_config.NumberColumn(format="%+d"),
-                'Δ Price%': st.column_config.NumberColumn(format="%+.1f%%"),
-                'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-            }, hide_index=True, use_container_width=True, height=min(422, max(150, len(tl) * 36 + 40)))
-        else:
-            st.markdown('<div style="color:#6e7681;text-align:center;padding:16px;">No rank decliners this week</div>',
-                        unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 4: GRADE TRANSITIONS — who upgraded / downgraded
-    # ══════════════════════════════════════════════════════════════════════════
-    grade_ups = delta_df[delta_df['grade_up']].sort_values('t_score', ascending=False)
-    grade_downs = delta_df[delta_df['grade_down']].sort_values('t_score', ascending=True)
-
-    if not grade_ups.empty or not grade_downs.empty:
-        st.markdown("")
-        st.markdown(f'<div class="sec-head">📊 Grade Transitions</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="sec-cap">{len(grade_ups)} upgraded · {len(grade_downs)} downgraded this week (estimated from rank history)</div>',
-                    unsafe_allow_html=True)
-
-        gt1, gt2 = st.columns(2)
-        with gt1:
-            if not grade_ups.empty:
-                st.markdown('<div style="color:#3fb950;font-weight:700;font-size:0.82rem;margin-bottom:6px;">⬆️ Upgrades</div>',
-                            unsafe_allow_html=True)
-                gu = grade_ups[['ticker', 'company', 'prev_grade', 'grade', 't_score', 'rank_delta']].head(15).copy()
-                gu['Transition'] = gu['prev_grade'] + ' → ' + gu['grade']
-                gu_display = gu[['ticker', 'company', 'Transition', 't_score', 'rank_delta']].copy()
-                gu_display.columns = ['Ticker', 'Company', 'Grade Change', 'T-Score', 'Δ Rank']
-                st.dataframe(gu_display, column_config={
-                    'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-                    'Δ Rank': st.column_config.NumberColumn(format="%+d"),
-                }, hide_index=True, use_container_width=True)
-            else:
-                st.markdown('<div style="color:#6e7681;text-align:center;padding:8px;">No upgrades</div>',
-                            unsafe_allow_html=True)
-
-        with gt2:
-            if not grade_downs.empty:
-                st.markdown('<div style="color:#f85149;font-weight:700;font-size:0.82rem;margin-bottom:6px;">⬇️ Downgrades</div>',
-                            unsafe_allow_html=True)
-                gd = grade_downs[['ticker', 'company', 'prev_grade', 'grade', 't_score', 'rank_delta']].head(15).copy()
-                gd['Transition'] = gd['prev_grade'] + ' → ' + gd['grade']
-                gd_display = gd[['ticker', 'company', 'Transition', 't_score', 'rank_delta']].copy()
-                gd_display.columns = ['Ticker', 'Company', 'Grade Change', 'T-Score', 'Δ Rank']
-                st.dataframe(gd_display, column_config={
-                    'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-                    'Δ Rank': st.column_config.NumberColumn(format="%+d"),
-                }, hide_index=True, use_container_width=True)
-            else:
-                st.markdown('<div style="color:#6e7681;text-align:center;padding:8px;">No downgrades</div>',
-                            unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 5: SIGNAL SPOTLIGHT — Perfect, Exit Now, Hot Streaks
-    # ══════════════════════════════════════════════════════════════════════════
-    st.markdown("")
-    st.markdown('<div class="sec-head">🎯 Signal Spotlight</div>', unsafe_allow_html=True)
-
-    # Perfect Setups
-    perfect_df = delta_df[delta_df['confluence_tag'] == 'PERFECT_SETUP'].sort_values('t_score', ascending=False)
-    if not perfect_df.empty:
-        st.markdown(f'<div style="color:#8A2BE2;font-weight:700;font-size:0.82rem;margin-bottom:6px;">'
-                    f'💎 Perfect Setups — {len(perfect_df)} stocks with 7+ signals aligned</div>',
-                    unsafe_allow_html=True)
-        pf = perfect_df[['ticker', 'company', 't_score', 'grade', 'confluence_count',
-                          'conviction_tag', 'forward_tag', 'pattern', 'rank_delta', 'price_pct']].head(15).copy()
-        pf.columns = ['Ticker', 'Company', 'T-Score', 'Grade', 'Signals', 'Conviction', 'Forecast', 'Pattern', 'Δ Rank', 'Δ Price%']
-        st.dataframe(pf, column_config={
-            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-            'Signals': st.column_config.NumberColumn(format="%d/9"),
-            'Δ Rank': st.column_config.NumberColumn(format="%+d"),
-            'Δ Price%': st.column_config.NumberColumn(format="%+.1f%%"),
-        }, hide_index=True, use_container_width=True)
-    else:
-        st.markdown('<div style="background:#161b22;border-radius:10px;padding:14px;text-align:center;'
-                    'border:1px solid #30363d;color:#8b949e;">No perfect setups this week — '
-                    'need 7+ of 9 signals to align simultaneously</div>', unsafe_allow_html=True)
-
-    # Exit Now warnings
-    exit_nows = delta_df[delta_df['exit_tag'] == 'EXIT_NOW'].sort_values('exit_risk', ascending=False)
-    if not exit_nows.empty:
-        st.markdown("")
-        st.markdown(f'<div style="color:#f85149;font-weight:700;font-size:0.82rem;margin-bottom:6px;">'
-                    f'🚨 Exit Now Warnings — {len(exit_nows)} stocks with active sell signals</div>',
-                    unsafe_allow_html=True)
-        ex = exit_nows[['ticker', 'company', 't_score', 'grade', 'exit_risk',
-                          'pattern', 'rank_delta', 'price_pct']].head(15).copy()
-        ex.columns = ['Ticker', 'Company', 'T-Score', 'Grade', 'Exit Risk', 'Pattern', 'Δ Rank', 'Δ Price%']
-        st.dataframe(ex, column_config={
-            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-            'Exit Risk': st.column_config.ProgressColumn('Exit Risk', min_value=0, max_value=100, format="%.0f"),
-            'Δ Rank': st.column_config.NumberColumn(format="%+d"),
-            'Δ Price%': st.column_config.NumberColumn(format="%+.1f%%"),
-        }, hide_index=True, use_container_width=True)
-
-    # Hot Streaks
-    hot_df = delta_df[delta_df['hot_streak']].sort_values('t_score', ascending=False)
-    if not hot_df.empty:
-        st.markdown("")
-        st.markdown(f'<div style="color:#FF6B35;font-weight:700;font-size:0.82rem;margin-bottom:6px;">'
-                    f'🔥 Hot Streaks — {len(hot_df)} stocks on sustained winning runs</div>',
-                    unsafe_allow_html=True)
-        ht = hot_df[['ticker', 'company', 't_score', 'grade', 'streak',
-                       'conviction_tag', 'forward_tag', 'rank_delta']].head(12).copy()
-        ht.columns = ['Ticker', 'Company', 'T-Score', 'Grade', 'Streak', 'Conviction', 'Forecast', 'Δ Rank']
-        st.dataframe(ht, column_config={
-            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-            'Streak': st.column_config.NumberColumn(format="%d 🔥"),
-            'Δ Rank': st.column_config.NumberColumn(format="%+d"),
-        }, hide_index=True, use_container_width=True)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 6: FORWARD FORECAST — expected direction next week
-    # ══════════════════════════════════════════════════════════════════════════
-    st.markdown("")
-    st.markdown('<div class="sec-head">🔮 Forward Forecast</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Expected trajectory direction from 6 leading indicators (acceleration, hurst, decay, streak, pattern, velocity)</div>',
-                unsafe_allow_html=True)
-
-    fc1, fc2 = st.columns(2)
-    with fc1:
-        st.markdown('<div style="color:#3fb950;font-weight:700;font-size:0.82rem;margin-bottom:6px;">'
-                    '🚀 Strong Up Forecast</div>', unsafe_allow_html=True)
-        up_df = delta_df[delta_df['forward_tag'] == 'STRONG_UP'].sort_values('forward_score', ascending=False).head(12)
-        if not up_df.empty:
-            up = up_df[['ticker', 'company', 't_score', 'forward_score', 'confluence_tag',
-                          'conviction_tag', 'half_life']].copy()
-            up.columns = ['Ticker', 'Company', 'T-Score', 'Fwd Score', 'Setup', 'Conviction', 'Half-Life']
-            st.dataframe(up, column_config={
-                'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-                'Fwd Score': st.column_config.NumberColumn(format="%+.0f"),
-            }, hide_index=True, use_container_width=True)
-        else:
-            st.markdown('<div style="color:#6e7681;text-align:center;padding:14px;">No strong up forecasts</div>',
-                        unsafe_allow_html=True)
-
-    with fc2:
-        st.markdown('<div style="color:#f85149;font-weight:700;font-size:0.82rem;margin-bottom:6px;">'
-                    '💥 Strong Down Forecast</div>', unsafe_allow_html=True)
-        dn_df = delta_df[delta_df['forward_tag'] == 'STRONG_DOWN'].sort_values('forward_score', ascending=True).head(12)
-        if not dn_df.empty:
-            dn = dn_df[['ticker', 'company', 't_score', 'forward_score', 'exit_tag',
-                          'pattern', 'half_life']].copy()
-            dn.columns = ['Ticker', 'Company', 'T-Score', 'Fwd Score', 'Exit', 'Pattern', 'Half-Life']
-            st.dataframe(dn, column_config={
-                'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-                'Fwd Score': st.column_config.NumberColumn(format="%+.0f"),
-            }, hide_index=True, use_container_width=True)
-        else:
-            st.markdown('<div style="color:#6e7681;text-align:center;padding:14px;">No strong down forecasts</div>',
-                        unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 7: MOMENTUM DECAY WATCH — patterns about to expire
-    # ══════════════════════════════════════════════════════════════════════════
-    low_survival = delta_df[delta_df['survival_prob'] < 0.30].sort_values('survival_prob')
-    if not low_survival.empty:
-        st.markdown("")
-        st.markdown(f'<div class="sec-head">⏳ Pattern Expiration Watch</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="sec-cap">{len(low_survival)} stocks with &lt;30% survival probability — pattern change likely soon</div>',
-                    unsafe_allow_html=True)
-        ls = low_survival[['ticker', 'company', 'pattern', 'half_life', 'survival_prob',
-                            't_score', 'forward_tag']].head(15).copy()
-        ls.columns = ['Ticker', 'Company', 'Pattern', 'Weeks Left', 'Survival%', 'T-Score', 'Forecast']
-        ls['Survival%'] = (ls['Survival%'] * 100).round(0).astype(int)
-        st.dataframe(ls, column_config={
-            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-            'Survival%': st.column_config.ProgressColumn('Survival%', min_value=0, max_value=100, format="%d%%"),
-        }, hide_index=True, use_container_width=True)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 8: NEW ENTRIES — first-time appearances
-    # ══════════════════════════════════════════════════════════════════════════
-    if not new_entries_df.empty:
-        st.markdown("")
-        st.markdown(f'<div class="sec-head">✨ New Entries ({len(new_entries_df)} stocks)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sec-cap">First appearance in the ranking universe this week</div>',
-                    unsafe_allow_html=True)
-        ne = new_entries_df.head(25).copy()
-        ne.columns = ['Ticker', 'Company', 'Sector', 'T-Score', 'Grade', 'Pattern']
-        ne['Company'] = ne['Company'].str[:28]
-        st.dataframe(ne, column_config={
-            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-        }, hide_index=True, use_container_width=True)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SECTION 9: DISTRIBUTION CHART — rank change distribution
-    # ══════════════════════════════════════════════════════════════════════════
-    st.markdown("")
-    st.markdown('<div class="sec-head">📈 Rank Change Distribution</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">How rank changes are spread across the universe this week</div>',
-                unsafe_allow_html=True)
-
-    # Bucket rank changes for histogram
-    clamped = delta_df['rank_delta'].clip(-100, 100)
-    fig_dist = go.Figure()
-    fig_dist.add_trace(go.Histogram(
-        x=clamped,
-        nbinsx=40,
-        marker_color='#58a6ff',
-        marker_line=dict(color='#30363d', width=0.5),
-        opacity=0.85,
-        hovertemplate='Rank Δ: %{x}<br>Count: %{y}<extra></extra>',
-    ))
-    # Add vertical line at zero
-    fig_dist.add_vline(x=0, line_dash="dash", line_color="#8b949e", line_width=1)
-    # Add shaded regions
-    fig_dist.add_vrect(x0=-100, x1=0, fillcolor="#f85149", opacity=0.03, line_width=0)
-    fig_dist.add_vrect(x0=0, x1=100, fillcolor="#3fb950", opacity=0.03, line_width=0)
-    fig_dist.update_layout(
-        height=220,
-        template='plotly_dark',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(t=10, b=30, l=40, r=15),
-        xaxis=dict(title='Rank Change (positive = improved)', zeroline=False, gridcolor='#21262d'),
-        yaxis=dict(title='Count', gridcolor='#21262d'),
-        showlegend=False,
-        bargap=0.06,
-    )
-    st.plotly_chart(fig_dist, use_container_width=True)
-
-
-
-# ============================================
-# UI: BACKTEST TAB (v7.0)
-# ============================================
-
-def render_backtest_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
-                        histories: dict, pct_series: dict):
-    """Backtesting + Portfolio Correlation analysis."""
-
-    st.markdown('<div class="main-header">📈 BACKTEST & PORTFOLIO</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Signal validation · hit rates · portfolio correlation · diversification</div>', unsafe_allow_html=True)
-
-    # ═══════════════════════════════════════════════════
-    # SECTION 1: SIGNAL HIT RATES
-    # ═══════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🎯 Signal Hit Rates</div>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#6e7681;font-size:0.82rem;margin-bottom:12px;">'
-                'Did our signals predict actual price movements? Uses 1-week forward returns.</div>',
-                unsafe_allow_html=True)
-
-    # Compute hit rates by various signal categories
-    bt_df = all_df.dropna(subset=['fwd_1w_ret']).copy()
-    if len(bt_df) < 10:
-        st.info("Need more weeks of data for backtesting (at least 4 weeks)")
-    else:
-        # Hit rate = did rank direction match price direction?
-        def _hit_rate_block(label, mask, color):
-            subset = bt_df[mask]
-            n = len(subset)
-            if n == 0:
-                return f'<div class="m-chip"><div class="m-lbl">{label}</div><div class="m-val" style="color:#484f58;">N/A</div><div style="font-size:0.65rem;color:#484f58;">n=0</div></div>'
-            avg_ret = subset['fwd_1w_ret'].mean()
-            pos_pct = (subset['fwd_1w_ret'] > 0).sum() / n * 100
-            return (f'<div class="m-chip"><div class="m-lbl">{label}</div>'
-                    f'<div class="m-val" style="color:{color};">{avg_ret:+.2f}%</div>'
-                    f'<div style="font-size:0.65rem;color:#8b949e;">{pos_pct:.0f}% pos · n={n}</div></div>')
-
-        # Signal categories
-        blocks = [
-            _hit_rate_block('Grade S', bt_df['grade'] == 'S', '#FFD700'),
-            _hit_rate_block('Grade A', bt_df['grade'] == 'A', '#3fb950'),
-            _hit_rate_block('Grade F', bt_df['grade'] == 'F', '#f85149'),
-            _hit_rate_block('Rockets 🚀', bt_df['pattern_key'] == 'rocket', '#FF4500'),
-            _hit_rate_block('Breakouts ⚡', bt_df['pattern_key'] == 'breakout', '#FFD700'),
-            _hit_rate_block('Crashes 💥', bt_df['pattern_key'] == 'crash', '#f85149'),
-            _hit_rate_block('Conviction≥80', bt_df['conviction'] >= 80, '#3fb950'),
-            _hit_rate_block('EXIT_NOW', bt_df['exit_tag'] == 'EXIT_NOW', '#f85149'),
-            _hit_rate_block('Hot Streak', bt_df['hot_streak'] == True, '#FF6B35'),
-            _hit_rate_block('💎 Perfect', bt_df['confluence_tag'] == 'PERFECT_SETUP', '#8A2BE2'),
-            _hit_rate_block('Vol STRONG', bt_df['vol_confirmed'] == 'STRONG', '#3fb950'),
-            _hit_rate_block('Fwd STRONG_UP', bt_df['forward_tag'] == 'STRONG_UP', '#00E676'),
-        ]
-        st.markdown(f'<div class="m-strip">{"".join(blocks)}</div>', unsafe_allow_html=True)
-
-        st.markdown("")
-
-        # Detailed backtest table by grade
-        st.markdown('<div class="sec-head">📊 Returns by Grade</div>', unsafe_allow_html=True)
-        grade_stats = []
-        for g in ['S', 'A', 'B', 'C', 'D', 'F']:
-            g_df = bt_df[bt_df['grade'] == g]
-            if len(g_df) == 0:
-                continue
-            grade_stats.append({
-                'Grade': g,
-                'Count': len(g_df),
-                'Avg 1w Ret%': round(g_df['fwd_1w_ret'].mean(), 2),
-                'Median 1w%': round(g_df['fwd_1w_ret'].median(), 2),
-                'Win Rate%': round((g_df['fwd_1w_ret'] > 0).sum() / len(g_df) * 100, 1),
-                'Avg 4w Ret%': round(g_df['fwd_4w_ret'].dropna().mean(), 2) if g_df['fwd_4w_ret'].notna().sum() > 0 else None,
-            })
-        if grade_stats:
-            gs_df = pd.DataFrame(grade_stats)
-            st.dataframe(gs_df, column_config={
-                'Win Rate%': st.column_config.ProgressColumn('Win Rate%', min_value=0, max_value=100, format="%.1f"),
-            }, hide_index=True, use_container_width=True)
-
-        # Returns by confluence level
-        st.markdown('<div class="sec-head">📊 Returns by Signal Confluence</div>', unsafe_allow_html=True)
-        conf_stats = []
-        for ct in ['PERFECT_SETUP', 'STRONG', 'PARTIAL', 'WEAK']:
-            cf = bt_df[bt_df['confluence_tag'] == ct]
-            if len(cf) == 0:
-                continue
-            conf_stats.append({
-                'Confluence': ct,
-                'Count': len(cf),
-                'Avg 1w Ret%': round(cf['fwd_1w_ret'].mean(), 2),
-                'Win Rate%': round((cf['fwd_1w_ret'] > 0).sum() / len(cf) * 100, 1),
-            })
-        if conf_stats:
-            st.dataframe(pd.DataFrame(conf_stats), column_config={
-                'Win Rate%': st.column_config.ProgressColumn('Win Rate%', min_value=0, max_value=100, format="%.1f"),
-            }, hide_index=True, use_container_width=True)
-
-    # ═══════════════════════════════════════════════════
-    # SECTION 2: PORTFOLIO CORRELATION MATRIX
-    # ═══════════════════════════════════════════════════
-    st.markdown("")
-    st.markdown('<div class="sec-head">🔗 Portfolio Correlation Matrix</div>', unsafe_allow_html=True)
-    st.markdown('<div style="color:#6e7681;font-size:0.82rem;margin-bottom:12px;">'
-                'Select stocks to check correlation between their rank trajectories. '
-                'High correlation (>0.7) means concentrated risk.</div>',
-                unsafe_allow_html=True)
-
-    # User selects stocks for portfolio
-    available_tickers = sorted([t for t in pct_series.keys() if t in set(all_df['ticker'])])
-    # Default to top 10 by T-Score
-    top10 = all_df.nlargest(10, 'trajectory_score')['ticker'].tolist()
-    default_sel = [t for t in top10 if t in available_tickers][:8]
-
-    selected_portfolio = st.multiselect(
-        "Select stocks for correlation analysis",
-        available_tickers,
-        default=default_sel,
-        max_selections=20,
-        key='bt_portfolio'
-    )
-
-    if len(selected_portfolio) >= 2:
-        # Build aligned percentile matrix
-        # Find common date range length
-        min_len = min(len(pct_series[t]) for t in selected_portfolio if t in pct_series)
-        if min_len >= 3:
-            pct_matrix = {}
-            for t in selected_portfolio:
-                if t in pct_series:
-                    pct_matrix[t] = pct_series[t][-min_len:]  # Align to latest N weeks
-
-            pct_df = pd.DataFrame(pct_matrix)
-            corr_matrix = pct_df.corr()
-
-            # Plotly heatmap
-            fig_corr = go.Figure(data=go.Heatmap(
-                z=corr_matrix.values,
-                x=corr_matrix.columns,
-                y=corr_matrix.index,
-                colorscale=[[0, '#f85149'], [0.5, '#21262d'], [1, '#3fb950']],
-                zmid=0,
-                text=np.round(corr_matrix.values, 2),
-                texttemplate='%{text}',
-                textfont=dict(size=10, color='#e6edf3'),
-            ))
-            fig_corr.update_layout(
-                title=dict(text=f"Rank Trajectory Correlation ({min_len} weeks)", font=dict(size=13, color='#e6edf3')),
-                height=max(350, len(selected_portfolio) * 40 + 100),
-                template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                margin=dict(t=45, b=35, l=100, r=15),
-            )
-            st.plotly_chart(fig_corr, use_container_width=True)
-
-            # Cluster risk analysis
-            high_corr_pairs = []
-            tickers_list = list(corr_matrix.columns)
-            for i in range(len(tickers_list)):
-                for j in range(i + 1, len(tickers_list)):
-                    r = corr_matrix.iloc[i, j]
-                    if r > 0.7:
-                        high_corr_pairs.append((tickers_list[i], tickers_list[j], round(r, 2)))
-
-            if high_corr_pairs:
-                st.markdown('<div class="sec-head">⚠️ Correlation Clusters (r > 0.7)</div>', unsafe_allow_html=True)
-                cluster_html = ''.join([
-                    f'<div style="background:#f8514918;border:1px solid #f8514944;border-radius:8px;'
-                    f'padding:8px 14px;margin-bottom:4px;display:flex;justify-content:space-between;">'
-                    f'<span style="color:#e6edf3;font-weight:600;">{a} ↔ {b}</span>'
-                    f'<span style="color:#f85149;font-weight:700;">r = {r}</span></div>'
-                    for a, b, r in sorted(high_corr_pairs, key=lambda x: -x[2])
-                ])
-                st.markdown(cluster_html, unsafe_allow_html=True)
-                st.markdown(f'<div style="color:#d29922;font-size:0.82rem;margin-top:8px;">'
-                            f'⚠️ {len(high_corr_pairs)} highly correlated pairs detected — consider diversifying</div>',
-                            unsafe_allow_html=True)
-            else:
-                st.markdown('<div style="background:#23863618;border:1px solid #23863644;border-radius:8px;'
-                            'padding:12px;color:#3fb950;font-weight:600;text-align:center;">'
-                            '✅ No high correlation clusters — portfolio is well diversified</div>',
-                            unsafe_allow_html=True)
-        else:
-            st.caption("Need at least 3 weeks of data for correlation")
-    else:
-        st.caption("Select at least 2 stocks for correlation analysis")
-
-
-# ============================================
-# UI: SMART WATCHLIST TAB (v7.0)
-# ============================================
-
-def render_watchlist_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories: dict):
-    """Smart Watchlist with trigger conditions — persistent in session state."""
-
-    st.markdown('<div class="main-header">⭐ SMART WATCHLIST</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Track stocks with custom trigger conditions · auto-alerts when conditions fire</div>',
-                unsafe_allow_html=True)
-
-    # Initialize watchlist in session state
-    if '_watchlist' not in st.session_state:
-        st.session_state['_watchlist'] = []
-
-    watchlist = st.session_state['_watchlist']
-
-    # ── Add to watchlist ──
-    st.markdown('<div class="sec-head">➕ Add to Watchlist</div>', unsafe_allow_html=True)
-    w1, w2, w3 = st.columns([2, 2, 1])
-    with w1:
-        available = sorted(all_df['ticker'].tolist())
-        add_ticker = st.selectbox("Ticker", available, index=None, placeholder="Select ticker...", key='wl_add_ticker')
-    with w2:
-        trigger_type = st.selectbox("Trigger Condition", [
-            'T-Score crosses above threshold',
-            'T-Score drops below threshold',
-            'Pattern becomes Rocket',
-            'Pattern becomes Breakout',
-            'Conviction reaches HIGH',
-            'Exit Warning fires',
-            'Confluence reaches PERFECT_SETUP',
-            'Forward Forecast is STRONG_UP',
-            'Grade improves to S or A',
-        ], key='wl_trigger')
-    with w3:
-        threshold_val = st.number_input("Threshold", 0, 100, 70, key='wl_threshold')
-
-    if st.button("➕ Add to Watchlist", key='wl_add_btn', use_container_width=True):
-        if add_ticker:
-            entry = {
-                'ticker': add_ticker,
-                'trigger': trigger_type,
-                'threshold': threshold_val,
-                'added': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            }
-            watchlist.append(entry)
-            st.session_state['_watchlist'] = watchlist
-            st.success(f"Added {add_ticker} to watchlist")
-
-    # ── Display watchlist with trigger status ──
-    if watchlist:
-        st.markdown(f'<div class="sec-head">📋 Watchlist ({len(watchlist)} items)</div>', unsafe_allow_html=True)
-
-        # Check triggers
-        wl_rows = []
-        for idx, wl in enumerate(watchlist):
-            ticker = wl['ticker']
-            match = all_df[all_df['ticker'] == ticker]
-            if match.empty:
-                status = '❓ Not Found'
-                fired = False
-            else:
-                row = match.iloc[0]
-                trigger = wl['trigger']
-                fired = False
-                if trigger == 'T-Score crosses above threshold':
-                    fired = row['trajectory_score'] >= wl['threshold']
-                elif trigger == 'T-Score drops below threshold':
-                    fired = row['trajectory_score'] < wl['threshold']
-                elif trigger == 'Pattern becomes Rocket':
-                    fired = row.get('pattern_key') == 'rocket'
-                elif trigger == 'Pattern becomes Breakout':
-                    fired = row.get('pattern_key') == 'breakout'
-                elif trigger == 'Conviction reaches HIGH':
-                    fired = row.get('conviction_tag') in ('HIGH', 'VERY_HIGH')
-                elif trigger == 'Exit Warning fires':
-                    fired = row.get('exit_tag') in ('EXIT_NOW', 'CAUTION')
-                elif trigger == 'Confluence reaches PERFECT_SETUP':
-                    fired = row.get('confluence_tag') == 'PERFECT_SETUP'
-                elif trigger == 'Forward Forecast is STRONG_UP':
-                    fired = row.get('forward_tag') == 'STRONG_UP'
-                elif trigger == 'Grade improves to S or A':
-                    fired = row.get('grade') in ('S', 'A')
-                status = '🔔 FIRED!' if fired else '⏳ Watching'
-
-            wl_rows.append({
-                '#': idx + 1,
-                'Ticker': ticker,
-                'Trigger': wl['trigger'],
-                'Threshold': wl['threshold'],
-                'Status': status,
-                'Fired': fired,
-                'Added': wl['added'],
-            })
-
-        wl_df = pd.DataFrame(wl_rows)
-        fired_count = int(wl_df['Fired'].sum())
-
-        if fired_count > 0:
-            st.markdown(f'<div style="background:#3fb95018;border:1px solid #3fb95044;border-radius:10px;'
-                        f'padding:14px;margin-bottom:10px;text-align:center;">'
-                        f'<span style="color:#3fb950;font-weight:700;font-size:1.1rem;">'
-                        f'🔔 {fired_count} trigger(s) FIRED!</span></div>',
-                        unsafe_allow_html=True)
-
-        # Fired items first
-        wl_display = wl_df.sort_values('Fired', ascending=False)
-        st.dataframe(
-            wl_display[['#', 'Ticker', 'Trigger', 'Threshold', 'Status', 'Added']],
-            column_config={
-                'Status': st.column_config.TextColumn('Status', width="medium"),
-            },
-            hide_index=True, use_container_width=True
-        )
-
-        # Clear buttons
-        cl1, cl2 = st.columns(2)
-        with cl1:
-            if st.button("🗑️ Clear Fired Items", key='wl_clear_fired'):
-                st.session_state['_watchlist'] = [w for i, w in enumerate(watchlist)
-                                                   if not wl_rows[i]['Fired']]
-                st.rerun()
-        with cl2:
-            if st.button("🗑️ Clear All", key='wl_clear_all'):
-                st.session_state['_watchlist'] = []
-                st.rerun()
-    else:
-        st.markdown('<div style="background:#161b22;border-radius:10px;padding:24px;text-align:center;'
-                    'border:1px solid #30363d;"><span style="color:#8b949e;font-size:0.9rem;">'
-                    'Watchlist is empty — add stocks above to start tracking</span></div>',
-                    unsafe_allow_html=True)
-
-    # ── Global Triggers (auto-detected) ──
-    st.markdown("")
-    st.markdown('<div class="sec-head">🌐 Auto-Detected Market Signals</div>', unsafe_allow_html=True)
-
-    auto_signals = []
-    # Perfect setups
-    if 'confluence_tag' in all_df.columns:
-        perfect = all_df[all_df['confluence_tag'] == 'PERFECT_SETUP']
-        if not perfect.empty:
-            auto_signals.append(('💎', f"{len(perfect)} stocks have PERFECT_SETUP confluence",
-                                 ', '.join(perfect['ticker'].head(5).tolist()), '#8A2BE2'))
-
-    # Exit NOW
-    if 'exit_tag' in all_df.columns:
-        exits = all_df[all_df['exit_tag'] == 'EXIT_NOW']
-        if not exits.empty:
-            auto_signals.append(('🚨', f"{len(exits)} stocks have EXIT_NOW warning",
-                                 ', '.join(exits['ticker'].head(5).tolist()), '#f85149'))
-
-    # Strong UP forecast
-    if 'forward_tag' in all_df.columns:
-        strong_up = all_df[all_df['forward_tag'] == 'STRONG_UP']
-        if not strong_up.empty:
-            auto_signals.append(('🚀', f"{len(strong_up)} stocks forecast STRONG_UP",
-                                 ', '.join(strong_up['ticker'].head(5).tolist()), '#3fb950'))
-
-    # Exceptional regime stocks
-    if 'regime_tag' in all_df.columns:
-        exceptional = all_df[all_df['regime_tag'] == 'EXCEPTIONAL']
-        if not exceptional.empty:
-            auto_signals.append(('⭐', f"{len(exceptional)} stocks are EXCEPTIONAL vs market (2σ+)",
-                                 ', '.join(exceptional['ticker'].head(5).tolist()), '#FFD700'))
-
-    if auto_signals:
-        for emoji, msg, tickers, color in auto_signals:
-            st.markdown(f"""
-            <div style="background:{color}08;border:1px solid {color}44;border-radius:10px;
-                        padding:12px 16px;margin-bottom:6px;border-left:3px solid {color};">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <span style="color:#e6edf3;font-weight:600;">{emoji} {msg}</span>
-                    <span style="color:#8b949e;font-size:0.78rem;">{tickers}</span>
-                </div>
-            </div>""", unsafe_allow_html=True)
-    else:
-        st.caption("No auto-detected signals")
-
-
-# ============================================
 # UI: EXPORT TAB
 # ============================================
 
@@ -5603,13 +5067,11 @@ def render_about_tab():
     """Render about/documentation tab"""
 
     st.markdown("""
-    ## 📊 Rank Trajectory Engine v7.0 — Next-Level Intelligence
+    ## 📊 Rank Trajectory Engine v6.3 — Advanced Trading Signals
 
     The **ALL TIME BEST** stock rank trajectory analysis system with **7-component adaptive scoring**,
     **signal-isolated return quality**, **directional price-rank alignment**, **momentum decay warning**,
-    **sector alpha detection**, **signal confluence**, **forward expectation**, **regime-conditional scoring**,
-    **backtesting engine**, **portfolio correlation matrix**, **momentum half-life**, **weekly delta dashboard**,
-    and **smart watchlist**.
+    and **sector alpha detection**.
 
     ---
 
@@ -5619,7 +5081,6 @@ def render_about_tab():
     7-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
         → Hurst Persistence × Directional Price-Rank Alignment
         → Momentum Decay Penalty → Sector Alpha Tag
-        → Regime-Conditional Scoring → Signal Confluence → Forward Expectation
     ```
 
     **SIGNAL ISOLATION PRINCIPLE:** Each data source enters through exactly ONE scoring path.
@@ -5634,9 +5095,6 @@ def render_about_tab():
     | **Price-Rank Alignment** | DIRECTIONAL agreement only — sign(return) vs sign(rank Δ) | ×0.88 to ×1.08 |
     | **Momentum Decay** | Catches stocks with good rank but deteriorating returns | ×0.93 to ×1.00 |
     | **Sector Alpha** | Separates leaders from sector-beta riders | Tag: LEADER / BETA / LAGGARD |
-    | **Regime-Conditional** | Scores relative to current market distribution | EXCEPTIONAL to WEAK |
-    | **Signal Confluence** | Counts aligned bullish signals (0-9) | PERFECT_SETUP at 7+ |
-    | **Forward Expectation** | Predicts trajectory direction from 6 leading indicators | -100 to +100 |
 
     ---
 
@@ -5697,7 +5155,7 @@ def render_about_tab():
 
     ---
 
-    ### 🔮 Advanced Trading Signals (v6.3)
+    ### � Advanced Trading Signals (v6.3)
 
     Five new signals designed for actionable trading decisions:
 
@@ -5846,6 +5304,30 @@ def render_about_tab():
     st.markdown("""
     ---
 
+    ### 🌊 Wave Signal Fusion (v8.0)
+
+    The **Wave Signal Fusion Engine** cross-validates 18 WAVE Detection columns with the
+    Trajectory Engine's own scoring, producing a fusion multiplier (×0.92 — ×1.10).
+
+    | Signal | Weight | What It Measures |
+    |--------|--------|-----------------|
+    | **Confluence** | 35% | Agreement between WAVE Detection scores (position, acceleration, breakout) and Trajectory components |
+    | **Institutional Flow** | 30% | Money flow, VMI, relative volume, overall market strength |
+    | **Harmony** | 20% | Momentum harmony score from WAVE Detection |
+    | **Fundamental Quality** | 15% | EPS growth, PE reasonableness, EPS tier (quality gate, not driver) |
+
+    **Classifications:**
+
+    | Label | Score | Multiplier | Meaning |
+    |-------|-------|-----------|---------|
+    | 🌊 **STRONG** | ≥ 72 | ×1.06 — ×1.10 | Both systems strongly agree — high conviction |
+    | ✅ **CONFIRMED** | 58 — 71 | ×1.01 — ×1.05 | Cross-system confirmation |
+    | ➖ **NEUTRAL** | 42 — 57 | ×0.99 — ×1.01 | No strong signal either way |
+    | ⚠️ **WEAK** | 30 — 41 | ×0.95 — ×0.98 | Mild disagreement — caution |
+    | 🔇 **CONFLICT** | < 30 | ×0.92 — ×0.94 | Systems fundamentally disagree — danger |
+
+    ---
+
     ### 📡 Signal Tags (v6.1)
 
     The **Signals** column in rankings combines multiple indicators:
@@ -5861,137 +5343,8 @@ def render_about_tab():
     | 👑 | Sector Leader | Genuine alpha — significantly above sector average |
     | 🏷️ | Sector Beta | Riding hot sector, not genuine alpha |
     | 📉 | Sector Laggard | Below sector average |
-
-    ---
-
-    ### 🧩 Signal Confluence Detector (v7.0)
-
-    Counts how many bullish signals fire simultaneously across 9 dimensions:
-
-    | # | Signal | Condition |
-    |---|--------|-----------|
-    | 1 | High Conviction | conviction ≥ 65 |
-    | 2 | Hot Streak | Active (4+ weeks improving) |
-    | 3 | Price Confirmed | PRICE_CONFIRMED label |
-    | 4 | No Momentum Decay | No decay label |
-    | 5 | No Exit Warning | exit_tag = HOLD |
-    | 6 | TMI Bullish | TMI ≥ 70 |
-    | 7 | Volume Confirmed | STRONG or MODERATE |
-    | 8 | Bullish Pattern | rocket / breakout / momentum_building / stable_elite |
-    | 9 | Top Position | Current percentile ≥ 80th |
-
-    | Tag | Count | Emoji | Meaning |
-    |-----|-------|-------|---------|
-    | 💎 PERFECT_SETUP | 7+ | 💎 | All stars aligned — highest conviction |
-    | 🔥 STRONG | 5-6 | 🔥 | Multiple confirmations |
-    | ⚡ PARTIAL | 3-4 | ⚡ | Mixed signals |
-    | 💤 WEAK | 0-2 | 💤 | Insufficient confirmation |
-
-    ---
-
-    ### 🔮 Forward Expectation Score (v7.0)
-
-    Predicts future trajectory direction from 6 **leading** (not lagging) indicators:
-
-    | Indicator | Weight | What It Measures |
-    |-----------|--------|------------------|
-    | Acceleration | 25% | Is velocity increasing or decreasing? |
-    | Hurst Exponent | 15% | Trending (>0.5) vs mean-reverting (<0.5) |
-    | Decay Inversion | 15% | Low decay → sustainable momentum |
-    | Streak Strength | 15% | Duration × direction of streak |
-    | Pattern Bias | 15% | Bullish/bearish pattern classification |
-    | Velocity Trend | 15% | Direction of velocity change |
-
-    | Tag | Score Range | Emoji | Forecast |
-    |-----|-----------|-------|----------|
-    | STRONG_UP | ≥ +40 | 🚀 | High confidence upward trajectory |
-    | UP | ≥ +15 | 📈 | Moderate upward expectation |
-    | NEUTRAL | ≥ -15 | ➖ | No clear direction |
-    | DOWN | ≥ -40 | 📉 | Moderate downward expectation |
-    | STRONG_DOWN | < -40 | 💥 | High confidence deterioration |
-
-    ---
-
-    ### ⏳ Momentum Half-Life (v7.0)
-
-    Estimates how long the current pattern will persist based on historical pattern durations:
-
-    | Pattern | Avg Duration (weeks) |
-    |---------|---------------------|
-    | rocket | 4 |
-    | breakout | 6 |
-    | stable_elite | 12 |
-    | steady_climb | 8 |
-    | recovery | 5 |
-    | fading | 4 |
-    | crash | 2 |
-    | volatile_high | 6 |
-    | new_entry | 3 |
-    | turnaround | 4 |
-
-    **Survival Probability** = max(0, 1 - pattern_age / avg_duration)
-    When survival < 30%, the pattern is likely to change soon.
-
-    ---
-
-    ### 🌊 Regime-Conditional Scoring (v7.0)
-
-    Scores each stock **relative to the current market regime** (not absolute):
-
-    - Z-scores T-Score against the market distribution
-    - Tags stocks as EXCEPTIONAL/STRONG/ABOVE_AVG/MARKET_AVG/BELOW_AVG/WEAK
-    - A score of 75 in a bear market is more impressive than 75 in a bull market
-
-    ---
-
-    ### 📊 Backtesting Engine (v7.0)
-
-    Validates signal quality using forward returns:
-
-    - **1-Week Forward Return**: Price change 1 week after signal
-    - **4-Week Forward Return**: Price change 4 weeks after signal
-    - **Accuracy**: Did rank direction predict price direction?
-    - Hit rates broken down by Grade, Pattern, Conviction, Confluence
-
-    ---
-
-    ### 🔗 Portfolio Correlation Matrix (v7.0)
-
-    Detects portfolio concentration risk:
-
-    - Pairwise correlation of rank trajectory percentile series
-    - Heatmap visualization with cluster detection
-    - Warns when correlation > 0.7 between holdings (you're overexposed)
-
-    ---
-
-    ### 📋 Weekly Delta Dashboard (v7.0)
-
-    Shows what changed this week at a glance:
-
-    - Biggest rank climbers and droppers
-    - New entries to the dataset
-    - Perfect Setup detections (7+ confluence)
-    - Exit Now warnings
-    - Strong Up / Strong Down forecasts
-    - Market regime context
-
-    ---
-
-    ### 🎯 Smart Watchlist (v7.0)
-
-    Custom alerts with 9 trigger conditions:
-
-    | Trigger | What It Watches |
-    |---------|----------------|
-    | T-Score ≥ threshold | Score crosses your target |
-    | Pattern changes | Pattern shift detected |
-    | Conviction HIGH+ | Conviction reaches HIGH or VERY_HIGH |
-    | Exit Warning fires | Exit risk triggers |
-    | Confluence PERFECT | 7+ signals align |
-    | Forward STRONG_UP | Bullish forecast detected |
-    | Grade reaches S | Top grade achieved |
-    | Grade reaches A+ | A grade or better |
+    | 🌊 | Wave Strong | Both WAVE Detection and Trajectory agree — high fusion score |
+    | 🔇 | Wave Conflict | WAVE Detection and Trajectory disagree — systems in conflict |
 
     ---
 
@@ -6008,7 +5361,7 @@ def render_about_tab():
 
     ---
 
-    *Built for the Wave Detection ecosystem • v7.0.0 • Next-Level Intelligence*
+    *Built for the Wave Detection ecosystem • v8.0 • Wave Signal Fusion • March 2026*
     """)
 
 
@@ -6026,7 +5379,6 @@ def main():
             "📂 Upload Weekly CSV Snapshots",
             type=['csv'],
             accept_multiple_files=True,
-            key="sidebar_csv_uploader",
             help="Upload your Wave Detection weekly CSV exports (Stocks_Weekly_YYYY-MM-DD_*_data.csv)"
         )
 
@@ -6063,7 +5415,7 @@ def main():
         st.error("❌ No valid data found in uploaded files. Ensure CSVs contain `rank` and `ticker` columns.")
         return
 
-    traj_df, histories, dates_iso, metadata, pct_series = result
+    traj_df, histories, dates_iso, metadata = result
 
     if traj_df.empty:
         st.warning("No stocks found with sufficient data for trajectory analysis.")
@@ -6076,9 +5428,8 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_ranking, tab_search, tab_funnel, tab_delta, tab_backtest, tab_alerts, tab_watchlist, tab_export, tab_about = st.tabs([
-        "🏆 Rankings", "🔍 Search", "🎯 Funnel", "📊 Delta", "📈 Backtest",
-        "🚨 Alerts", "⭐ Watchlist", "📤 Export", "ℹ️ About"
+    tab_ranking, tab_search, tab_funnel, tab_alerts, tab_export, tab_about = st.tabs([
+        "🏆 Rankings", "🔍 Search & Analyze", "🎯 Funnel", "🚨 Alerts", "📤 Export", "ℹ️ About"
     ])
 
     with tab_ranking:
@@ -6090,17 +5441,8 @@ def main():
     with tab_funnel:
         render_funnel_tab(filtered_df, traj_df, histories, metadata)
 
-    with tab_delta:
-        render_delta_tab(filtered_df, traj_df, histories, metadata)
-
-    with tab_backtest:
-        render_backtest_tab(filtered_df, traj_df, histories, pct_series)
-
     with tab_alerts:
         render_alerts_tab(filtered_df, histories)
-
-    with tab_watchlist:
-        render_watchlist_tab(filtered_df, traj_df, histories)
 
     with tab_export:
         render_export_tab(filtered_df, traj_df, histories)
