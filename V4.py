@@ -207,8 +207,6 @@ PRICE_ALIGNMENT = {
     'noise_band_stable': 2.0,        # Ignore rank moves < this for stable stocks
     'noise_band_normal': 1.0,        # Ignore rank moves < this for normal stocks
     'min_weeks': 4,                  # Minimum weeks needed for alignment calculation
-    'multiplier_max_boost': 1.08,    # Maximum upward multiplier (v5.3: reduced from 1.12)
-    'multiplier_max_penalty': 0.88,  # Maximum downward multiplier (v5.3: tightened from 0.85)
     'confirmed_threshold': 72,       # Alignment score above this = PRICE_CONFIRMED
     'divergent_threshold': 35,       # Alignment score below this = PRICE_DIVERGENT
     'ema_span': 3,                   # EMA span for smoothing ret_7d (3-week)
@@ -225,9 +223,6 @@ MOMENTUM_DECAY = {
     'r30_severe_mid': -10,           # 30d return severe for mid-ranked stocks
     'from_high_severe': -20,         # Far from high — significant correction
     'from_high_moderate': -15,       # Moderate correction from high
-    'high_decay_multiplier': 0.93,   # Severe decay penalty
-    'moderate_decay_multiplier': 0.96,  # Moderate decay penalty
-    'mild_decay_multiplier': 0.98,   # Mild decay warning
     'severe_threshold': 60,          # Decay score above this = severe
     'moderate_threshold': 35,        # Decay score above this = moderate
     'mild_threshold': 15,            # Decay score above this = mild
@@ -710,59 +705,21 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     total_stocks = len(traj_df)
     traj_df['t_percentile'] = ((total_stocks - traj_df['t_rank']) / max(total_stocks - 1, 1) * 100).round(1)
 
-    # ── Step 3b: Market Regime Awareness (v6.2) ──
-    # Computes market-wide median trend/velocity to normalize for market moves.
-    # In a bear market, a flat stock is relatively STRONG.
-    # In a bull market, a flat stock is relatively WEAK.
+    # ── Step 3b: Market Regime Classification (v9.0 cleaned) ──
+    # Only computes regime label + median for UI display & conviction signal.
+    # Dead code removed: market_adj_factor (never applied), market_adj_score (never read),
+    # Z-score normalization (17 columns never referenced downstream).
     market_trend_median = traj_df['trend'].median()
-    market_velocity_median = traj_df['velocity'].median()
 
-    # Classify market regime based on median trend
     if market_trend_median > 58:
         market_regime = 'BULL'
-        market_adj_factor = 1.0  # No adjustment in bull market (baseline)
     elif market_trend_median < 42:
         market_regime = 'BEAR'
-        market_adj_factor = 1.03  # Slight boost in bear market (survival premium)
     else:
         market_regime = 'SIDEWAYS'
-        market_adj_factor = 1.0
 
     traj_df['market_regime'] = market_regime
     traj_df['market_trend_median'] = round(market_trend_median, 1)
-
-    # Compute market-adjusted score: relative performance vs market
-    # A stock with trend=60 in BEAR market (median=35) is exceptional
-    # A stock with trend=60 in BULL market (median=70) is lagging
-    def _market_adj_score(row):
-        trend_vs_market = row['trend'] - market_trend_median
-        vel_vs_market = row['velocity'] - market_velocity_median
-        relative_strength = (trend_vs_market + vel_vs_market) / 2  # Range: -50 to +50
-        # Scale to 0-100 centered at 50
-        mkt_adj = 50 + relative_strength
-        return round(np.clip(mkt_adj, 0, 100), 1)
-
-    traj_df['market_adj_score'] = traj_df.apply(_market_adj_score, axis=1)
-
-    # ── Step 3c: Z-Score Normalization (v6.2) ──
-    # Converts raw component scores to cross-sectional z-scores, then rescales
-    # to 0-100. This ensures scores reflect relative performance vs population.
-    # Benefits: prevents score clustering, improves differentiation, robust to outliers.
-    z_components = ['positional', 'trend', 'velocity', 'acceleration',
-                    'consistency', 'resilience', 'return_quality', 'breakout_quality']
-
-    for col in z_components:
-        col_mean = traj_df[col].mean()
-        col_std = max(traj_df[col].std(), 1.0)  # Avoid division by zero
-        z_col = (traj_df[col] - col_mean) / col_std
-        # Rescale z-score to 0-100: z=-3 → 0, z=0 → 50, z=+3 → 100
-        normalized_col = 50 + (z_col * 16.67)  # 50/3 ≈ 16.67
-        traj_df[f'{col}_zscore'] = z_col.round(2)
-        traj_df[f'{col}_norm'] = normalized_col.clip(0, 100).round(1)
-
-    # Compute composite normalized score (average of normalized components)
-    norm_cols = [f'{c}_norm' for c in z_components]
-    traj_df['normalized_score'] = traj_df[norm_cols].mean(axis=1).round(2)
 
     # ── Step 3d: Sector-Relative Blending (v9.0) ──
     # DATA EVIDENCE: sector-relative top10% vs bot10% → +0.59%/wk alpha.
@@ -1340,23 +1297,18 @@ def _compute_single_trajectory(h: dict) -> dict:
     # Data analysis showed price alignment adds noise as a multiplier.
     # Price direction is already captured in ReturnQuality component.
     # Keeping the calculation for UI display but NOT applying as multiplier.
-    price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct)
+    price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct)
 
     # ── Momentum Decay Warning (v9.0: Exit-system-only, NOT a multiplier) ──
     # Decay is valuable as an EXIT signal but noisy as a scoring multiplier.
     # Keeping calculation for exit warning system, not applying to T-Score.
-    decay_multiplier, decay_label, decay_score = _calc_momentum_decay(ret_7d, ret_30d, from_high, pcts, avg_pct, ret_6m)
+    decay_label, decay_score = _calc_momentum_decay(ret_7d, ret_30d, from_high, pcts, avg_pct, ret_6m)
 
     # ── v9.0: SIMPLIFIED MULTIPLIER — Only 2 proven multipliers ──
-    # Old: 4 multipliers (Hurst × WaveFusion × PriceAlign × Decay) capped ±18%
-    # New: 2 multipliers (Hurst × WaveFusion) capped ±12%
-    # PriceAlign folded into ReturnQuality, Decay folded into exit warnings.
-    # Less noise, cleaner signal, same information through better paths.
-    pre_price_score = trajectory_score  # Save for diagnostics
+    # Hurst × WaveFusion capped ±12%. Price/Decay multipliers removed (noise).
     combined_mult = hurst_multiplier * wave_fusion_multiplier
     combined_mult = float(np.clip(combined_mult, 0.88, 1.12))
     trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
-    pre_decay_score = trajectory_score  # Kept for backward compat
 
     # ── Grade ──
     grade, grade_emoji = get_grade(trajectory_score)
@@ -1428,15 +1380,6 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif wf_label == 'WAVE_CONFLICT':
         signal_parts.append('🔇')
     signal_tags = ''.join(signal_parts)
-
-    # ── Confidence Intervals (v6.2) ──
-    # Wider margin when: low confidence (few weeks) OR high rank volatility
-    # margin = (1 - confidence) * (base_uncertainty + volatility_factor)
-    ci_base = 18  # Base uncertainty with low data
-    ci_vol_factor = min(rank_vol / 3, 8)  # Cap volatility contribution at 8 pts
-    ci_margin = (1 - confidence) * (ci_base + ci_vol_factor)
-    confidence_lower = max(0, trajectory_score - ci_margin)
-    confidence_upper = min(100, trajectory_score + ci_margin * 0.5)  # Asymmetric: upside capped more
 
     # ══════════════════════════════════════════════════════════════════════════
     # v6.3: ADVANCED TRADING SIGNALS — 5 New Features for Better Returns
@@ -1694,42 +1637,13 @@ def _compute_single_trajectory(h: dict) -> dict:
     # Consecutive weeks of percentile improvement with high current position.
     # Research shows 4+ week momentum streaks have 72% continuation rate.
     hot_streak = False
-    hot_streak_weeks = streak  # Already calculated above
+    hot_streak = False
     if streak >= 4 and current_pct >= 70:
         hot_streak = True
     elif streak >= 3 and current_pct >= 80:
         hot_streak = True
     elif streak >= 5 and current_pct >= 60:
         hot_streak = True
-
-    # ── 5. VOLUME CONFIRMATION ──
-    # Uses volume_score data if available to validate rank moves.
-    volume_scores = h.get('volume_score', [])
-    latest_vol_score = None
-    vol_confirmed = 'NEUTRAL'
-
-    # Get latest valid volume score
-    for v in reversed(volume_scores):
-        if v is not None and not np.isnan(v):
-            latest_vol_score = float(v)
-            break
-
-    if latest_vol_score is not None:
-        if streak > 0 and latest_vol_score >= 70:
-            vol_confirmed = 'STRONG'  # Rank improving + high volume = strong signal
-        elif streak > 0 and latest_vol_score >= 50:
-            vol_confirmed = 'MODERATE'
-        elif streak > 0 and latest_vol_score < 30:
-            vol_confirmed = 'WEAK'  # Rank improving but low volume = may reverse
-        elif neg_streak >= 2 and latest_vol_score >= 70:
-            vol_confirmed = 'DISTRIBUTION'  # Rank falling + high volume = selling pressure
-
-    # v8.0: Cross-check with institutional flow for enhanced volume confirmation
-    wf_inst = wave_fusion.get('wave_inst_flow', 50)
-    if vol_confirmed == 'MODERATE' and wf_inst >= 70:
-        vol_confirmed = 'STRONG'   # Institutional flow confirms moderate volume
-    elif vol_confirmed == 'STRONG' and wf_inst < 30:
-        vol_confirmed = 'MODERATE'  # Institutional flow contradicts volume score
 
     return {
         'trajectory_score': round(trajectory_score, 2),
@@ -1743,22 +1657,16 @@ def _compute_single_trajectory(h: dict) -> dict:
         'breakout_quality': round(breakout_quality, 2),
         'hurst': round(_estimate_hurst(pcts), 3) if n >= HURST_CONFIG['min_weeks'] else 0.5,
         'confidence': round(confidence, 3),
-        'confidence_lower': round(confidence_lower, 2),
-        'confidence_upper': round(confidence_upper, 2),
         'grade': grade,
         'grade_emoji': grade_emoji,
         'pattern_key': pattern_key,
         'pattern': f"{p_emoji} {p_name}",
         'price_alignment': round(price_alignment, 1),
-        'price_multiplier': round(price_multiplier, 3),
         'price_label': price_label,
         'price_tag': price_tag,
-        'pre_price_score': round(pre_price_score, 2),
         'decay_score': decay_score,
-        'decay_multiplier': round(decay_multiplier, 3),
         'decay_label': decay_label,
         'decay_tag': decay_tag,
-        'pre_decay_score': round(pre_decay_score, 2),
         'combined_mult': round(combined_mult, 4),
         'signal_tags': signal_tags,
         'current_rank': current_rank,
@@ -1782,10 +1690,7 @@ def _compute_single_trajectory(h: dict) -> dict:
         'exit_emoji': exit_emoji,
         'exit_signals': ','.join(exit_signals) if exit_signals else '',
         'hot_streak': hot_streak,
-        'hot_streak_weeks': hot_streak_weeks,
         'persistence_weeks': persistence_weeks,
-        'vol_confirmed': vol_confirmed,
-        'latest_vol_score': round(latest_vol_score, 1) if latest_vol_score else None,
         # v8.0: Wave Signal Fusion
         'wave_fusion_score': wave_fusion.get('wave_fusion_score', 50),
         'wave_fusion_multiplier': wave_fusion.get('wave_fusion_multiplier', 1.0),
@@ -1793,7 +1698,6 @@ def _compute_single_trajectory(h: dict) -> dict:
         'wave_confluence': wave_fusion.get('wave_confluence', 50),
         'wave_inst_flow': wave_fusion.get('wave_inst_flow', 50),
         'wave_harmony': wave_fusion.get('wave_harmony', 50),
-        'wave_harmony_raw': wave_fusion.get('wave_harmony_raw', 2.0),
         'wave_fundamental': wave_fusion.get('wave_fundamental', 50),
         'wave_position_tension': wave_fusion.get('wave_position_tension', 0),
         'wave_from_low': wave_fusion.get('wave_from_low'),
@@ -1809,15 +1713,12 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'acceleration': 50, 'consistency': 50, 'resilience': 50,
         'return_quality': 50, 'breakout_quality': 50,
         'hurst': 0.5, 'confidence': BAYESIAN_CONFIDENCE['min_confidence'],
-        'confidence_lower': 0, 'confidence_upper': 13.5,
         'grade': 'F', 'grade_emoji': '📉',
         'pattern_key': 'new_entry', 'pattern': '💎 New Entry',
-        'price_alignment': 50.0, 'price_multiplier': 1.0,
+        'price_alignment': 50.0,
         'price_label': 'NEUTRAL', 'price_tag': '',
-        'pre_price_score': 0,
-        'decay_score': 0, 'decay_multiplier': 1.0,
+        'decay_score': 0,
         'decay_label': '', 'decay_tag': '',
-        'pre_decay_score': 0,
         'combined_mult': 1.0,
         'signal_tags': '',
         'sector_alpha_tag': 'NEUTRAL', 'sector_alpha_value': 0,
@@ -1831,13 +1732,12 @@ def _empty_trajectory(ranks, totals, pcts, n):
         # v6.3: Advanced Trading Signals (defaults)
         'conviction': 0, 'conviction_tag': 'VERY_LOW', 'conviction_emoji': '❌',
         'risk_adj_score': 0, 'exit_risk': 0, 'exit_tag': 'HOLD', 'exit_emoji': '✅',
-        'exit_signals': '', 'hot_streak': False, 'hot_streak_weeks': 0,
+        'exit_signals': '', 'hot_streak': False,
         'persistence_weeks': 0,
-        'vol_confirmed': 'NEUTRAL', 'latest_vol_score': None,
         # v8.0: Wave Signal Fusion (defaults)
         'wave_fusion_score': 50, 'wave_fusion_multiplier': 1.0,
         'wave_fusion_label': 'WAVE_NEUTRAL', 'wave_confluence': 50,
-        'wave_inst_flow': 50, 'wave_harmony': 50, 'wave_harmony_raw': 2.0,
+        'wave_inst_flow': 50, 'wave_harmony': 50,
         'wave_fundamental': 50, 'wave_position_tension': 0,
         'wave_from_low': None, 'wave_ret_1d': None, 'wave_ret_1y': None,
     }
@@ -2257,25 +2157,21 @@ def _calc_breakout_quality(h: dict, avg_pct: float, n: int) -> float:
 
 
 def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
-                          pcts: List[float], avg_pct: float) -> Tuple[float, str, float]:
+                          pcts: List[float], avg_pct: float) -> Tuple[str, float]:
     """
-    Price-Rank Alignment Multiplier (v6.1 — purely directional).
+    Price-Rank Alignment (v9.0 — label + score only, no multiplier).
 
     Measures whether SHORT-TERM return direction agrees with rank movement.
     Does NOT score return magnitude — that is handled by ReturnQuality.
 
     TWO SIGNALS:
       Signal 1 (55%): EMA-Smoothed Weekly Directional Agreement
-                      Does sign(ret_7d) match sign(percentile_change)?
       Signal 2 (45%): Monthly Directional Agreement
-                      Does sign(ret_30d) match sign(percentile_change)?
 
-    Both signals score DIRECTION ONLY (positive/negative/flat), never magnitude.
-    This ensures ret_30d enters exactly ONE door: ReturnQuality component.
+    v9.0: Multiplier removed (data showed it adds noise). Only label + score
+    are retained for UI display and signal tags.
 
-    MULTIPLIER RANGE: ×0.88 (strong divergence) to ×1.08 (strong confirmation)
-
-    Returns: (multiplier, label, alignment_score)
+    Returns: (label, alignment_score)
     """
     cfg = PRICE_ALIGNMENT
     n = len(pcts)
@@ -2283,7 +2179,7 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
     # ── Guard: Need valid return data ──
     valid_ret7 = [r for r in ret_7d if r is not None and not np.isnan(r)]
     if len(valid_ret7) < cfg['min_weeks'] or n < cfg['min_weeks']:
-        return 1.0, 'NEUTRAL', 50.0
+        return 'NEUTRAL', 50.0
 
     # ── EMA-smooth ret_7d to reduce noise ──
     ema_span = cfg.get('ema_span', 3)
@@ -2298,7 +2194,7 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
             pairs.append((r7e, r30, pcts[i]))
 
     if len(pairs) < cfg['min_weeks']:
-        return 1.0, 'NEUTRAL', 50.0
+        return 'NEUTRAL', 50.0
 
     # ── Signal 1: EMA-Smoothed Weekly Directional Agreement (55%) ──
     agree = 0.0
@@ -2381,30 +2277,18 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
     alignment = 0.55 * dir_score + 0.45 * monthly_dir_score - disagreement_penalty
     alignment = float(np.clip(alignment, 0, 100))
 
-    # ── Convert to Multiplier (×0.88 to ×1.08) ──
+    # ── Label from alignment score (v9.0: no multiplier) ──
     conf_thresh = cfg['confirmed_threshold']
     div_thresh = cfg['divergent_threshold']
-    max_boost = cfg['multiplier_max_boost']
-    max_pen = cfg['multiplier_max_penalty']
 
     if alignment >= conf_thresh:
-        t = (alignment - conf_thresh) / (100 - conf_thresh)
-        multiplier = 1.04 + t * (max_boost - 1.04)
         label = 'PRICE_CONFIRMED'
-    elif alignment >= 50:
-        t = (alignment - 50) / (conf_thresh - 50)
-        multiplier = 1.00 + t * 0.04
-        label = 'NEUTRAL'
-    elif alignment >= div_thresh:
-        t = (alignment - div_thresh) / (50 - div_thresh)
-        multiplier = 0.96 + t * 0.04
-        label = 'NEUTRAL'
-    else:
-        t = alignment / div_thresh
-        multiplier = max_pen + t * (0.96 - max_pen)
+    elif alignment <= div_thresh:
         label = 'PRICE_DIVERGENT'
+    else:
+        label = 'NEUTRAL'
 
-    return float(multiplier), label, float(alignment)
+    return label, float(alignment)
 
 
 # ── Momentum Decay Warning Engine (v2.3) ──
@@ -2412,9 +2296,12 @@ def _calc_price_alignment(ret_7d: List[float], ret_30d: List[float],
 def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
                          from_high: List[float], pcts: List[float],
                          avg_pct: float,
-                         ret_6m: Optional[List[float]] = None) -> Tuple[float, str, int]:
+                         ret_6m: Optional[List[float]] = None) -> Tuple[str, int]:
     """
-    Momentum Decay Warning — catches stocks with good rank but deteriorating returns.
+    Momentum Decay Warning (v9.0 — label + score only, no multiplier).
+
+    Catches stocks with good rank but deteriorating returns.
+    v9.0: Multiplier removed. Decay is now exit-system-only + conviction signal.
 
     TRAP DETECTION: Deep audit found 11.4% of top-10% stocks have negative 30d returns.
     These stocks ranked well based on PAST momentum that has now faded.
@@ -2429,18 +2316,17 @@ def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
       4. Consecutive negative weekly returns → sustained decay
 
     v6.1: Uses actual ret_6m for Proven Winner Exemption instead of avg_pct proxy.
-    v6.1: Smooth continuous multiplier instead of step-function cliffs.
 
-    Returns: (penalty_multiplier, warning_label, decay_score)
+    Returns: (warning_label, decay_score)
     """
     cfg = MOMENTUM_DECAY
     n = len(pcts)
     if n < 3:
-        return 1.0, '', 0
+        return '', 0
 
     # Only check stocks above the minimum percentile tier
     if avg_pct < cfg['min_pct_tier']:
-        return 1.0, '', 0
+        return '', 0
 
     # Get latest available values
     def _get_latest(lst):
@@ -2455,7 +2341,7 @@ def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
     latest_r6m = _get_latest(ret_6m) if ret_6m else None
 
     if latest_r7 is None and latest_r30 is None:
-        return 1.0, '', 0
+        return '', 0
 
     r7 = latest_r7 if latest_r7 is not None else 0
     r30 = latest_r30 if latest_r30 is not None else 0
@@ -2516,16 +2402,8 @@ def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
         elif avg_pct >= 70:
             decay_score = int(decay_score * 0.75)
 
-    # v6.1: Smooth continuous multiplier (no step-function cliffs)
-    # Maps decay_score 0-100 smoothly to multiplier 1.0-0.93
-    # Formula: mult = 1.0 - (decay_score / 100) * (1.0 - high_decay_mult)
-    # Score 0 → ×1.00, Score 15 → ×0.9895, Score 35 → ×0.9755, Score 60 → ×0.958, Score 100 → ×0.93
+    # v9.0: Label only (multiplier removed — decay is exit-system-only, not a scoring multiplier)
     if decay_score > 0:
-        max_penalty_depth = 1.0 - cfg['high_decay_multiplier']  # 0.07
-        multiplier = 1.0 - (decay_score / 100.0) * max_penalty_depth
-        multiplier = float(np.clip(multiplier, cfg['high_decay_multiplier'], 1.0))
-
-        # Label based on thresholds (for UI display)
         if decay_score >= cfg['severe_threshold']:
             label = 'DECAY_HIGH'
         elif decay_score >= cfg['moderate_threshold']:
@@ -2535,10 +2413,9 @@ def _calc_momentum_decay(ret_7d: List[float], ret_30d: List[float],
         else:
             label = ''
     else:
-        multiplier = 1.0
         label = ''
 
-    return multiplier, label, decay_score
+    return label, decay_score
 
 
 # ── Hurst Exponent Engine (v3.0) ──
@@ -3464,7 +3341,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         quick_filter = st.radio("Preset", ['None', '🚀 Rockets Only', '🎯 Elite Only',
                                            '📈 Climbers', '⚡ Breakouts', '🏔️ At Peak',
                                            '🔥 Momentum', '💥 Crashes', '⛰️ Topping',
-                                           '⏳ Consolidating', 'TMI > 70', 'Positional > 80'],
+                                           '⏳ Consolidating', 'Conviction ≥ 65', 'Positional > 80'],
                                 index=0, key='sb_quick')
 
         st.markdown("---")
@@ -3544,8 +3421,8 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         df = df[df['pattern_key'] == 'topping_out']
     elif qf == '⏳ Consolidating':
         df = df[df['pattern_key'] == 'consolidating']
-    elif qf == 'TMI > 70':
-        df = df[df['tmi'] > 70]
+    elif qf == 'Conviction ≥ 65':
+        df = df[df['conviction'] >= 65] if 'conviction' in df.columns else df
     elif qf == 'Positional > 80':
         df = df[df['positional'] > 80]
 
@@ -3566,11 +3443,10 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
 
     # ── Ensure all v2.3 columns exist (defensive) ──
     for col, default in [('price_tag', ''), ('signal_tags', ''), ('decay_tag', ''),
-                         ('decay_label', ''), ('decay_score', 0), ('decay_multiplier', 1.0),
+                         ('decay_label', ''), ('decay_score', 0),
                          ('sector_alpha_tag', 'NEUTRAL'), ('sector_alpha_value', 0),
                          ('price_label', 'NEUTRAL'), ('price_alignment', 50),
-                         ('price_multiplier', 1.0), ('pre_price_score', 0),
-                         ('pre_decay_score', 0), ('grade_emoji', '📉'),
+                         ('grade_emoji', '📉'),
                          ('pattern_key', 'neutral'), ('pattern', '➖ Neutral'),
                          ('sector', ''), ('return_quality', 50),
                          ('company_name', ''), ('category', ''), ('industry', '')]:
@@ -3846,21 +3722,21 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             st.plotly_chart(fig_health, use_container_width=True)
 
         with h2:
-            above70 = int((filtered_df['pre_price_score'] >= 70).sum()) if 'pre_price_score' in filtered_df.columns else 0
-            price_boosted = int((filtered_df['price_multiplier'] > 1.01).sum())
-            price_pen = int((filtered_df['price_multiplier'] < 0.99).sum())
-            decay_pen = int((filtered_df['decay_multiplier'] < 0.99).sum())
+            above70 = int((filtered_df['trajectory_score'] >= 70).sum())
+            high_conviction = int((filtered_df['conviction'] >= 65).sum()) if 'conviction' in filtered_df.columns else 0
+            confirmed_n = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum()) if 'price_label' in filtered_df.columns else 0
+            decay_any_n = int(filtered_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE']).sum()) if 'decay_label' in filtered_df.columns else 0
 
             fig_pipe = go.Figure(go.Waterfall(
                 orientation="v",
-                measure=["absolute", "absolute", "relative", "relative", "relative", "absolute"],
-                x=["Universe", "Pre≥70", "💰 Boost", "⚠️ Price↓", "🔻 Decay↓", "S+A Final"],
-                y=[shown, above70, price_boosted, -price_pen, -decay_pen, grade_s + grade_a],
+                measure=["absolute", "absolute", "relative", "relative", "absolute"],
+                x=["Universe", "T≥70", "💰 Confirmed", "🔻 Decay", "S+A Final"],
+                y=[shown, above70, confirmed_n, -decay_any_n, grade_s + grade_a],
                 connector={"line": {"color": "#30363d"}},
                 increasing={"marker": {"color": "#238636"}},
                 decreasing={"marker": {"color": "#da3633"}},
                 totals={"marker": {"color": "#FF6B35"}},
-                text=[shown, above70, f"+{price_boosted}", f"−{price_pen}", f"−{decay_pen}", grade_s + grade_a],
+                text=[shown, above70, f"+{confirmed_n}", f"−{decay_any_n}", grade_s + grade_a],
                 textposition="outside", textfont_color='#e6edf3'
             ))
             fig_pipe.update_layout(
@@ -4116,7 +3992,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         ('CSV Rank', f"#{row['current_rank']}", f"{row['last_week_change']:+d}w"),
         ('Best Rank', f"#{row['best_rank']}", ''),
         ('Total Δ', f"{row['rank_change']:+d}", 'pos' if row['rank_change'] > 0 else ''),
-        ('TMI', f"{row['tmi']:.0f}", ''),
+        ('Conviction', f"{row.get('conviction', 0)}", row.get('conviction_tag', '')),
         ('Streak', f"{row['streak']}w", ''),
         ('Price Align', f"{'💰' if price_label_display == 'PRICE_CONFIRMED' else '⚠️' if price_label_display == 'PRICE_DIVERGENT' else '➖'} {row.get('price_alignment', 50):.0f}", ''),
         ('Decay', f"{'🔻' if decay_lbl == 'DECAY_HIGH' else '⚡' if decay_lbl == 'DECAY_MODERATE' else '✅'} {row.get('decay_score', 0)}", ''),
@@ -4181,15 +4057,10 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 <span style="color:#8b949e; font-size:0.8rem;">Score</span>
                 <span style="color:{pa_color}; font-weight:700;">{row.get('price_alignment', 50):.0f}/100</span>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                <span style="color:#8b949e; font-size:0.8rem;">Multiplier</span>
-                <span style="color:{pa_color}; font-weight:600;">×{row.get('price_multiplier', 1.0):.3f}</span>
-            </div>
             <div style="display:flex; justify-content:space-between;">
                 <span style="color:#8b949e; font-size:0.8rem;">Status</span>
                 <span style="color:{pa_color}; font-weight:700;">{pa_label.replace('_', ' ')}</span>
             </div>
-            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Base Score: {row.get('pre_price_score', row['trajectory_score']):.1f}</div>
         </div>
         <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
             <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🔻 Momentum Decay</div>
@@ -4197,15 +4068,11 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 <span style="color:#8b949e; font-size:0.8rem;">Score</span>
                 <span style="color:{d_color}; font-weight:700;">{row.get('decay_score', 0)}/100</span>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                <span style="color:#8b949e; font-size:0.8rem;">Multiplier</span>
-                <span style="color:{d_color}; font-weight:600;">×{row.get('decay_multiplier', 1.0):.3f}</span>
-            </div>
             <div style="display:flex; justify-content:space-between;">
                 <span style="color:#8b949e; font-size:0.8rem;">Status</span>
                 <span style="color:{d_color}; font-weight:700;">{d_label if d_label else 'CLEAN ✅'}</span>
             </div>
-            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Unified ×{row.get('combined_mult', 1.0):.3f} → Final: {row['trajectory_score']:.1f}</div>
+            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Hurst×Wave ×{row.get('combined_mult', 1.0):.3f} → Final: {row['trajectory_score']:.1f}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -5290,14 +5157,14 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
 
     # Column selection based on detail level
     compact_cols = ['t_rank', 'ticker', 'company_name', 'category', 'trajectory_score',
-                    'grade', 'pattern', 'tmi', 'positional', 'current_rank', 'best_rank', 'rank_change', 'weeks']
+                    'grade', 'pattern', 'positional', 'current_rank', 'best_rank', 'rank_change', 'weeks']
     standard_cols = compact_cols + ['trend', 'velocity', 'acceleration', 'consistency',
                                      'resilience', 'sector', 'industry', 'streak',
                                      'last_week_change', 'avg_rank', 'rank_volatility']
     full_cols = standard_cols + ['worst_rank', 'market_state', 'latest_patterns',
                                   'grade_emoji', 'pattern_key',
-                                  'price_alignment', 'price_multiplier', 'price_label',
-                                  'decay_score', 'decay_multiplier', 'decay_label',
+                                  'price_alignment', 'price_label',
+                                  'decay_score', 'decay_label',
                                   'sector_alpha_tag', 'sector_alpha_value', 'signal_tags']
 
     if detail == 'Compact':
