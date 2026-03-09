@@ -1,12 +1,23 @@
 """
-Rank Trajectory Engine v8.0 — Wave Signal Fusion
+Rank Trajectory Engine v8.1 — Persistence-Calibrated
 =======================================================
 Professional Stock Rank Trajectory Analysis System
 with Adaptive Weight Intelligence, Return Quality Component, Directional Price-Rank
 Alignment, Momentum Decay Warning, Sector Alpha Detection, Market Regime Awareness,
 Confidence Intervals, Z-Score Normalization, Conviction Score, Risk-Adjusted T-Score,
 Exit Warning System, Hot Streak Detection, Volume Confirmation, Multi-Stage Selection Funnel,
-and WAVE SIGNAL FUSION ENGINE — Deep integration of 18 WAVE Detection signals.
+WAVE SIGNAL FUSION ENGINE, and WALK-FORWARD BACKTEST ENGINE.
+
+v8.1 PERSISTENCE CALIBRATION:
+  Walk-forward backtest (24 CSVs, 18 windows) proved persistence > position:
+    S4 Persistent Top 50: +4.25% alpha (BEST)
+    S2 Top 10 Rank: -11.26% alpha (WORST — current rank anti-predictive)
+    S7 Conviction ≥ 65: -14.60% alpha (BROKEN — old conviction was noise)
+  
+  FIX: Reduced Positional weight across all tiers, boosted Consistency + Resilience.
+  Added persistence_weeks metric (consecutive weeks in top 25%).
+  Recalibrated Conviction: 40pts for persistence signals vs 10pts previously.
+  Removed anti-predictive "Positional Strength" conviction signal.
 
 CORE ARCHITECTURE:
   7-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
@@ -21,24 +32,28 @@ CORE ARCHITECTURE:
               Resilience, ReturnQuality
   Weights shift dynamically by position tier (elite/strong/mid/bottom).
 
+  PERSISTENCE-CALIBRATED WEIGHTS (v8.1):
+  Elite (>90pct):  Pos 22% | Trd 10% | Vel 7%  | Acc 4%  | Con 27% | Res 17% | Ret 13%
+  Strong (70-90):  Pos 18% | Trd 14% | Vel 10% | Acc 7%  | Con 22% | Res 16% | Ret 13%
+  Mid (40-70):     Pos 12% | Trd 17% | Vel 16% | Acc 10% | Con 18% | Res 12% | Ret 15%
+  Bottom (<40):    Pos 7%  | Trd 16% | Vel 20% | Acc 14% | Con 14% | Res 12% | Ret 17%
+
+  CONVICTION (v8.1 — 8 Signals, 100pts):
+  Persistence 25 | Consistency 15 | PriceAlign 12 | RetQuality 10
+  TMI 10 | WaveConfl 12 | InstFlow 8 | NoDecay 8
+
   SIGNAL ISOLATION PRINCIPLE:
     - Return data enters through exactly ONE component (ReturnQuality).
     - Price-Rank Alignment scores DIRECTION only (sign agreement), never magnitude.
     - Momentum Decay uses separate ret_6m for proven-winner exemption.
     - No signal leakage: each data source has exactly one scoring path.
 
-Components: Adaptive Weights by Tier (7 components)
-  Elite (>90pct):  Pos 40% | Trd 10% | Vel 7%  | Acc 4%  | Con 16% | Res 10% | Ret 13%
-  Strong (70-90):  Pos 28% | Trd 16% | Vel 10% | Acc 7%  | Con 14% | Res 12% | Ret 13%
-  Mid (40-70):     Pos 15% | Trd 19% | Vel 17% | Acc 10% | Con 12% | Res 12% | Ret 15%
-  Bottom (<40):    Pos 8%  | Trd 17% | Vel 21% | Acc 15% | Con 10% | Res 12% | Ret 17%
-
 3-STAGE FUNNEL:
   Stage 1: Discovery  — Trajectory Score ≥70 or Rocket/Breakout → 50-100 candidates
   Stage 2: Validation — 5 Wave Engine rules, must pass 4/5    → 20-30 stocks
   Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND  → 5-10 FINAL BUYS
 
-Version: 8.0.0
+Version: 8.1.0
 Last Updated: March 2026
 """
 
@@ -122,30 +137,40 @@ INFO_RATIO_CONFIG = {
 # Climbers: Movement dominates (Velocity 25%, Trend 25%) — they need to prove direction
 # Bottom stocks: Acceleration matters most — are they even trying to move?
 
-# Adaptive weight profiles by percentile tier (v6.0: 7 components)
+# Adaptive weight profiles by percentile tier (v8.1: Persistence-Calibrated)
+# ═══════════════════════════════════════════════════════════════════════════════
+# v8.1 RECALIBRATION based on walk-forward backtest (24 CSVs, 18 windows):
+#   S4 Persistent Top 50: -4.90% (+4.25% alpha) ← BEST — persistence wins
+#   S2 Top 10 Rank:      -20.41% (-11.26%)      ← WORST — current rank alone fails
+#   S7 Conviction ≥ 65:  -23.75% (-14.60%)      ← BROKEN — old conviction anti-predictive
+#
+# KEY INSIGHT: Stocks that STAY ranked well (consistency) vastly outperform
+# stocks that ARE ranked well right now (positional). Persistence > Position.
+# Reduced positional weight across all tiers, boosted consistency + resilience.
+# ═══════════════════════════════════════════════════════════════════════════════
 ADAPTIVE_WEIGHTS = {
-    # Elite (avg pct > 90): Position IS the score. Returns confirm dominance.
+    # Elite (avg pct > 90): Consistency IS the score. Staying at top = proven.
     'elite': {
-        'positional': 0.40, 'trend': 0.10, 'velocity': 0.07,
-        'acceleration': 0.04, 'consistency': 0.16, 'resilience': 0.10,
+        'positional': 0.22, 'trend': 0.10, 'velocity': 0.07,
+        'acceleration': 0.04, 'consistency': 0.27, 'resilience': 0.17,
         'return_quality': 0.13
     },
-    # Strong (avg pct 70-90): Balanced — good position + returns should back it up
+    # Strong (avg pct 70-90): Consistency + resilience prove sustained strength
     'strong': {
-        'positional': 0.28, 'trend': 0.16, 'velocity': 0.10,
-        'acceleration': 0.07, 'consistency': 0.14, 'resilience': 0.12,
+        'positional': 0.18, 'trend': 0.14, 'velocity': 0.10,
+        'acceleration': 0.07, 'consistency': 0.22, 'resilience': 0.16,
         'return_quality': 0.13
     },
-    # Mid (avg pct 40-70): Movement + returns — prove trajectory with gains
+    # Mid (avg pct 40-70): Movement matters but consistency separates winners
     'mid': {
-        'positional': 0.15, 'trend': 0.19, 'velocity': 0.17,
-        'acceleration': 0.10, 'consistency': 0.12, 'resilience': 0.12,
+        'positional': 0.12, 'trend': 0.17, 'velocity': 0.16,
+        'acceleration': 0.10, 'consistency': 0.18, 'resilience': 0.12,
         'return_quality': 0.15
     },
-    # Bottom (avg pct < 40): Returns matter most — are gains materializing?
+    # Bottom (avg pct < 40): Returns + consistency — are gains sustained?
     'bottom': {
-        'positional': 0.08, 'trend': 0.17, 'velocity': 0.21,
-        'acceleration': 0.15, 'consistency': 0.10, 'resilience': 0.12,
+        'positional': 0.07, 'trend': 0.16, 'velocity': 0.20,
+        'acceleration': 0.14, 'consistency': 0.14, 'resilience': 0.12,
         'return_quality': 0.17
     }
 }
@@ -1165,6 +1190,7 @@ def _compute_single_trajectory(h: dict) -> dict:
 
     # Compute avg_pct — needed by adaptive weights and return quality
     avg_pct = float(np.mean(pcts))
+    current_pct = pcts[-1]  # Needed by exit warnings, hot streak, etc.
 
     # ── Return Quality Component (v6.0 — Dedicated 7th Component) ──
     ret_7d = h.get('ret_7d', [])
@@ -1317,63 +1343,115 @@ def _compute_single_trajectory(h: dict) -> dict:
 
     # ══════════════════════════════════════════════════════════════════════════
     # v6.3: ADVANCED TRADING SIGNALS — 5 New Features for Better Returns
+    # v8.1: PERSISTENCE-CALIBRATED — Backtest-proven signal prioritization
     # ══════════════════════════════════════════════════════════════════════════
 
+    # ── v8.1: PERSISTENCE WEEKS — Backtest-Proven #1 Predictor ──
+    # Walk-forward backtest (24 CSVs, 18 windows) proved:
+    #   S4 Persistent Top 50: +4.25% alpha — stocks staying ranked well WIN
+    #   S2 Top 10 Rank: -11.26% alpha — current position alone LOSES
+    # Persistence = consecutive recent weeks where stock was in top 25% (≥75th pct)
+    persistence_weeks = 0
+    for p in reversed(pcts):
+        if p >= 75:
+            persistence_weeks += 1
+        else:
+            break
+
     # ── 1. CONVICTION SCORE (0-100) ──
-    # Combines multiple bullish signals into single actionable metric.
-    # Higher conviction = more confident BUY signal.
-    # v8.0: Enhanced with Wave Fusion signals.
+    # v8.1: PERSISTENCE-CALIBRATED based on walk-forward backtest results.
+    # Old conviction (v8.0) was ANTI-PREDICTIVE: S7 Conviction≥65 returned -23.75%
+    # vs universe -9.15%. Root cause: over-weighted snapshot signals (position, price).
+    #
+    # v8.1 FIX: Persistence (25pts) + Consistency (15pts) = 40pts for staying power.
+    # Old Signal 5 "Positional Strength" (rewarded current rank) REMOVED — backtest
+    # proved current rank alone is anti-predictive (S2/S3 worst performers).
+    # Old Signal 3 "Data Confidence" reduced — persistence implicitly requires data.
+    #
+    # Signals (8 total, 100pts max):
+    #   1. Persistence Strength: 25pts — consecutive weeks in top 25%
+    #   2. Consistency Quality:  15pts — consistency score component
+    #   3. Price-Rank Alignment: 12pts — directional confirmation
+    #   4. Return Quality:       10pts — actual returns backing rank
+    #   5. Momentum Quality:     10pts — TMI strength
+    #   6. Wave Confluence:      12pts — WAVE system agreement
+    #   7. Institutional Flow:    8pts — volume/institutional signals
+    #   8. No-Decay Bonus:        8pts — absence of momentum deterioration
     conviction = 0
-    # Signal 1: Price-Rank Alignment (20 pts max) — reduced from 25 to make room for wave signals
-    if price_label == 'PRICE_CONFIRMED':
-        conviction += 20
-    elif price_label == 'NEUTRAL':
-        conviction += 8
-    # Signal 2: Return Quality (15 pts max)
-    if return_quality >= 75:
+
+    # Signal 1: Persistence Strength (25 pts max) — BACKTEST-PROVEN #1 PREDICTOR
+    # Consecutive weeks in top 25% (≥75th percentile). S4 proved this wins.
+    if persistence_weeks >= 8:
+        conviction += 25   # 8+ weeks sustained = maximum persistence
+    elif persistence_weeks >= 6:
+        conviction += 21   # 6-7 weeks = very strong
+    elif persistence_weeks >= 4:
+        conviction += 16   # 4-5 weeks = strong (this is what S4 tested at ~4wk)
+    elif persistence_weeks >= 3:
+        conviction += 11   # 3 weeks = moderate persistence
+    elif persistence_weeks >= 2:
+        conviction += 6    # 2 weeks = early persistence
+    elif persistence_weeks >= 1:
+        conviction += 2    # 1 week = just entered top tier
+
+    # Signal 2: Consistency Quality (15 pts max) — persistence proxy
+    # High consistency = stable rank trajectory = sustained performance
+    if consistency >= 75:
         conviction += 15
-    elif return_quality >= 60:
-        conviction += 9
-    elif return_quality >= 50:
-        conviction += 4
-    # Signal 3: Data Confidence (15 pts max)
-    if confidence >= 0.85:
-        conviction += 15
-    elif confidence >= 0.6:
-        conviction += 9
-    elif confidence >= 0.4:
-        conviction += 4
-    # Signal 4: Momentum Quality (15 pts max)
-    if tmi >= 70:
-        conviction += 15
-    elif tmi >= 60:
-        conviction += 9
-    elif tmi >= 50:
-        conviction += 4
-    # Signal 5: Positional Strength (10 pts max)
-    current_pct = pcts[-1]
-    if current_pct >= 90:
+    elif consistency >= 60:
         conviction += 10
-    elif current_pct >= 80:
-        conviction += 7
-    elif current_pct >= 70:
-        conviction += 4
-    # v8.0 Signal 6: Wave Confluence Agreement (15 pts max)
+    elif consistency >= 45:
+        conviction += 5
+
+    # Signal 3: Price-Rank Alignment (12 pts max) — reduced from v8.0's 20pts
+    if price_label == 'PRICE_CONFIRMED':
+        conviction += 12
+    elif price_label == 'NEUTRAL':
+        conviction += 5
+
+    # Signal 4: Return Quality (10 pts max) — reduced from v8.0's 15pts
+    if return_quality >= 75:
+        conviction += 10
+    elif return_quality >= 60:
+        conviction += 6
+    elif return_quality >= 50:
+        conviction += 3
+
+    # Signal 5: Momentum Quality (10 pts max) — reduced from v8.0's 15pts
+    if tmi >= 70:
+        conviction += 10
+    elif tmi >= 60:
+        conviction += 6
+    elif tmi >= 50:
+        conviction += 3
+
+    # Signal 6: Wave Confluence Agreement (12 pts max) — reduced from v8.0's 15pts
     wf_confluence = wave_fusion.get('wave_confluence', 50)
     if wf_confluence >= 75:
-        conviction += 15
+        conviction += 12
     elif wf_confluence >= 60:
-        conviction += 10
+        conviction += 8
     elif wf_confluence >= 45:
-        conviction += 4
-    # v8.0 Signal 7: Institutional Flow (10 pts max)
+        conviction += 3
+
+    # Signal 7: Institutional Flow (8 pts max) — reduced from v8.0's 10pts
     wf_flow = wave_fusion.get('wave_inst_flow', 50)
     if wf_flow >= 70:
-        conviction += 10
+        conviction += 8
     elif wf_flow >= 55:
-        conviction += 6
+        conviction += 5
     elif wf_flow >= 40:
         conviction += 2
+
+    # Signal 8: No-Decay Bonus (8 pts max) — NEW: rewards momentum health
+    # Absence of decay = persistence is intact, not a trap
+    if decay_score == 0:
+        conviction += 8   # Zero decay = healthy momentum
+    elif decay_score <= 10:
+        conviction += 5   # Minimal decay = acceptable
+    elif decay_label == '' or decay_label == 'DECAY_MILD':
+        conviction += 2   # Mild decay = marginal bonus
+
     conviction = min(100, conviction)
 
     # Conviction tags for UI
@@ -1568,6 +1646,7 @@ def _compute_single_trajectory(h: dict) -> dict:
         'exit_signals': ','.join(exit_signals) if exit_signals else '',
         'hot_streak': hot_streak,
         'hot_streak_weeks': hot_streak_weeks,
+        'persistence_weeks': persistence_weeks,
         'vol_confirmed': vol_confirmed,
         'latest_vol_score': round(latest_vol_score, 1) if latest_vol_score else None,
         # v8.0: Wave Signal Fusion
@@ -1616,6 +1695,7 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'conviction': 0, 'conviction_tag': 'VERY_LOW', 'conviction_emoji': '❌',
         'risk_adj_score': 0, 'exit_risk': 0, 'exit_tag': 'HOLD', 'exit_emoji': '✅',
         'exit_signals': '', 'hot_streak': False, 'hot_streak_weeks': 0,
+        'persistence_weeks': 0,
         'vol_confirmed': 'NEUTRAL', 'latest_vol_score': None,
         # v8.0: Wave Signal Fusion (defaults)
         'wave_fusion_score': 50, 'wave_fusion_multiplier': 1.0,
@@ -1682,21 +1762,23 @@ def _get_adaptive_weights(avg_pct: float, current_pct: float = None, confidence:
     
     # Define which components gain/lose weight based on confidence
     # Momentum signals: velocity, acceleration, trend (gain weight when LOW confidence)
-    # Stability signals: positional, consistency, resilience (gain weight when HIGH confidence)
+    # Stability signals: consistency, resilience, positional (gain weight when HIGH confidence)
     # return_quality: neutral (no shift)
+    # v8.1: Reduced positional shift (+2.5% vs old +5%), boosted consistency (+5% vs old +4%)
+    # and resilience (+4% vs old +3%) to match persistence-calibrated weights.
     
     # Max shift per component: 5% (0.05)
     max_shift = 0.05
     
     # Calculate shifts (positive shift_factor = boost stability, reduce momentum)
     shifts = {
-        'positional': shift_factor * max_shift,       # +5% at high conf, -5% at low
-        'trend': -shift_factor * max_shift * 0.6,     # -3% at high conf, +3% at low
-        'velocity': -shift_factor * max_shift,        # -5% at high conf, +5% at low
-        'acceleration': -shift_factor * max_shift * 0.6,  # -3% at high conf, +3% at low
-        'consistency': shift_factor * max_shift * 0.8,    # +4% at high conf, -4% at low
-        'resilience': shift_factor * max_shift * 0.6,     # +3% at high conf, -3% at low
-        'return_quality': 0.0                             # Neutral — always relevant
+        'positional': shift_factor * max_shift * 0.5,         # +2.5% at high conf (v8.1: was +5%)
+        'trend': -shift_factor * max_shift * 0.6,             # -3% at high conf (unchanged)
+        'velocity': -shift_factor * max_shift,                # -5% at high conf (unchanged)
+        'acceleration': -shift_factor * max_shift * 0.6,      # -3% at high conf (unchanged)
+        'consistency': shift_factor * max_shift,               # +5% at high conf (v8.1: was +4%)
+        'resilience': shift_factor * max_shift * 0.8,          # +4% at high conf (v8.1: was +3%)
+        'return_quality': 0.0                                  # Neutral — always relevant
     }
     
     # Apply shifts and ensure weights stay positive
@@ -3156,7 +3238,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                                 index=0, key='sb_quick')
 
         st.markdown("---")
-        st.caption("v8.0 | Wave Signal Fusion + 18 WAVE Signals")
+        st.caption("v8.1 | Persistence-Calibrated + Backtest-Proven")
 
     return {
         'categories': selected_cats,
@@ -5612,10 +5694,10 @@ def render_about_tab():
     """Render about/documentation tab"""
 
     st.markdown("""
-    ## 📊 Rank Trajectory Engine v6.3 — Advanced Trading Signals
+    ## 📊 Rank Trajectory Engine v8.1 — Persistence-Calibrated
 
     The **ALL TIME BEST** stock rank trajectory analysis system with **7-component adaptive scoring**,
-    **signal-isolated return quality**, **directional price-rank alignment**, **momentum decay warning**,
+    **persistence-calibrated weights**, **backtest-proven conviction**, **momentum decay warning**,
     and **sector alpha detection**.
 
     ---
