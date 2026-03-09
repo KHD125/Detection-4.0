@@ -1,16 +1,21 @@
 """
-Rank Trajectory Engine v6.3 — Advanced Trading Signals
+Rank Trajectory Engine v8.0 — Wave Signal Fusion
 =======================================================
 Professional Stock Rank Trajectory Analysis System
 with Adaptive Weight Intelligence, Return Quality Component, Directional Price-Rank
 Alignment, Momentum Decay Warning, Sector Alpha Detection, Market Regime Awareness,
 Confidence Intervals, Z-Score Normalization, Conviction Score, Risk-Adjusted T-Score,
-Exit Warning System, Hot Streak Detection, Volume Confirmation, and Multi-Stage Selection Funnel.
+Exit Warning System, Hot Streak Detection, Volume Confirmation, Multi-Stage Selection Funnel,
+and WAVE SIGNAL FUSION ENGINE — Deep integration of 18 WAVE Detection signals.
 
 CORE ARCHITECTURE:
   7-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
-    → Hurst Persistence Multiplier → Directional Price-Rank Alignment
-    → Momentum Decay Penalty → Sector Alpha Tag
+    → Unified Multiplier (Hurst × Wave Fusion × Price Alignment × Momentum Decay)
+    → Sector Alpha Tag
+
+  Wave Signal Fusion: Cross-validates WAVE Detection scores with Trajectory calculations.
+    4 Fusion Signals: Confluence (35%) + Institutional Flow (30%) + Momentum Harmony (20%)
+    + Fundamental Quality (15%) → Fusion Multiplier ×0.92 to ×1.10
 
   Components: Positional, Trend, Velocity, Acceleration, Consistency,
               Resilience, ReturnQuality
@@ -33,7 +38,7 @@ Components: Adaptive Weights by Tier (7 components)
   Stage 2: Validation — 5 Wave Engine rules, must pass 4/5    → 20-30 stocks
   Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND  → 5-10 FINAL BUYS
 
-Version: 6.3.0
+Version: 8.0.0
 Last Updated: March 2026
 """
 
@@ -202,6 +207,44 @@ SECTOR_ALPHA = {
     'outperform_z': 0.5,             # Z-score above this = outperforming sector
     'aligned_z': -0.5,              # Z-score above this = aligned with sector
     'beta_sector_min': 60,           # Sector avg must be > this for beta detection
+}
+
+# ── Wave Signal Fusion Configuration (v8.0) ──
+# Cross-validates WAVE Detection's 18 ignored signals with Trajectory Engine calculations.
+# When BOTH systems agree a stock is strong → high conviction.
+# When they disagree → uncertainty flag.
+WAVE_FUSION = {
+    # Fusion signal weights (must sum to 1.0)
+    'confluence_weight': 0.35,           # Agreement between WAVE scoring and Trajectory
+    'flow_weight': 0.30,                 # Institutional money flow strength
+    'harmony_weight': 0.20,              # WAVE's momentum harmony (0-4)
+    'fundamental_weight': 0.15,          # EPS/PE quality gate
+
+    # Multiplier range
+    'max_boost': 1.10,                   # Maximum fusion boost (strong agreement)
+    'max_penalty': 0.92,                 # Maximum fusion penalty (strong conflict)
+    'neutral_zone_lo': 42,               # Below this → penalty
+    'neutral_zone_hi': 58,               # Above this → boost
+
+    # Confluence thresholds (WAVE vs Trajectory agreement)
+    'strong_agree_pct_diff': 10,         # Percentile difference for "strong agreement"
+    'agree_pct_diff': 25,                # Percentile difference for "agreement"
+    'disagree_pct_diff': 45,             # Percentile difference for "disagreement"
+
+    # Institutional flow scoring
+    'money_flow_strong': 50.0,           # money_flow_mm above this = strong flow
+    'money_flow_moderate': 10.0,         # money_flow_mm above this = moderate flow
+    'vmi_strong': 65,                    # VMI above this = strong volume-momentum
+    'vmi_moderate': 40,                  # VMI above this = moderate
+    'rvol_hot': 2.0,                     # RVOL above this = hot volume
+    'rvol_active': 1.2,                  # RVOL above this = active volume
+
+    # Fundamental quality thresholds
+    'eps_growth_strong': 20.0,           # EPS change % for "strong growth"
+    'eps_growth_moderate': 5.0,          # EPS change % for "moderate growth"
+    'pe_reasonable_max': 50.0,           # PE ratio ceiling for "reasonable"
+    'pe_value_max': 20.0,                # PE ratio ceiling for "value"
+    'pe_negative_penalty': True,         # Penalize negative PE (loss-making)
 }
 
 # Funnel Stage Defaults
@@ -506,6 +549,25 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                     'from_high_pct': [],      # v2.3: Distance from 52w high
                     'momentum_score': [],     # v2.3: Wave engine momentum score
                     'volume_score': [],       # v2.3: Wave engine volume score
+                    # ── v8.0: Wave Signal Fusion — 18 previously ignored columns ──
+                    'position_score': [],     # WAVE's 52-week position scoring
+                    'acceleration_score': [], # WAVE's momentum acceleration
+                    'breakout_score': [],     # WAVE's breakout detection (4 components)
+                    'rvol_score': [],         # WAVE's relative volume quality
+                    'pe': [],                 # Price/Earnings ratio
+                    'eps_current': [],        # Current EPS
+                    'eps_change_pct': [],     # EPS change percentage
+                    'from_low_pct': [],       # Distance from 52-week low
+                    'ret_1d': [],             # 1-day return (intraday momentum)
+                    'ret_1y': [],             # 1-year return (long-term trend)
+                    'rvol': [],               # Raw relative volume
+                    'vmi': [],                # Volume-Momentum Index
+                    'money_flow_mm': [],      # Money flow in millions
+                    'position_tension': [],   # Position tension metric
+                    'momentum_harmony': [],   # Momentum harmony (0-4)
+                    'eps_tier': [],           # EPS tier classification
+                    'pe_tier': [],            # PE tier classification
+                    'overall_market_strength': [],  # Market strength metric
                     'company_name': '', 'category': '', 'sector': '',
                     'industry': '', 'market_state': '', 'patterns': ''
                 }
@@ -530,7 +592,17 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                 ('ret_7d', 'ret_7d'), ('ret_30d', 'ret_30d'), ('ret_3m', 'ret_3m'),
                 ('ret_6m', 'ret_6m'),
                 ('from_high_pct', 'from_high_pct'), ('momentum_score', 'momentum_score'),
-                ('volume_score', 'volume_score')
+                ('volume_score', 'volume_score'),
+                # v8.0: Wave Signal Fusion — 18 previously ignored columns
+                ('position_score', 'position_score'), ('acceleration_score', 'acceleration_score'),
+                ('breakout_score', 'breakout_score'), ('rvol_score', 'rvol_score'),
+                ('pe', 'pe'), ('eps_current', 'eps_current'),
+                ('eps_change_pct', 'eps_change_pct'), ('from_low_pct', 'from_low_pct'),
+                ('ret_1d', 'ret_1d'), ('ret_1y', 'ret_1y'),
+                ('rvol', 'rvol'), ('vmi', 'vmi'),
+                ('money_flow_mm', 'money_flow_mm'), ('position_tension', 'position_tension'),
+                ('momentum_harmony', 'momentum_harmony'),
+                ('overall_market_strength', 'overall_market_strength'),
             ]:
                 col_val = row.get(col_name, None)
                 if col_val is not None and pd.notna(col_val):
@@ -546,6 +618,11 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                 val = row.get(fld, '')
                 if pd.notna(val) and str(val).strip():
                     h[fld] = str(val).strip()
+
+            # v8.0: Track tier classifications (string columns)
+            for tier_col in ['eps_tier', 'pe_tier']:
+                tier_val = row.get(tier_col, '')
+                h[tier_col].append(str(tier_val).strip() if pd.notna(tier_val) else '')
 
     # ── Step 3: Compute trajectories for all tickers ──
     results = []
@@ -694,6 +771,368 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
 
 
 # ============================================
+# WAVE SIGNAL FUSION ENGINE (v8.0)
+# ============================================
+# Deep integration of 18 previously ignored WAVE Detection signals.
+# Cross-validates WAVE's independent scoring with Trajectory Engine calculations.
+# 4 Fusion Signals → Fusion Score → Fusion Multiplier (×0.92 to ×1.10)
+
+def _latest_valid(lst, default=None):
+    """Get the latest non-NaN value from a history list."""
+    if not lst:
+        return default
+    for v in reversed(lst):
+        if v is not None and not (isinstance(v, float) and np.isnan(v)):
+            return v
+    return default
+
+
+def _avg_recent(lst, window=4, default=None):
+    """Average of last `window` valid values."""
+    if not lst:
+        return default
+    valid = [v for v in lst[-window:] if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    return float(np.mean(valid)) if valid else default
+
+
+def _calc_wave_confluence(h: dict, traj_components: dict) -> float:
+    """
+    Wave Confluence Score — Agreement between WAVE Detection and Trajectory Engine.
+
+    CORE INSIGHT: WAVE Detection and Trajectory Engine independently analyze the same stock.
+    WAVE scores the stock's CURRENT state using cross-sectional analysis (vs all stocks this week).
+    Trajectory scores the stock's TRAJECTORY over time (how ranks change week-over-week).
+
+    When BOTH systems agree a stock is strong → HIGH confidence, genuine quality.
+    When they disagree → uncertain, one system may be lagging or wrong.
+
+    4 Cross-Validation Channels:
+      1. WAVE position_score vs Trajectory positional (40%)
+      2. WAVE acceleration_score vs Trajectory acceleration (25%)
+      3. WAVE breakout_score vs Trajectory velocity (20%)
+      4. WAVE momentum_score vs Trajectory trend (15%)
+
+    Each channel scores 0-100 based on agreement level.
+    """
+    cfg = WAVE_FUSION
+    channels = []
+
+    # ── Channel 1: Position Agreement (40%) ──
+    # WAVE position_score: 52-week range analysis (0-100)
+    # Trajectory positional: rank percentile quality over time (0-100)
+    wave_pos = _latest_valid(h.get('position_score', []))
+    traj_pos = traj_components.get('positional', 50)
+    if wave_pos is not None:
+        diff = abs(wave_pos - traj_pos)
+        if diff <= cfg['strong_agree_pct_diff']:
+            ch_score = 85 + (cfg['strong_agree_pct_diff'] - diff) / cfg['strong_agree_pct_diff'] * 15
+        elif diff <= cfg['agree_pct_diff']:
+            t = (diff - cfg['strong_agree_pct_diff']) / (cfg['agree_pct_diff'] - cfg['strong_agree_pct_diff'])
+            ch_score = 60 + (1 - t) * 25
+        elif diff <= cfg['disagree_pct_diff']:
+            t = (diff - cfg['agree_pct_diff']) / (cfg['disagree_pct_diff'] - cfg['agree_pct_diff'])
+            ch_score = 30 + (1 - t) * 30
+        else:
+            ch_score = max(5, 30 - (diff - cfg['disagree_pct_diff']) * 0.5)
+        # Boost if BOTH are high (agreement at the top matters more)
+        if wave_pos > 70 and traj_pos > 70:
+            ch_score = min(100, ch_score + 8)
+        channels.append(('position', ch_score, 0.40))
+
+    # ── Channel 2: Acceleration Agreement (25%) ──
+    # WAVE acceleration_score: momentum slope comparison (0-100)
+    # Trajectory acceleration: rate-of-change of velocity (0-100)
+    wave_accel = _latest_valid(h.get('acceleration_score', []))
+    traj_accel = traj_components.get('acceleration', 50)
+    if wave_accel is not None:
+        diff = abs(wave_accel - traj_accel)
+        if diff <= cfg['strong_agree_pct_diff']:
+            ch_score = 85 + (cfg['strong_agree_pct_diff'] - diff) / cfg['strong_agree_pct_diff'] * 15
+        elif diff <= cfg['agree_pct_diff']:
+            t = (diff - cfg['strong_agree_pct_diff']) / (cfg['agree_pct_diff'] - cfg['strong_agree_pct_diff'])
+            ch_score = 55 + (1 - t) * 30
+        elif diff <= cfg['disagree_pct_diff']:
+            t = (diff - cfg['agree_pct_diff']) / (cfg['disagree_pct_diff'] - cfg['agree_pct_diff'])
+            ch_score = 25 + (1 - t) * 30
+        else:
+            ch_score = max(5, 25 - (diff - cfg['disagree_pct_diff']) * 0.5)
+        channels.append(('acceleration', ch_score, 0.25))
+
+    # ── Channel 3: Breakout/Velocity Agreement (20%) ──
+    # WAVE breakout_score: 4-component breakout detection (0-100)
+    # Trajectory velocity: position-relative rank velocity (0-100)
+    wave_brk = _latest_valid(h.get('breakout_score', []))
+    traj_vel = traj_components.get('velocity', 50)
+    if wave_brk is not None:
+        # Breakout and velocity aren't 1:1 comparable, but high breakout + high velocity = strong
+        # Use harmonic-mean-like scoring: both need to be elevated for high score
+        combined = (wave_brk * 0.55 + traj_vel * 0.45)
+        if combined >= 75:
+            ch_score = 80 + (combined - 75) / 25 * 20
+        elif combined >= 55:
+            ch_score = 50 + (combined - 55) / 20 * 30
+        elif combined >= 35:
+            ch_score = 25 + (combined - 35) / 20 * 25
+        else:
+            ch_score = max(5, combined * 0.7)
+        channels.append(('breakout', ch_score, 0.20))
+
+    # ── Channel 4: Momentum/Trend Agreement (15%) ──
+    # WAVE momentum_score: 3-component momentum (raw sigmoid + consistency + quality)
+    # Trajectory trend: weighted linear regression of percentile trajectory
+    wave_mom = _latest_valid(h.get('momentum_score', []))
+    traj_trend = traj_components.get('trend', 50)
+    if wave_mom is not None:
+        diff = abs(wave_mom - traj_trend)
+        if diff <= cfg['strong_agree_pct_diff']:
+            ch_score = 80 + (cfg['strong_agree_pct_diff'] - diff) / cfg['strong_agree_pct_diff'] * 20
+        elif diff <= cfg['agree_pct_diff']:
+            t = (diff - cfg['strong_agree_pct_diff']) / (cfg['agree_pct_diff'] - cfg['strong_agree_pct_diff'])
+            ch_score = 50 + (1 - t) * 30
+        else:
+            ch_score = max(5, 50 - (diff - cfg['agree_pct_diff']) * 0.8)
+        channels.append(('momentum', ch_score, 0.15))
+
+    # ── Composite Confluence Score ──
+    if not channels:
+        return 50.0  # No WAVE data available → neutral
+
+    total_w = sum(w for _, _, w in channels)
+    confluence = sum(s * w for _, s, w in channels) / total_w
+    return float(np.clip(confluence, 0, 100))
+
+
+def _calc_institutional_flow(h: dict) -> float:
+    """
+    Institutional Flow Signal from WAVE Detection data.
+
+    Combines 4 volume/flow metrics that WAVE Detection computes but
+    RANK TRAJECTORY previously ignored. These signals indicate whether
+    rank improvements have institutional money backing them.
+
+    4 Components:
+      1. Money Flow MM (40%) — price × volume × rvol / 1M → smart money indicator
+      2. VMI (30%) — Volume-Momentum Index (acceleration + correlation + footprint)
+      3. RVOL Score (20%) — WAVE's relative volume quality score
+      4. Overall Market Strength (10%) — Market environment context
+
+    Returns: 0-100 score (higher = stronger institutional backing)
+    """
+    cfg = WAVE_FUSION
+    components = []
+
+    # ── Component 1: Money Flow (40%) ──
+    mf = _latest_valid(h.get('money_flow_mm', []))
+    if mf is not None:
+        if mf >= cfg['money_flow_strong']:
+            mf_score = 75 + min((mf - cfg['money_flow_strong']) / cfg['money_flow_strong'] * 25, 25)
+        elif mf >= cfg['money_flow_moderate']:
+            t = (mf - cfg['money_flow_moderate']) / (cfg['money_flow_strong'] - cfg['money_flow_moderate'])
+            mf_score = 40 + t * 35
+        elif mf > 0:
+            mf_score = max(10, mf / cfg['money_flow_moderate'] * 40)
+        else:
+            mf_score = 10.0
+        components.append(('money_flow', mf_score, 0.40))
+
+    # ── Component 2: VMI — Volume-Momentum Index (30%) ──
+    vmi = _latest_valid(h.get('vmi', []))
+    if vmi is not None:
+        if vmi >= cfg['vmi_strong']:
+            vmi_score = 75 + min((vmi - cfg['vmi_strong']) / 35 * 25, 25)
+        elif vmi >= cfg['vmi_moderate']:
+            t = (vmi - cfg['vmi_moderate']) / (cfg['vmi_strong'] - cfg['vmi_moderate'])
+            vmi_score = 40 + t * 35
+        elif vmi > 0:
+            vmi_score = max(10, vmi / cfg['vmi_moderate'] * 40)
+        else:
+            vmi_score = 10.0
+        components.append(('vmi', vmi_score, 0.30))
+
+    # ── Component 3: RVOL Score (20%) ──
+    rvol_s = _latest_valid(h.get('rvol_score', []))
+    if rvol_s is not None:
+        # WAVE rvol_score is already 0-100
+        components.append(('rvol_score', float(np.clip(rvol_s, 0, 100)), 0.20))
+
+    # ── Component 4: Overall Market Strength (10%) ──
+    oms = _latest_valid(h.get('overall_market_strength', []))
+    if oms is not None:
+        # overall_market_strength is typically 0-100
+        components.append(('market_strength', float(np.clip(oms, 0, 100)), 0.10))
+
+    if not components:
+        return 50.0  # No data → neutral
+
+    total_w = sum(w for _, _, w in components)
+    flow_score = sum(s * w for _, s, w in components) / total_w
+    return float(np.clip(flow_score, 0, 100))
+
+
+def _calc_fundamental_quality(h: dict) -> float:
+    """
+    Fundamental Quality Gate from WAVE Detection data.
+
+    NOT a primary scoring driver — just a quality confirmation/penalty.
+    This system is momentum-based; fundamentals serve as a sanity check.
+
+    3 Components:
+      1. EPS Growth (40%) — eps_change_pct trend: growing earnings = real strength
+      2. PE Reasonableness (30%) — not too high, not negative
+      3. EPS Tier (30%) — WAVE's tier classification quality
+
+    Returns: 0-100 score (50 = neutral, >60 = quality confirmed, <40 = fundamental concern)
+    """
+    cfg = WAVE_FUSION
+    components = []
+
+    # ── Component 1: EPS Growth (40%) ──
+    eps_chg = _latest_valid(h.get('eps_change_pct', []))
+    if eps_chg is not None:
+        if eps_chg >= cfg['eps_growth_strong']:
+            eps_score = 80 + min((eps_chg - cfg['eps_growth_strong']) / 30 * 20, 20)
+        elif eps_chg >= cfg['eps_growth_moderate']:
+            t = (eps_chg - cfg['eps_growth_moderate']) / (cfg['eps_growth_strong'] - cfg['eps_growth_moderate'])
+            eps_score = 55 + t * 25
+        elif eps_chg >= 0:
+            eps_score = 40 + eps_chg / cfg['eps_growth_moderate'] * 15
+        elif eps_chg >= -10:
+            eps_score = 25 + (eps_chg + 10) / 10 * 15
+        else:
+            eps_score = max(5, 25 + eps_chg * 0.5)  # Deeply negative
+        components.append(('eps_growth', float(np.clip(eps_score, 0, 100)), 0.40))
+
+    # ── Component 2: PE Reasonableness (30%) ──
+    pe = _latest_valid(h.get('pe', []))
+    if pe is not None:
+        if pe < 0 and cfg['pe_negative_penalty']:
+            pe_score = 20.0  # Loss-making company
+        elif pe == 0:
+            pe_score = 30.0  # No earnings data
+        elif pe <= cfg['pe_value_max']:
+            pe_score = 85.0  # Value territory
+        elif pe <= cfg['pe_reasonable_max']:
+            t = (pe - cfg['pe_value_max']) / (cfg['pe_reasonable_max'] - cfg['pe_value_max'])
+            pe_score = 60 + (1 - t) * 25  # Reasonable
+        elif pe <= 100:
+            pe_score = 35 + (100 - pe) / 50 * 25  # Getting expensive
+        else:
+            pe_score = max(10, 35 - (pe - 100) * 0.1)  # Very expensive
+        components.append(('pe', float(np.clip(pe_score, 0, 100)), 0.30))
+
+    # ── Component 3: EPS Tier (30%) ──
+    eps_tier = h.get('eps_tier', [])
+    latest_tier = eps_tier[-1] if eps_tier else ''
+    if latest_tier and isinstance(latest_tier, str) and latest_tier.strip():
+        tier_map = {
+            'STRONG_GROWTH': 90, 'GROWTH': 75, 'MODERATE': 60,
+            'STABLE': 55, 'DECLINING': 30, 'NEGATIVE': 15, 'LOSS': 10
+        }
+        # Fuzzy match — tier names may vary
+        tier_upper = latest_tier.upper().strip()
+        tier_score = 50.0  # Default
+        for key, val in tier_map.items():
+            if key in tier_upper:
+                tier_score = val
+                break
+        components.append(('eps_tier', tier_score, 0.30))
+
+    if not components:
+        return 50.0  # No fundamental data → neutral (don't penalize)
+
+    total_w = sum(w for _, _, w in components)
+    fund_score = sum(s * w for _, s, w in components) / total_w
+    return float(np.clip(fund_score, 0, 100))
+
+
+def _compute_wave_fusion(h: dict, traj_components: dict) -> dict:
+    """
+    Wave Signal Fusion Engine (v8.0) — Master fusion function.
+
+    Cross-validates WAVE Detection's 18 signals with Trajectory Engine calculations.
+    Produces a fusion multiplier applied to the trajectory score.
+
+    Pipeline:
+      1. Wave Confluence (35%) — agreement between WAVE and Trajectory scoring
+      2. Institutional Flow (30%) — money flow + VMI + RVOL strength
+      3. Momentum Harmony (20%) — WAVE's 5-check harmony score (0-4)
+      4. Fundamental Quality (15%) — EPS growth + PE reasonableness
+
+    Returns dict with all fusion metrics.
+    """
+    cfg = WAVE_FUSION
+
+    # ── Signal 1: Wave Confluence (35%) ──
+    confluence = _calc_wave_confluence(h, traj_components)
+
+    # ── Signal 2: Institutional Flow (30%) ──
+    inst_flow = _calc_institutional_flow(h)
+
+    # ── Signal 3: Momentum Harmony (20%) ──
+    harmony_raw = _latest_valid(h.get('momentum_harmony', []), 2.0)
+    # WAVE momentum_harmony is 0-4 (0=full disagreement, 4=full harmony)
+    harmony_score = float(np.clip(harmony_raw / 4.0 * 100, 0, 100))
+
+    # ── Signal 4: Fundamental Quality (15%) ──
+    fund_quality = _calc_fundamental_quality(h)
+
+    # ── Composite Fusion Score ──
+    fusion_score = (
+        cfg['confluence_weight'] * confluence +
+        cfg['flow_weight'] * inst_flow +
+        cfg['harmony_weight'] * harmony_score +
+        cfg['fundamental_weight'] * fund_quality
+    )
+    fusion_score = float(np.clip(fusion_score, 0, 100))
+
+    # ── Convert to Multiplier (smooth curve) ──
+    lo = cfg['neutral_zone_lo']
+    hi = cfg['neutral_zone_hi']
+    if fusion_score >= hi:
+        t = (fusion_score - hi) / max(100 - hi, 1)
+        multiplier = 1.0 + t * (cfg['max_boost'] - 1.0)
+    elif fusion_score <= lo:
+        t = fusion_score / max(lo, 1)
+        multiplier = cfg['max_penalty'] + t * (1.0 - cfg['max_penalty'])
+    else:
+        multiplier = 1.0
+    multiplier = float(np.clip(multiplier, cfg['max_penalty'], cfg['max_boost']))
+
+    # ── Classification Label ──
+    if fusion_score >= 75:
+        label = 'WAVE_STRONG'
+    elif fusion_score >= 60:
+        label = 'WAVE_CONFIRMED'
+    elif fusion_score >= 40:
+        label = 'WAVE_NEUTRAL'
+    elif fusion_score >= 25:
+        label = 'WAVE_WEAK'
+    else:
+        label = 'WAVE_CONFLICT'
+
+    # ── Supplementary signals for downstream use ──
+    position_tension = _latest_valid(h.get('position_tension', []), 0)
+    from_low = _latest_valid(h.get('from_low_pct', []))
+    ret_1d = _latest_valid(h.get('ret_1d', []))
+    ret_1y = _latest_valid(h.get('ret_1y', []))
+
+    return {
+        'wave_fusion_score': round(fusion_score, 1),
+        'wave_fusion_multiplier': round(multiplier, 4),
+        'wave_fusion_label': label,
+        'wave_confluence': round(confluence, 1),
+        'wave_inst_flow': round(inst_flow, 1),
+        'wave_harmony': round(harmony_score, 1),
+        'wave_harmony_raw': round(harmony_raw, 1) if harmony_raw is not None else 2.0,
+        'wave_fundamental': round(fund_quality, 1),
+        'wave_position_tension': round(position_tension, 2) if position_tension else 0,
+        'wave_from_low': round(from_low, 1) if from_low is not None else None,
+        'wave_ret_1d': round(ret_1d, 2) if ret_1d is not None else None,
+        'wave_ret_1y': round(ret_1y, 2) if ret_1y is not None else None,
+    }
+
+
+# ============================================
 # TRAJECTORY SCORING ENGINE
 # ============================================
 
@@ -768,22 +1207,33 @@ def _compute_single_trajectory(h: dict) -> dict:
     # H > 0.55: trending → boost. H < 0.42: mean-reverting → penalize uptrends.
     hurst_multiplier = _calc_hurst_multiplier(pcts, trend)
 
+    # ── v8.0: Wave Signal Fusion Multiplier ──
+    # Cross-validates WAVE Detection's 18 signals with Trajectory calculations.
+    # Produces ×0.92 to ×1.10 based on agreement level.
+    traj_components = {
+        'positional': positional, 'trend': trend, 'velocity': velocity,
+        'acceleration': acceleration, 'consistency': consistency,
+        'resilience': resilience, 'return_quality': return_quality,
+    }
+    wave_fusion = _compute_wave_fusion(h, traj_components)
+    wave_fusion_multiplier = wave_fusion['wave_fusion_multiplier']
+
     # ── Price-Rank Alignment Multiplier (v6.1 — purely directional) ──
     price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct)
-
-    # ── v6.1: Apply multipliers with TOTAL CAP (hurst × price only) ──
-    # Theoretical range: hurst(0.94-1.06) × price(0.88-1.08) = 0.827-1.145
-    # Symmetric cap: ×0.855 to ×1.145 (matches theoretical extremes)
-    pre_price_score = trajectory_score  # Save for diagnostics
-    combined_mult = hurst_multiplier * price_multiplier
-    combined_mult = float(np.clip(combined_mult, 0.855, 1.145))
-    trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
 
     # ── Momentum Decay Warning (v6.1) ──
     # Catches stocks with good rank but deteriorating returns
     decay_multiplier, decay_label, decay_score = _calc_momentum_decay(ret_7d, ret_30d, from_high, pcts, avg_pct, ret_6m)
-    pre_decay_score = trajectory_score
-    trajectory_score = float(np.clip(trajectory_score * decay_multiplier, 0, 100))
+
+    # ── v8.0: Apply ALL multipliers with UNIFIED CAP ──
+    # All 4 multipliers combined into one capped product.
+    # Theoretical range: hurst(0.94-1.06) × fusion(0.92-1.10) × price(0.88-1.08) × decay(0.93-1.0)
+    # Without cap: 0.709 to 1.258.  Symmetric cap: ×0.78 to ×1.18
+    pre_price_score = trajectory_score  # Save for diagnostics
+    combined_mult = hurst_multiplier * wave_fusion_multiplier * price_multiplier * decay_multiplier
+    combined_mult = float(np.clip(combined_mult, 0.78, 1.18))
+    trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
+    pre_decay_score = trajectory_score  # Same as final after unified cap (kept for backward compat)
 
     # ── Grade ──
     grade, grade_emoji = get_grade(trajectory_score)
@@ -848,6 +1298,12 @@ def _compute_single_trajectory(h: dict) -> dict:
         signal_parts.append('💧')       # Weak returns
     if decay_tag:
         signal_parts.append(decay_tag)
+    # v8.0: Wave fusion signal tag
+    wf_label = wave_fusion.get('wave_fusion_label', 'WAVE_NEUTRAL')
+    if wf_label == 'WAVE_STRONG':
+        signal_parts.append('🌊')
+    elif wf_label == 'WAVE_CONFLICT':
+        signal_parts.append('🔇')
     signal_tags = ''.join(signal_parts)
 
     # ── Confidence Intervals (v6.2) ──
@@ -866,42 +1322,58 @@ def _compute_single_trajectory(h: dict) -> dict:
     # ── 1. CONVICTION SCORE (0-100) ──
     # Combines multiple bullish signals into single actionable metric.
     # Higher conviction = more confident BUY signal.
+    # v8.0: Enhanced with Wave Fusion signals.
     conviction = 0
-    # Signal 1: Price-Rank Alignment (25 pts max)
+    # Signal 1: Price-Rank Alignment (20 pts max) — reduced from 25 to make room for wave signals
     if price_label == 'PRICE_CONFIRMED':
-        conviction += 25
+        conviction += 20
     elif price_label == 'NEUTRAL':
-        conviction += 10
-    # Signal 2: Sector Leadership (20 pts max)
-    # (sector_alpha_tag set in post-processing, use return_quality as proxy here)
+        conviction += 8
+    # Signal 2: Return Quality (15 pts max)
     if return_quality >= 75:
-        conviction += 20
+        conviction += 15
     elif return_quality >= 60:
-        conviction += 12
+        conviction += 9
     elif return_quality >= 50:
-        conviction += 5
-    # Signal 3: Data Confidence (20 pts max)
+        conviction += 4
+    # Signal 3: Data Confidence (15 pts max)
     if confidence >= 0.85:
-        conviction += 20
+        conviction += 15
     elif confidence >= 0.6:
-        conviction += 12
+        conviction += 9
     elif confidence >= 0.4:
-        conviction += 6
-    # Signal 4: Momentum Quality (20 pts max)
+        conviction += 4
+    # Signal 4: Momentum Quality (15 pts max)
     if tmi >= 70:
-        conviction += 20
+        conviction += 15
     elif tmi >= 60:
-        conviction += 12
+        conviction += 9
     elif tmi >= 50:
-        conviction += 5
-    # Signal 5: Positional Strength (15 pts max)
+        conviction += 4
+    # Signal 5: Positional Strength (10 pts max)
     current_pct = pcts[-1]
     if current_pct >= 90:
-        conviction += 15
-    elif current_pct >= 80:
         conviction += 10
+    elif current_pct >= 80:
+        conviction += 7
     elif current_pct >= 70:
-        conviction += 5
+        conviction += 4
+    # v8.0 Signal 6: Wave Confluence Agreement (15 pts max)
+    wf_confluence = wave_fusion.get('wave_confluence', 50)
+    if wf_confluence >= 75:
+        conviction += 15
+    elif wf_confluence >= 60:
+        conviction += 10
+    elif wf_confluence >= 45:
+        conviction += 4
+    # v8.0 Signal 7: Institutional Flow (10 pts max)
+    wf_flow = wave_fusion.get('wave_inst_flow', 50)
+    if wf_flow >= 70:
+        conviction += 10
+    elif wf_flow >= 55:
+        conviction += 6
+    elif wf_flow >= 40:
+        conviction += 2
     conviction = min(100, conviction)
 
     # Conviction tags for UI
@@ -975,6 +1447,21 @@ def _compute_single_trajectory(h: dict) -> dict:
         exit_risk += 20
         exit_signals.append(f'PAT_{pattern_key.upper()}')
 
+    # v8.0 Exit Signal 6: Position Tension (from WAVE Detection)
+    # High position tension near top = likely reversal
+    wf_tension = wave_fusion.get('wave_position_tension', 0)
+    if wf_tension is not None and wf_tension > 0.7 and current_pct >= 70:
+        exit_risk += 15
+        exit_signals.append('HIGH_TENSION')
+    elif wf_tension is not None and wf_tension > 0.5 and current_pct >= 80:
+        exit_risk += 8
+        exit_signals.append('MOD_TENSION')
+
+    # v8.0 Exit Signal 7: Wave Fusion Conflict (systems disagree)
+    if wf_label == 'WAVE_CONFLICT' and trajectory_score > 50:
+        exit_risk += 12
+        exit_signals.append('WAVE_CONFLICT')
+
     exit_risk = min(100, exit_risk)
     if exit_risk >= 60:
         exit_tag = 'EXIT_NOW'
@@ -1023,6 +1510,13 @@ def _compute_single_trajectory(h: dict) -> dict:
         elif neg_streak >= 2 and latest_vol_score >= 70:
             vol_confirmed = 'DISTRIBUTION'  # Rank falling + high volume = selling pressure
 
+    # v8.0: Cross-check with institutional flow for enhanced volume confirmation
+    wf_inst = wave_fusion.get('wave_inst_flow', 50)
+    if vol_confirmed == 'MODERATE' and wf_inst >= 70:
+        vol_confirmed = 'STRONG'   # Institutional flow confirms moderate volume
+    elif vol_confirmed == 'STRONG' and wf_inst < 30:
+        vol_confirmed = 'MODERATE'  # Institutional flow contradicts volume score
+
     return {
         'trajectory_score': round(trajectory_score, 2),
         'positional': round(positional, 2),
@@ -1050,6 +1544,7 @@ def _compute_single_trajectory(h: dict) -> dict:
         'decay_label': decay_label,
         'decay_tag': decay_tag,
         'pre_decay_score': round(pre_decay_score, 2),
+        'combined_mult': round(combined_mult, 4),
         'signal_tags': signal_tags,
         'current_rank': current_rank,
         'best_rank': best_rank,
@@ -1075,6 +1570,19 @@ def _compute_single_trajectory(h: dict) -> dict:
         'hot_streak_weeks': hot_streak_weeks,
         'vol_confirmed': vol_confirmed,
         'latest_vol_score': round(latest_vol_score, 1) if latest_vol_score else None,
+        # v8.0: Wave Signal Fusion
+        'wave_fusion_score': wave_fusion.get('wave_fusion_score', 50),
+        'wave_fusion_multiplier': wave_fusion.get('wave_fusion_multiplier', 1.0),
+        'wave_fusion_label': wave_fusion.get('wave_fusion_label', 'WAVE_NEUTRAL'),
+        'wave_confluence': wave_fusion.get('wave_confluence', 50),
+        'wave_inst_flow': wave_fusion.get('wave_inst_flow', 50),
+        'wave_harmony': wave_fusion.get('wave_harmony', 50),
+        'wave_harmony_raw': wave_fusion.get('wave_harmony_raw', 2.0),
+        'wave_fundamental': wave_fusion.get('wave_fundamental', 50),
+        'wave_position_tension': wave_fusion.get('wave_position_tension', 0),
+        'wave_from_low': wave_fusion.get('wave_from_low'),
+        'wave_ret_1d': wave_fusion.get('wave_ret_1d'),
+        'wave_ret_1y': wave_fusion.get('wave_ret_1y'),
     }
 
 
@@ -1094,6 +1602,7 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'decay_score': 0, 'decay_multiplier': 1.0,
         'decay_label': '', 'decay_tag': '',
         'pre_decay_score': 0,
+        'combined_mult': 1.0,
         'signal_tags': '',
         'sector_alpha_tag': 'NEUTRAL', 'sector_alpha_value': 0,
         'current_rank': int(ranks[-1]) if ranks else 0,
@@ -1108,6 +1617,12 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'risk_adj_score': 0, 'exit_risk': 0, 'exit_tag': 'HOLD', 'exit_emoji': '✅',
         'exit_signals': '', 'hot_streak': False, 'hot_streak_weeks': 0,
         'vol_confirmed': 'NEUTRAL', 'latest_vol_score': None,
+        # v8.0: Wave Signal Fusion (defaults)
+        'wave_fusion_score': 50, 'wave_fusion_multiplier': 1.0,
+        'wave_fusion_label': 'WAVE_NEUTRAL', 'wave_confluence': 50,
+        'wave_inst_flow': 50, 'wave_harmony': 50, 'wave_harmony_raw': 2.0,
+        'wave_fundamental': 50, 'wave_position_tension': 0,
+        'wave_from_low': None, 'wave_ret_1d': None, 'wave_ret_1y': None,
     }
 
 
@@ -2641,7 +3156,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                                 index=0, key='sb_quick')
 
         st.markdown("---")
-        st.caption("v6.3.0 | Conviction + Risk-Adj + Exit Warnings + Hot Streak")
+        st.caption("v8.0 | Wave Signal Fusion + 18 WAVE Signals")
 
     return {
         'categories': selected_cats,
@@ -2900,6 +3415,16 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Exit Tag': ('exit_tag', 'Exit', 'Exit warning: EXIT_NOW/CAUTION/WATCH/HOLD', None),
         'Hot Streak': ('hot_streak', 'Hot', 'Hot streak detected (4+ weeks improving at high position)', None),
         'Vol Conf': ('vol_confirmed', 'Vol', 'Volume confirmation: STRONG/MODERATE/WEAK/DISTRIBUTION/NEUTRAL', None),
+        # v8.0: Wave Signal Fusion
+        'Wave':     ('wave_fusion_score', 'Wave', 'Wave Signal Fusion score 0-100 (cross-system validation)',
+                     st.column_config.ProgressColumn('Wave', min_value=0, max_value=100, format="%.0f")),
+        'WF Label': ('wave_fusion_label', 'WF', 'Wave fusion: STRONG/CONFIRMED/NEUTRAL/WEAK/CONFLICT', None),
+        'Confluence': ('wave_confluence', 'Conf', 'Wave-Trajectory confluence agreement 0-100',
+                       st.column_config.ProgressColumn('Conf', min_value=0, max_value=100, format="%.0f")),
+        'Inst Flow': ('wave_inst_flow', 'Flow', 'Institutional money flow signal 0-100',
+                      st.column_config.ProgressColumn('Flow', min_value=0, max_value=100, format="%.0f")),
+        'Harmony':  ('wave_harmony', 'Harm', 'Momentum harmony score 0-100',
+                     st.column_config.ProgressColumn('Harm', min_value=0, max_value=100, format="%.0f")),
     }
 
     VIEW_PRESETS = {
@@ -2910,11 +3435,13 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
         'Trading':  ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Grade', 'Conviction',
-                     'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak', 'Vol Conf', 'Streak', 'Trajectory'],
+                     'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak', 'Vol Conf',
+                     'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Streak', 'Trajectory'],
         'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
                      'Grade', 'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Alpha', 
-                     'Conviction', 'Risk-Adj', 'Exit Risk', 'Hot Streak', 'Vol Conf', 'Trajectory'],
+                     'Conviction', 'Risk-Adj', 'Exit Risk', 'Hot Streak', 'Vol Conf',
+                     'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Harmony', 'Trajectory'],
     }
 
     # ── Custom view: user picks columns ──
@@ -2928,7 +3455,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             key='custom_cols'
         )
         if not selected_cols:
-            selected_cols = ['#', 'Ticker', 'T-Score', 'Grade']
+            selected_cols = ['T-Rank', 'Ticker', 'T-Score', 'Grade']
     else:
         selected_cols = VIEW_PRESETS.get(view_mode, VIEW_PRESETS['Standard'])
 
@@ -3350,7 +3877,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 <span style="color:#8b949e; font-size:0.8rem;">Status</span>
                 <span style="color:{pa_color}; font-weight:700;">{pa_label.replace('_', ' ')}</span>
             </div>
-            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Pre: {row.get('pre_price_score', row['trajectory_score']):.1f} → Post: {row.get('pre_decay_score', row['trajectory_score']):.1f}</div>
+            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Base Score: {row.get('pre_price_score', row['trajectory_score']):.1f}</div>
         </div>
         <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
             <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🔻 Momentum Decay</div>
@@ -3366,7 +3893,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 <span style="color:#8b949e; font-size:0.8rem;">Status</span>
                 <span style="color:{d_color}; font-weight:700;">{d_label if d_label else 'CLEAN ✅'}</span>
             </div>
-            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Pre: {row.get('pre_decay_score', row['trajectory_score']):.1f} → Final: {row['trajectory_score']:.1f}</div>
+            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Unified ×{row.get('combined_mult', 1.0):.3f} → Final: {row['trajectory_score']:.1f}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -3415,6 +3942,86 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     # Latest Wave Detection Patterns
     if row.get('latest_patterns', ''):
         st.markdown(f'<div style="margin-top:8px;"><span style="color:#8b949e; font-size:0.72rem; text-transform:uppercase;">Wave Patterns:</span> <span class="pattern-tag">{row["latest_patterns"]}</span></div>', unsafe_allow_html=True)
+
+    # ── Wave Signal Fusion Detail ──
+    wf_score = row.get('wave_fusion_score', 50)
+    wf_label = row.get('wave_fusion_label', 'NEUTRAL')
+    wf_mult  = row.get('wave_fusion_multiplier', 1.0)
+    wf_conf  = row.get('wave_confluence', 50)
+    wf_flow  = row.get('wave_inst_flow', 50)
+    wf_harm  = row.get('wave_harmony', 50)
+    wf_fund  = row.get('wave_fundamental', 50)
+    wf_tension = row.get('wave_position_tension') or 0
+    wf_from_low = row.get('wave_from_low') or 0
+    wf_colors = {'WAVE_STRONG': '#00E676', 'WAVE_CONFIRMED': '#3fb950', 'WAVE_NEUTRAL': '#484f58',
+                 'WAVE_WEAK': '#FF9800', 'WAVE_CONFLICT': '#FF1744'}
+    wf_c = wf_colors.get(wf_label, '#484f58')
+    wf1, wf2, wf3 = st.columns(3)
+    with wf1:
+        st.markdown(f"""
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🌊 Wave Signal Fusion</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Fusion Score</span>
+                <span style="color:{wf_c}; font-weight:700;">{wf_score:.0f}/100</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Multiplier</span>
+                <span style="color:{wf_c}; font-weight:600;">×{wf_mult:.3f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">Classification</span>
+                <span style="color:{wf_c}; font-weight:700;">{wf_label.replace('WAVE_', '')}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with wf2:
+        _conf_c = '#3fb950' if wf_conf >= 65 else '#FF9800' if wf_conf < 40 else '#8b949e'
+        _flow_c = '#3fb950' if wf_flow >= 65 else '#FF9800' if wf_flow < 40 else '#8b949e'
+        st.markdown(f"""
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">📡 Fusion Signals</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Confluence</span>
+                <span style="color:{_conf_c}; font-weight:600;">{wf_conf:.0f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Inst. Flow</span>
+                <span style="color:{_flow_c}; font-weight:600;">{wf_flow:.0f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Harmony</span>
+                <span style="color:#8b949e; font-weight:600;">{wf_harm:.0f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">Fundamental</span>
+                <span style="color:#8b949e; font-weight:600;">{wf_fund:.0f}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with wf3:
+        _tens_c = '#FF1744' if wf_tension > 0.7 else '#FF9800' if wf_tension > 0.4 else '#3fb950'
+        st.markdown(f"""
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">⚡ Supplementary</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Position Tension</span>
+                <span style="color:{_tens_c}; font-weight:600;">{wf_tension:.2f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">From 52w Low</span>
+                <span style="color:#8b949e; font-weight:600;">{wf_from_low:.1f}%</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">1D Return</span>
+                <span style="color:#8b949e; font-weight:600;">{(row.get('wave_ret_1d') or 0):.2f}%</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+                <span style="color:#8b949e; font-size:0.8rem;">1Y Return</span>
+                <span style="color:#8b949e; font-weight:600;">{(row.get('wave_ret_1y') or 0):.1f}%</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("")
 
@@ -4699,6 +5306,30 @@ def render_about_tab():
     st.markdown("""
     ---
 
+    ### 🌊 Wave Signal Fusion (v8.0)
+
+    The **Wave Signal Fusion Engine** cross-validates 18 WAVE Detection columns with the
+    Trajectory Engine's own scoring, producing a fusion multiplier (×0.92 — ×1.10).
+
+    | Signal | Weight | What It Measures |
+    |--------|--------|-----------------|
+    | **Confluence** | 35% | Agreement between WAVE Detection scores (position, acceleration, breakout) and Trajectory components |
+    | **Institutional Flow** | 30% | Money flow, VMI, relative volume, overall market strength |
+    | **Harmony** | 20% | Momentum harmony score from WAVE Detection |
+    | **Fundamental Quality** | 15% | EPS growth, PE reasonableness, EPS tier (quality gate, not driver) |
+
+    **Classifications:**
+
+    | Label | Score | Multiplier | Meaning |
+    |-------|-------|-----------|---------|
+    | 🌊 **STRONG** | ≥ 72 | ×1.06 — ×1.10 | Both systems strongly agree — high conviction |
+    | ✅ **CONFIRMED** | 58 — 71 | ×1.01 — ×1.05 | Cross-system confirmation |
+    | ➖ **NEUTRAL** | 42 — 57 | ×0.99 — ×1.01 | No strong signal either way |
+    | ⚠️ **WEAK** | 30 — 41 | ×0.95 — ×0.98 | Mild disagreement — caution |
+    | 🔇 **CONFLICT** | < 30 | ×0.92 — ×0.94 | Systems fundamentally disagree — danger |
+
+    ---
+
     ### 📡 Signal Tags (v6.1)
 
     The **Signals** column in rankings combines multiple indicators:
@@ -4714,6 +5345,8 @@ def render_about_tab():
     | 👑 | Sector Leader | Genuine alpha — significantly above sector average |
     | 🏷️ | Sector Beta | Riding hot sector, not genuine alpha |
     | 📉 | Sector Laggard | Below sector average |
+    | 🌊 | Wave Strong | Both WAVE Detection and Trajectory agree — high fusion score |
+    | 🔇 | Wave Conflict | WAVE Detection and Trajectory disagree — systems in conflict |
 
     ---
 
@@ -4730,7 +5363,7 @@ def render_about_tab():
 
     ---
 
-    *Built for the Wave Detection ecosystem • v6.3.0 • March 2026*
+    *Built for the Wave Detection ecosystem • v8.0 • Wave Signal Fusion • March 2026*
     """)
 
 
@@ -4774,11 +5407,22 @@ def main():
     cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
     if st.session_state.get('_traj_key') != cache_key:
         with st.spinner("📊 Computing trajectories across all weeks..."):
-            result = load_and_compute(uploaded_files)
+            try:
+                result = load_and_compute(uploaded_files)
+            except Exception as e:
+                st.error(f"❌ Computation error: {e}")
+                logger.exception("load_and_compute failed")
+                return
         st.session_state['_traj_key'] = cache_key
         st.session_state['_traj_result'] = result
 
-    result = st.session_state['_traj_result']
+    result = st.session_state.get('_traj_result')
+    if result is None or not isinstance(result, (tuple, list)) or len(result) != 4:
+        st.error("❌ Invalid computation result. Please re-upload your files.")
+        # Clear stale cache so next rerun recomputes
+        st.session_state.pop('_traj_key', None)
+        st.session_state.pop('_traj_result', None)
+        return
 
     if result[0] is None:
         st.error("❌ No valid data found in uploaded files. Ensure CSVs contain `rank` and `ticker` columns.")
