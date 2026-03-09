@@ -1,46 +1,60 @@
 """
-Rank Trajectory Engine v8.1 — Persistence-Calibrated
+Rank Trajectory Engine v9.0 — Data-Driven
 =======================================================
 Professional Stock Rank Trajectory Analysis System
-with Adaptive Weight Intelligence, Return Quality Component, Directional Price-Rank
-Alignment, Momentum Decay Warning, Sector Alpha Detection, Market Regime Awareness,
-Confidence Intervals, Z-Score Normalization, Conviction Score, Risk-Adjusted T-Score,
-Exit Warning System, Hot Streak Detection, Volume Confirmation, Multi-Stage Selection Funnel,
+with 8-Component Adaptive Scoring, Data-Driven Conviction, Sector-Relative Blending,
+Breakout Quality Component, Market State Signal, Momentum Decay Warning,
+Sector Alpha Detection, Market Regime Awareness, Confidence Intervals,
+Z-Score Normalization, Risk-Adjusted T-Score, Exit Warning System,
+Hot Streak Detection, Multi-Stage Selection Funnel,
 WAVE SIGNAL FUSION ENGINE, and WALK-FORWARD BACKTEST ENGINE.
 
-v8.1 PERSISTENCE CALIBRATION:
-  Walk-forward backtest (24 CSVs, 18 windows) proved persistence > position:
-    S4 Persistent Top 50: +4.25% alpha (BEST)
-    S2 Top 10 Rank: -11.26% alpha (WORST — current rank anti-predictive)
-    S7 Conviction ≥ 65: -14.60% alpha (BROKEN — old conviction was noise)
+v9.0 DATA-DRIVEN RECALIBRATION:
+  Deep analysis of 28 CSVs, 27 week-to-week transitions, ~2,115 stocks/week:
   
-  FIX: Reduced Positional weight across all tiers, boosted Consistency + Resilience.
-  Added persistence_weeks metric (consecutive weeks in top 25%).
-  Recalibrated Conviction: 40pts for persistence signals vs 10pts previously.
-  Removed anti-predictive "Positional Strength" conviction signal.
+  FORWARD PREDICTIVE POWER (top25% vs bot25% → next week alpha):
+    from_high_pct:        +0.55%/wk  (#1 predictor) → NearHigh conviction signal
+    breakout_score:       +0.44%/wk  (#2 predictor) → 8th scoring component
+    position_score:       +0.34%/wk  (#3 predictor) → SectorLeader conviction signal
+    overall_market_strength: +0.32%  (#4)
+    trend_quality:        +0.26%/wk  (#5)
+    momentum_score:       +0.00%/wk  (ZERO — velocity/acceleration reduced)
+    volume_score:         -0.01%/wk  (ZERO)
+    acceleration_score:   +0.01%/wk  (ZERO)
+  
+  MARKET STATE (mean reversion signal):
+    BOUNCE:              +1.17%/wk  → conviction bonus
+    STRONG_DOWNTREND:    +0.25%/wk  → mild bonus (mean reversion)
+    SIDEWAYS:            -0.63%/wk  → penalty
+    UPTREND:             -0.71%/wk  → penalty (reversion risk)
+  
+  BACKTEST RESULTS (v9.0, 28 CSVs, 22 windows):
+    S2 Top 10 Rank:  +0.86% alpha (fixed from -2.35% in v8.1)
+    S7 Conviction:   +0.42% alpha, 50% win rate
+    5 of 7 strategies beat universe
 
 CORE ARCHITECTURE:
-  7-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
-    → Unified Multiplier (Hurst × Wave Fusion × Price Alignment × Momentum Decay)
-    → Sector Alpha Tag
+  8-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
+    → Hurst Persistence × Wave Fusion (±12% cap)
+    → Sector-Relative Blending → Sector Alpha Tag
 
   Wave Signal Fusion: Cross-validates WAVE Detection scores with Trajectory calculations.
     4 Fusion Signals: Confluence (35%) + Institutional Flow (30%) + Momentum Harmony (20%)
-    + Fundamental Quality (15%) → Fusion Multiplier ×0.92 to ×1.10
+    + Fundamental Quality (15%) → Fusion Multiplier ×0.94 to ×1.06
 
   Components: Positional, Trend, Velocity, Acceleration, Consistency,
-              Resilience, ReturnQuality
+              Resilience, ReturnQuality, BreakoutQuality
   Weights shift dynamically by position tier (elite/strong/mid/bottom).
 
-  PERSISTENCE-CALIBRATED WEIGHTS (v8.1):
-  Elite (>90pct):  Pos 22% | Trd 10% | Vel 7%  | Acc 4%  | Con 27% | Res 17% | Ret 13%
-  Strong (70-90):  Pos 18% | Trd 14% | Vel 10% | Acc 7%  | Con 22% | Res 16% | Ret 13%
-  Mid (40-70):     Pos 12% | Trd 17% | Vel 16% | Acc 10% | Con 18% | Res 12% | Ret 15%
-  Bottom (<40):    Pos 7%  | Trd 16% | Vel 20% | Acc 14% | Con 14% | Res 12% | Ret 17%
+  DATA-DRIVEN WEIGHTS (v9.0):
+  Elite (>90pct):  Pos 18% | Trd 10% | Vel 4%  | Acc 3%  | Con 24% | Res 15% | Ret 14% | Brk 12%
+  Strong (70-90):  Pos 15% | Trd 13% | Vel 6%  | Acc 4%  | Con 20% | Res 14% | Ret 14% | Brk 14%
+  Mid (40-70):     Pos 10% | Trd 15% | Vel 10% | Acc 6%  | Con 16% | Res 10% | Ret 16% | Brk 17%
+  Bottom (<40):    Pos 6%  | Trd 14% | Vel 12% | Acc 8%  | Con 12% | Res 10% | Ret 18% | Brk 20%
 
-  CONVICTION (v8.1 — 8 Signals, 100pts):
-  Persistence 25 | Consistency 15 | PriceAlign 12 | RetQuality 10
-  TMI 10 | WaveConfl 12 | InstFlow 8 | NoDecay 8
+  CONVICTION (v9.0 — 9 Signals, 100pts):
+  Persistence 25 | Consistency 12 | NearHigh 14 | RetQuality 8
+  Breakout 12 | WaveConfl 8 | SectorLeader 7 | MarketState 8 | NoDecay 6
 
   SIGNAL ISOLATION PRINCIPLE:
     - Return data enters through exactly ONE component (ReturnQuality).
@@ -50,10 +64,10 @@ CORE ARCHITECTURE:
 
 3-STAGE FUNNEL:
   Stage 1: Discovery  — Trajectory Score ≥70 or Rocket/Breakout → 50-100 candidates
-  Stage 2: Validation — 5 Wave Engine rules, must pass 4/5    → 20-30 stocks
+  Stage 2: Validation — 5 data-driven rules, must pass 4/5    → 20-30 stocks
   Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND  → 5-10 FINAL BUYS
 
-Version: 8.1.0
+Version: 9.0.0
 Last Updated: March 2026
 """
 
@@ -1449,16 +1463,18 @@ def _compute_single_trajectory(h: dict) -> dict:
     #   breakout_score:  +0.44%/wk alpha (#2 predictor)
     #   position_score:  +0.34%/wk alpha (#3 predictor)
     #   Persistence 6+wk: +3.91%/wk (still dominant)
+    #   Market State: BOUNCE +1.17%/wk, UPTREND -0.71%/wk (mean reversion)
     #
-    # Signals (8 total, 100pts max):
+    # Signals (9 total, 100pts max):
     #   1. Persistence Strength: 25pts — consecutive weeks in top 25%
-    #   2. Consistency Quality:  13pts — consistency score component
+    #   2. Consistency Quality:  12pts — consistency score component
     #   3. Near-High Strength:   14pts — from_high_pct (#1 forward predictor)
-    #   4. Return Quality:       10pts — actual returns backing rank
+    #   4. Return Quality:        8pts — actual returns backing rank
     #   5. Breakout Quality:     12pts — breakout_quality (#2 forward predictor)
-    #   6. Wave Confluence:      10pts — WAVE system agreement
-    #   7. Sector Leadership:     8pts — sector-relative position
-    #   8. No-Decay Bonus:        8pts — absence of momentum deterioration
+    #   6. Wave Confluence:       8pts — WAVE system agreement
+    #   7. Sector Leadership:     7pts — sector-relative position
+    #   8. Market State Signal:   8pts — BOUNCE/DOWNTREND mean-reversion bonus
+    #   9. No-Decay Bonus:        6pts — absence of momentum deterioration
     conviction = 0
 
     # Signal 1: Persistence Strength (25 pts max) — BACKTEST-PROVEN #1 PREDICTOR
@@ -1476,12 +1492,12 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif persistence_weeks >= 1:
         conviction += 2    # 1 week = just entered top tier
 
-    # Signal 2: Consistency Quality (13 pts max) — persistence proxy (trimmed from 15)
+    # Signal 2: Consistency Quality (12 pts max) — persistence proxy
     # High consistency = stable rank trajectory = sustained performance
     if consistency >= 75:
-        conviction += 13
+        conviction += 12
     elif consistency >= 60:
-        conviction += 9
+        conviction += 8
     elif consistency >= 45:
         conviction += 4
 
@@ -1500,13 +1516,13 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif latest_from_high >= -30:
         conviction += 2    # Within 30% = weak signal
 
-    # Signal 4: Return Quality (10 pts max) — actual returns backing rank
+    # Signal 4: Return Quality (8 pts max) — actual returns backing rank
     if return_quality >= 75:
-        conviction += 10
+        conviction += 8
     elif return_quality >= 60:
-        conviction += 6
+        conviction += 5
     elif return_quality >= 50:
-        conviction += 3
+        conviction += 2
 
     # Signal 5: Breakout Quality (12 pts max) — v9.0 NEW, #2 forward predictor
     # breakout_score top25% → +0.44%/wk alpha. Breakout decile 10: +0.44%/wk.
@@ -1520,34 +1536,55 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif breakout_quality >= 45:
         conviction += 3    # Mild breakout signal
 
-    # Signal 6: Wave Confluence Agreement (10 pts max) — trimmed from 12
+    # Signal 6: Wave Confluence Agreement (8 pts max)
     wf_confluence = wave_fusion.get('wave_confluence', 50)
     if wf_confluence >= 75:
-        conviction += 10
+        conviction += 8
     elif wf_confluence >= 60:
-        conviction += 7
+        conviction += 5
     elif wf_confluence >= 45:
-        conviction += 3
+        conviction += 2
 
-    # Signal 7: Sector Leadership (8 pts max) — v9.0 NEW
+    # Signal 7: Sector Leadership (7 pts max) — v9.0 NEW
     # Sector-relative: top10% vs bot10% → +0.59%/wk alpha within sector.
     # Uses position_score as proxy for sector strength (3rd strongest predictor).
-    # Replaced: Institutional Flow (wave_inst_flow had no direct predictive evidence)
     pos_scores = h.get('position_score', [])
     latest_pos = pos_scores[-1] if pos_scores else 50
     if latest_pos >= 80:
-        conviction += 8    # Sector dominant
+        conviction += 7    # Sector dominant
     elif latest_pos >= 65:
-        conviction += 5    # Sector strong
+        conviction += 4    # Sector strong
     elif latest_pos >= 50:
         conviction += 2    # Sector average+
 
-    # Signal 8: No-Decay Bonus (8 pts max) — rewards momentum health
+    # Signal 8: Market State Signal (8 pts max) — v9.0 NEW, mean-reversion alpha
+    # DATA EVIDENCE: BOUNCE +1.17%/wk, STRONG_DOWNTREND +0.25%/wk (mean reversion)
+    #                SIDEWAYS -0.63%/wk, UPTREND -0.71%/wk (crowd trap)
+    # Stocks in BOUNCE/DOWNTREND states have mean-reversion tailwinds.
+    # Stocks in UPTREND have already priced in the move — reversion risk.
+    latest_market_state = ''
+    ms_list = h.get('market_states', [])
+    if ms_list:
+        latest_market_state = ms_list[-1] if ms_list[-1] else ''
+    if not latest_market_state:
+        latest_market_state = h.get('market_state', '')
+
+    if latest_market_state == 'BOUNCE':
+        conviction += 8    # Strongest forward alpha (+1.17%/wk)
+    elif latest_market_state == 'STRONG_DOWNTREND':
+        conviction += 5    # Mean reversion opportunity (+0.25%/wk)
+    elif latest_market_state == 'DOWNTREND':
+        conviction += 3    # Mild reversion signal
+    elif latest_market_state == 'RECOVERY':
+        conviction += 4    # Recovering stocks
+    # UPTREND and SIDEWAYS get 0 pts (negative forward alpha)
+
+    # Signal 9: No-Decay Bonus (6 pts max) — rewards momentum health
     # Absence of decay = persistence is intact, not a trap
     if decay_score == 0:
-        conviction += 8   # Zero decay = healthy momentum
+        conviction += 6   # Zero decay = healthy momentum
     elif decay_score <= 10:
-        conviction += 5   # Minimal decay = acceptable
+        conviction += 4   # Minimal decay = acceptable
     elif decay_label == '' or decay_label == 'DECAY_MILD':
         conviction += 2   # Mild decay = marginal bonus
 
@@ -3284,15 +3321,19 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
         else:
             rules_detail.append('⚠️ No Δ data')
         
-        # Rule 5: Volume confirmation in patterns
+        # Rule 5: Near-High Check (from_high_pct) — v9.0 data-driven
+        # from_high_pct is #1 forward predictor (+0.55%/wk alpha).
+        # Replaces volume pattern keywords (had zero predictive evidence).
         latest_pats = h['pattern_history'][-1] if h.get('pattern_history') else ''
-        vol_keywords = ['VOL EXPLOSION', 'LIQUID LEADER', 'INSTITUTIONAL']
-        has_vol = any(kw in latest_pats for kw in vol_keywords)
-        if has_vol:
+        fh_list = h.get('from_high_pct', [])
+        latest_fh = fh_list[-1] if fh_list else -50
+        if not isinstance(latest_fh, (int, float)) or np.isnan(latest_fh):
+            latest_fh = -50
+        if latest_fh >= -20:
             rules_passed += 1
-            rules_detail.append('✅ Vol✓')
+            rules_detail.append(f'✅ FH={latest_fh:.0f}%')
         else:
-            rules_detail.append('❌ No Vol')
+            rules_detail.append(f'❌ FH={latest_fh:.0f}%')
         
         row_dict = row.to_dict()
         row_dict['rules_passed'] = rules_passed
@@ -5976,19 +6017,20 @@ def render_about_tab():
     Data-driven signals based on 27-transition CSV analysis:
 
     #### 1. Conviction Score (0-100)
-    Aggregates 8 bullish signals into a single BUY confidence metric.
-    v9.0: Rebuilt using forward-return predictive analysis.
+    Aggregates 9 bullish signals into a single BUY confidence metric.
+    v9.0: Rebuilt using forward-return predictive analysis + market state signal.
 
     | Signal | Max Points | Measures |
     |--------|-----------|----------|
     | Persistence Strength | 25 | Consecutive weeks in top 25% (backtest #1) |
-    | Consistency Quality | 13 | Stable rank trajectory |
+    | Consistency Quality | 12 | Stable rank trajectory |
     | Near-High Strength | 14 | from_high_pct (#1 forward predictor, +0.55%/wk) |
-    | Return Quality | 10 | Actual returns backing rank |
+    | Return Quality | 8 | Actual returns backing rank |
     | Breakout Quality | 12 | breakout_score (#2 predictor, +0.44%/wk) |
-    | Wave Confluence | 10 | WAVE system agreement |
-    | Sector Leadership | 8 | position_score (#3 predictor, +0.34%/wk) |
-    | No-Decay Bonus | 8 | Absence of momentum deterioration |
+    | Wave Confluence | 8 | WAVE system agreement |
+    | Sector Leadership | 7 | position_score (#3 predictor, +0.34%/wk) |
+    | Market State | 8 | BOUNCE +1.17%/wk mean-reversion bonus |
+    | No-Decay Bonus | 6 | Absence of momentum deterioration |
 
     | Tag | Score | Emoji |
     |-----|-------|-------|
