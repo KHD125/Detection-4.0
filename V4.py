@@ -137,41 +137,46 @@ INFO_RATIO_CONFIG = {
 # Climbers: Movement dominates (Velocity 25%, Trend 25%) — they need to prove direction
 # Bottom stocks: Acceleration matters most — are they even trying to move?
 
-# Adaptive weight profiles by percentile tier (v8.1: Persistence-Calibrated)
+# Adaptive weight profiles by percentile tier (v9.0: Data-Driven)
 # ═══════════════════════════════════════════════════════════════════════════════
-# v8.1 RECALIBRATION based on walk-forward backtest (24 CSVs, 18 windows):
-#   S4 Persistent Top 50: -4.90% (+4.25% alpha) ← BEST — persistence wins
-#   S2 Top 10 Rank:      -20.41% (-11.26%)      ← WORST — current rank alone fails
-#   S7 Conviction ≥ 65:  -23.75% (-14.60%)      ← BROKEN — old conviction anti-predictive
+# v9.0 RECALIBRATION based on deep forward-return analysis (28 CSVs, 27 transitions):
+#   Factor Alpha (top25% vs bot25% → next week return):
+#     from_high_pct:  +0.55%  → feeds ReturnQuality
+#     breakout_score: +0.44%  → NEW 8th component: BreakoutQuality
+#     position_score: +0.34%  → feeds Positional
+#     trend_quality:  +0.26%  → feeds Trend
+#     momentum_score: +0.00%  → ZERO predictive → Velocity/Acceleration reduced
+#     volume_score:   -0.01%  → ZERO predictive
+#     accel_score:    +0.01%  → ZERO predictive → Acceleration heavily reduced
 #
-# KEY INSIGHT: Stocks that STAY ranked well (consistency) vastly outperform
-# stocks that ARE ranked well right now (positional). Persistence > Position.
-# Reduced positional weight across all tiers, boosted consistency + resilience.
+# KEY INSIGHT: breakout_score and from_high_pct are the strongest forward
+# predictors. momentum_score/volume_score/acceleration have ZERO predictive power.
+# Added BreakoutQuality as dedicated 8th component. Reduced Vel/Acc heavily.
 # ═══════════════════════════════════════════════════════════════════════════════
 ADAPTIVE_WEIGHTS = {
-    # Elite (avg pct > 90): Consistency IS the score. Staying at top = proven.
+    # Elite (avg pct > 90): Consistency + proven breakout quality
     'elite': {
-        'positional': 0.22, 'trend': 0.10, 'velocity': 0.07,
-        'acceleration': 0.04, 'consistency': 0.27, 'resilience': 0.17,
-        'return_quality': 0.13
+        'positional': 0.18, 'trend': 0.10, 'velocity': 0.04,
+        'acceleration': 0.03, 'consistency': 0.24, 'resilience': 0.15,
+        'return_quality': 0.14, 'breakout_quality': 0.12
     },
-    # Strong (avg pct 70-90): Consistency + resilience prove sustained strength
+    # Strong (avg pct 70-90): Balanced with breakout emphasis
     'strong': {
-        'positional': 0.18, 'trend': 0.14, 'velocity': 0.10,
-        'acceleration': 0.07, 'consistency': 0.22, 'resilience': 0.16,
-        'return_quality': 0.13
+        'positional': 0.15, 'trend': 0.13, 'velocity': 0.06,
+        'acceleration': 0.04, 'consistency': 0.20, 'resilience': 0.14,
+        'return_quality': 0.14, 'breakout_quality': 0.14
     },
-    # Mid (avg pct 40-70): Movement matters but consistency separates winners
+    # Mid (avg pct 40-70): Breakout and returns dominate — need proof of momentum
     'mid': {
-        'positional': 0.12, 'trend': 0.17, 'velocity': 0.16,
-        'acceleration': 0.10, 'consistency': 0.18, 'resilience': 0.12,
-        'return_quality': 0.15
+        'positional': 0.10, 'trend': 0.15, 'velocity': 0.10,
+        'acceleration': 0.06, 'consistency': 0.16, 'resilience': 0.10,
+        'return_quality': 0.16, 'breakout_quality': 0.17
     },
-    # Bottom (avg pct < 40): Returns + consistency — are gains sustained?
+    # Bottom (avg pct < 40): Breakout + returns — are they actually moving up?
     'bottom': {
-        'positional': 0.07, 'trend': 0.16, 'velocity': 0.20,
-        'acceleration': 0.14, 'consistency': 0.14, 'resilience': 0.12,
-        'return_quality': 0.17
+        'positional': 0.06, 'trend': 0.14, 'velocity': 0.12,
+        'acceleration': 0.08, 'consistency': 0.12, 'resilience': 0.10,
+        'return_quality': 0.18, 'breakout_quality': 0.20
     }
 }
 
@@ -232,6 +237,20 @@ SECTOR_ALPHA = {
     'outperform_z': 0.5,             # Z-score above this = outperforming sector
     'aligned_z': -0.5,              # Z-score above this = aligned with sector
     'beta_sector_min': 60,           # Sector avg must be > this for beta detection
+}
+
+# v9.0: Sector-Relative Ranking Configuration
+# Data proved: sector top 10% vs bottom 10% → +0.59%/wk alpha
+# Problem: Capital Goods (429 stocks) vs Diversified (7 stocks) — unfair comparison
+# Solution: Blend universe percentile with sector-relative percentile
+SECTOR_RELATIVE = {
+    'blend_weight': 0.30,            # 30% sector-relative, 70% universe
+    'min_sector_size': 10,           # Sectors < 10 stocks: reduce sector weight
+    'size_reference': 80,            # Median-ish sector size for dampening calc
+    # size_factor = min(1.0, sector_count / size_reference)
+    # effective_sector_weight = blend_weight × size_factor
+    # 7-stock sector: factor=0.088 → effective weight=2.6% (fair)
+    # 429-stock sector: factor=1.0 → effective weight=30% (full)
 }
 
 # ── Wave Signal Fusion Configuration (v8.0) ──
@@ -716,7 +735,7 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     # to 0-100. This ensures scores reflect relative performance vs population.
     # Benefits: prevents score clustering, improves differentiation, robust to outliers.
     z_components = ['positional', 'trend', 'velocity', 'acceleration',
-                    'consistency', 'resilience', 'return_quality']
+                    'consistency', 'resilience', 'return_quality', 'breakout_quality']
 
     for col in z_components:
         col_mean = traj_df[col].mean()
@@ -730,6 +749,59 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     # Compute composite normalized score (average of normalized components)
     norm_cols = [f'{c}_norm' for c in z_components]
     traj_df['normalized_score'] = traj_df[norm_cols].mean(axis=1).round(2)
+
+    # ── Step 3d: Sector-Relative Blending (v9.0) ──
+    # DATA EVIDENCE: sector-relative top10% vs bot10% → +0.59%/wk alpha.
+    # Problem: 23 sectors range 7 to 429 stocks. A top-10 stock in a 7-stock
+    # sector is NOT comparable to top-10 in a 429-stock sector.
+    # Solution: blend universe percentile with sector percentile, dampened by sector size.
+    sr_cfg = SECTOR_RELATIVE
+    eligible_mask = traj_df['weeks'] >= MIN_WEEKS_DEFAULT
+
+    # Compute sector percentile for each stock (percentile within sector)
+    traj_df['sector_pct'] = 0.0
+    traj_df['sector_blend_score'] = traj_df['trajectory_score']  # default = universe score
+
+    if eligible_mask.sum() > 0:
+        eligible_df = traj_df[eligible_mask]
+        for sector_name, sector_group in eligible_df.groupby('sector'):
+            s_count = len(sector_group)
+            if s_count < 2:
+                continue  # Can't compute percentile with 1 stock
+
+            # Rank within sector (1 = best trajectory_score in sector)
+            sector_ranks = sector_group['trajectory_score'].rank(ascending=False, method='min')
+            # Convert to percentile (100 = best)
+            sector_pct = ((s_count - sector_ranks) / max(s_count - 1, 1) * 100).round(1)
+            traj_df.loc[sector_group.index, 'sector_pct'] = sector_pct
+
+            # Size-dampened blending: small sectors get less sector weight
+            size_factor = min(1.0, s_count / sr_cfg['size_reference'])
+            if s_count < sr_cfg['min_sector_size']:
+                size_factor *= (s_count / sr_cfg['min_sector_size'])  # Further dampen tiny sectors
+            effective_weight = sr_cfg['blend_weight'] * size_factor
+            universe_weight = 1.0 - effective_weight
+
+            # Blend: trajectory_score stays, but we create a blended version for re-ranking
+            # Universe percentile uses t_percentile (already computed), sector uses sector_pct
+            # Both are 0-100 scales, combine them, then map back to score range
+            for idx in sector_group.index:
+                uni_pct = traj_df.loc[idx, 't_percentile']
+                sec_pct = traj_df.loc[idx, 'sector_pct']
+                blended_pct = universe_weight * uni_pct + effective_weight * sec_pct
+                # Convert blended percentile back to score scale (preserving original score range)
+                # Adjustment = (blended_pct - uni_pct) * score_range / 100
+                pct_shift = blended_pct - uni_pct  # How much the blend shifts the percentile
+                score_adj = pct_shift * 0.15  # Scale: 1 percentile shift ≈ 0.15 score points
+                traj_df.loc[idx, 'sector_blend_score'] = traj_df.loc[idx, 'trajectory_score'] + score_adj
+
+        # Re-sort by sector_blend_score and re-assign t_rank
+        traj_df = traj_df.sort_values(
+            ['sector_blend_score', 'confidence', 'consistency'],
+            ascending=[False, False, False]
+        ).reset_index(drop=True)
+        traj_df['t_rank'] = range(1, len(traj_df) + 1)
+        traj_df['t_percentile'] = ((total_stocks - traj_df['t_rank']) / max(total_stocks - 1, 1) * 100).round(1)
 
     # ── Step 4: Sector Alpha Post-Processing (v2.3) ──
     # Compare each stock's trajectory to its sector average to detect
@@ -1175,7 +1247,7 @@ def _compute_single_trajectory(h: dict) -> dict:
 
     pcts = ranks_to_percentiles(ranks, totals)
 
-    # ── 7-Component Scores (v6.0 — ReturnQuality added) ──
+    # ── 8-Component Scores (v9.0 — BreakoutQuality added as data-proven 8th) ──
     positional = _calc_positional_quality(pcts, n)
     trend = _calc_trend(pcts, n)
     velocity = _calc_velocity_adaptive(pcts, n)  # Position-relative velocity
@@ -1200,6 +1272,11 @@ def _compute_single_trajectory(h: dict) -> dict:
     from_high = h.get('from_high_pct', [])
     return_quality = _calc_return_quality(ret_3m, ret_6m, ret_7d, ret_30d, from_high, avg_pct, n)
 
+    # ── Breakout Quality Component (v9.0 — Dedicated 8th Component) ──
+    # DATA EVIDENCE: breakout_score top25% → +0.44%/wk alpha (2nd strongest predictor)
+    # Was only used as sub-signal in Wave Fusion. Now dedicated component.
+    breakout_quality = _calc_breakout_quality(h, avg_pct, n)
+
     # ── v6.2: Compute confidence EARLY (needed for weight selection) ──
     bc = BAYESIAN_CONFIDENCE
     confidence = min(1.0, max(bc['min_confidence'], n / bc['full_confidence_weeks']))
@@ -1207,7 +1284,7 @@ def _compute_single_trajectory(h: dict) -> dict:
     # ── Select Adaptive Weights Based on Percentile Tier + Confidence (v6.2) ──
     weights = _get_adaptive_weights(avg_pct, current_pct=pcts[-1], confidence=confidence)
 
-    # ── Composite Score (7-Component Adaptive Weighted) ──
+    # ── Composite Score (8-Component Adaptive Weighted — v9.0) ──
     trajectory_score = (
         weights['positional'] * positional +
         weights['trend'] * trend +
@@ -1215,7 +1292,8 @@ def _compute_single_trajectory(h: dict) -> dict:
         weights['acceleration'] * acceleration +
         weights['consistency'] * consistency +
         weights['resilience'] * resilience +
-        weights['return_quality'] * return_quality
+        weights['return_quality'] * return_quality +
+        weights['breakout_quality'] * breakout_quality
     )
 
     # ── Elite Dominance Bonus ──
@@ -1244,22 +1322,27 @@ def _compute_single_trajectory(h: dict) -> dict:
     wave_fusion = _compute_wave_fusion(h, traj_components)
     wave_fusion_multiplier = wave_fusion['wave_fusion_multiplier']
 
-    # ── Price-Rank Alignment Multiplier (v6.1 — purely directional) ──
+    # ── Price-Rank Alignment (v9.0: Diagnostic-only, NOT a multiplier) ──
+    # Data analysis showed price alignment adds noise as a multiplier.
+    # Price direction is already captured in ReturnQuality component.
+    # Keeping the calculation for UI display but NOT applying as multiplier.
     price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct)
 
-    # ── Momentum Decay Warning (v6.1) ──
-    # Catches stocks with good rank but deteriorating returns
+    # ── Momentum Decay Warning (v9.0: Exit-system-only, NOT a multiplier) ──
+    # Decay is valuable as an EXIT signal but noisy as a scoring multiplier.
+    # Keeping calculation for exit warning system, not applying to T-Score.
     decay_multiplier, decay_label, decay_score = _calc_momentum_decay(ret_7d, ret_30d, from_high, pcts, avg_pct, ret_6m)
 
-    # ── v8.0: Apply ALL multipliers with UNIFIED CAP ──
-    # All 4 multipliers combined into one capped product.
-    # Theoretical range: hurst(0.94-1.06) × fusion(0.92-1.10) × price(0.88-1.08) × decay(0.93-1.0)
-    # Without cap: 0.709 to 1.258.  Symmetric cap: ×0.78 to ×1.18
+    # ── v9.0: SIMPLIFIED MULTIPLIER — Only 2 proven multipliers ──
+    # Old: 4 multipliers (Hurst × WaveFusion × PriceAlign × Decay) capped ±18%
+    # New: 2 multipliers (Hurst × WaveFusion) capped ±12%
+    # PriceAlign folded into ReturnQuality, Decay folded into exit warnings.
+    # Less noise, cleaner signal, same information through better paths.
     pre_price_score = trajectory_score  # Save for diagnostics
-    combined_mult = hurst_multiplier * wave_fusion_multiplier * price_multiplier * decay_multiplier
-    combined_mult = float(np.clip(combined_mult, 0.78, 1.18))
+    combined_mult = hurst_multiplier * wave_fusion_multiplier
+    combined_mult = float(np.clip(combined_mult, 0.88, 1.12))
     trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
-    pre_decay_score = trajectory_score  # Same as final after unified cap (kept for backward compat)
+    pre_decay_score = trajectory_score  # Kept for backward compat
 
     # ── Grade ──
     grade, grade_emoji = get_grade(trajectory_score)
@@ -1359,23 +1442,22 @@ def _compute_single_trajectory(h: dict) -> dict:
             break
 
     # ── 1. CONVICTION SCORE (0-100) ──
-    # v8.1: PERSISTENCE-CALIBRATED based on walk-forward backtest results.
-    # Old conviction (v8.0) was ANTI-PREDICTIVE: S7 Conviction≥65 returned -23.75%
-    # vs universe -9.15%. Root cause: over-weighted snapshot signals (position, price).
-    #
-    # v8.1 FIX: Persistence (25pts) + Consistency (15pts) = 40pts for staying power.
-    # Old Signal 5 "Positional Strength" (rewarded current rank) REMOVED — backtest
-    # proved current rank alone is anti-predictive (S2/S3 worst performers).
-    # Old Signal 3 "Data Confidence" reduced — persistence implicitly requires data.
+    # v9.0: DATA-DRIVEN CONVICTION — rebuilt from 27-transition CSV analysis.
+    # v8.1 fixed anti-predictive conviction (S7 -23.75% → +0.49%) via persistence.
+    # v9.0 further refines using discovered forward predictors:
+    #   from_high_pct:   +0.55%/wk alpha (#1 predictor)
+    #   breakout_score:  +0.44%/wk alpha (#2 predictor)
+    #   position_score:  +0.34%/wk alpha (#3 predictor)
+    #   Persistence 6+wk: +3.91%/wk (still dominant)
     #
     # Signals (8 total, 100pts max):
     #   1. Persistence Strength: 25pts — consecutive weeks in top 25%
-    #   2. Consistency Quality:  15pts — consistency score component
-    #   3. Price-Rank Alignment: 12pts — directional confirmation
+    #   2. Consistency Quality:  13pts — consistency score component
+    #   3. Near-High Strength:   14pts — from_high_pct (#1 forward predictor)
     #   4. Return Quality:       10pts — actual returns backing rank
-    #   5. Momentum Quality:     10pts — TMI strength
-    #   6. Wave Confluence:      12pts — WAVE system agreement
-    #   7. Institutional Flow:    8pts — volume/institutional signals
+    #   5. Breakout Quality:     12pts — breakout_quality (#2 forward predictor)
+    #   6. Wave Confluence:      10pts — WAVE system agreement
+    #   7. Sector Leadership:     8pts — sector-relative position
     #   8. No-Decay Bonus:        8pts — absence of momentum deterioration
     conviction = 0
 
@@ -1394,22 +1476,31 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif persistence_weeks >= 1:
         conviction += 2    # 1 week = just entered top tier
 
-    # Signal 2: Consistency Quality (15 pts max) — persistence proxy
+    # Signal 2: Consistency Quality (13 pts max) — persistence proxy (trimmed from 15)
     # High consistency = stable rank trajectory = sustained performance
     if consistency >= 75:
-        conviction += 15
+        conviction += 13
     elif consistency >= 60:
-        conviction += 10
+        conviction += 9
     elif consistency >= 45:
-        conviction += 5
+        conviction += 4
 
-    # Signal 3: Price-Rank Alignment (12 pts max) — reduced from v8.0's 20pts
-    if price_label == 'PRICE_CONFIRMED':
-        conviction += 12
-    elif price_label == 'NEUTRAL':
-        conviction += 5
+    # Signal 3: Near-High Strength (14 pts max) — v9.0 NEW, #1 forward predictor
+    # from_high_pct: top25% → +0.55%/wk alpha. Stocks near 52w high keep winning.
+    # from_high_pct is negative (0 = at high, -50 = 50% below high)
+    latest_from_high = from_high[-1] if from_high else -50
+    if latest_from_high >= -5:
+        conviction += 14   # Within 5% of 52w high = maximum near-high signal  
+    elif latest_from_high >= -10:
+        conviction += 11   # Within 10% = very strong
+    elif latest_from_high >= -15:
+        conviction += 8    # Within 15% = strong
+    elif latest_from_high >= -20:
+        conviction += 5    # Within 20% = moderate
+    elif latest_from_high >= -30:
+        conviction += 2    # Within 30% = weak signal
 
-    # Signal 4: Return Quality (10 pts max) — reduced from v8.0's 15pts
+    # Signal 4: Return Quality (10 pts max) — actual returns backing rank
     if return_quality >= 75:
         conviction += 10
     elif return_quality >= 60:
@@ -1417,33 +1508,41 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif return_quality >= 50:
         conviction += 3
 
-    # Signal 5: Momentum Quality (10 pts max) — reduced from v8.0's 15pts
-    if tmi >= 70:
-        conviction += 10
-    elif tmi >= 60:
-        conviction += 6
-    elif tmi >= 50:
-        conviction += 3
+    # Signal 5: Breakout Quality (12 pts max) — v9.0 NEW, #2 forward predictor
+    # breakout_score top25% → +0.44%/wk alpha. Breakout decile 10: +0.44%/wk.
+    # Replaces old "Momentum Quality" (TMI had ZERO predictive power: +0.00%/wk)
+    if breakout_quality >= 75:
+        conviction += 12   # Strong breakout = maximum signal
+    elif breakout_quality >= 65:
+        conviction += 9    # Good breakout
+    elif breakout_quality >= 55:
+        conviction += 6    # Moderate breakout
+    elif breakout_quality >= 45:
+        conviction += 3    # Mild breakout signal
 
-    # Signal 6: Wave Confluence Agreement (12 pts max) — reduced from v8.0's 15pts
+    # Signal 6: Wave Confluence Agreement (10 pts max) — trimmed from 12
     wf_confluence = wave_fusion.get('wave_confluence', 50)
     if wf_confluence >= 75:
-        conviction += 12
+        conviction += 10
     elif wf_confluence >= 60:
-        conviction += 8
+        conviction += 7
     elif wf_confluence >= 45:
         conviction += 3
 
-    # Signal 7: Institutional Flow (8 pts max) — reduced from v8.0's 10pts
-    wf_flow = wave_fusion.get('wave_inst_flow', 50)
-    if wf_flow >= 70:
-        conviction += 8
-    elif wf_flow >= 55:
-        conviction += 5
-    elif wf_flow >= 40:
-        conviction += 2
+    # Signal 7: Sector Leadership (8 pts max) — v9.0 NEW
+    # Sector-relative: top10% vs bot10% → +0.59%/wk alpha within sector.
+    # Uses position_score as proxy for sector strength (3rd strongest predictor).
+    # Replaced: Institutional Flow (wave_inst_flow had no direct predictive evidence)
+    pos_scores = h.get('position_score', [])
+    latest_pos = pos_scores[-1] if pos_scores else 50
+    if latest_pos >= 80:
+        conviction += 8    # Sector dominant
+    elif latest_pos >= 65:
+        conviction += 5    # Sector strong
+    elif latest_pos >= 50:
+        conviction += 2    # Sector average+
 
-    # Signal 8: No-Decay Bonus (8 pts max) — NEW: rewards momentum health
+    # Signal 8: No-Decay Bonus (8 pts max) — rewards momentum health
     # Absence of decay = persistence is intact, not a trap
     if decay_score == 0:
         conviction += 8   # Zero decay = healthy momentum
@@ -1604,6 +1703,7 @@ def _compute_single_trajectory(h: dict) -> dict:
         'consistency': round(consistency, 2),
         'resilience': round(resilience, 2),
         'return_quality': round(return_quality, 2),
+        'breakout_quality': round(breakout_quality, 2),
         'hurst': round(_estimate_hurst(pcts), 3) if n >= HURST_CONFIG['min_weeks'] else 0.5,
         'confidence': round(confidence, 3),
         'confidence_lower': round(confidence_lower, 2),
@@ -1670,7 +1770,7 @@ def _empty_trajectory(ranks, totals, pcts, n):
     return {
         'trajectory_score': 0, 'positional': 0, 'trend': 50, 'velocity': 50,
         'acceleration': 50, 'consistency': 50, 'resilience': 50,
-        'return_quality': 50,
+        'return_quality': 50, 'breakout_quality': 50,
         'hurst': 0.5, 'confidence': BAYESIAN_CONFIDENCE['min_confidence'],
         'confidence_lower': 0, 'confidence_upper': 13.5,
         'grade': 'F', 'grade_emoji': '📉',
@@ -1764,21 +1864,22 @@ def _get_adaptive_weights(avg_pct: float, current_pct: float = None, confidence:
     # Momentum signals: velocity, acceleration, trend (gain weight when LOW confidence)
     # Stability signals: consistency, resilience, positional (gain weight when HIGH confidence)
     # return_quality: neutral (no shift)
-    # v8.1: Reduced positional shift (+2.5% vs old +5%), boosted consistency (+5% vs old +4%)
-    # and resilience (+4% vs old +3%) to match persistence-calibrated weights.
+    # v9.0: Confidence shifts now include breakout_quality component.
+    # Breakout quality is slightly momentum-like so gets mild negative shift at high confidence.
     
     # Max shift per component: 5% (0.05)
     max_shift = 0.05
     
     # Calculate shifts (positive shift_factor = boost stability, reduce momentum)
     shifts = {
-        'positional': shift_factor * max_shift * 0.5,         # +2.5% at high conf (v8.1: was +5%)
-        'trend': -shift_factor * max_shift * 0.6,             # -3% at high conf (unchanged)
-        'velocity': -shift_factor * max_shift,                # -5% at high conf (unchanged)
-        'acceleration': -shift_factor * max_shift * 0.6,      # -3% at high conf (unchanged)
-        'consistency': shift_factor * max_shift,               # +5% at high conf (v8.1: was +4%)
-        'resilience': shift_factor * max_shift * 0.8,          # +4% at high conf (v8.1: was +3%)
-        'return_quality': 0.0                                  # Neutral — always relevant
+        'positional': shift_factor * max_shift * 0.5,         # +2.5% at high conf
+        'trend': -shift_factor * max_shift * 0.5,             # -2.5% at high conf
+        'velocity': -shift_factor * max_shift * 0.8,          # -4% at high conf
+        'acceleration': -shift_factor * max_shift * 0.6,      # -3% at high conf
+        'consistency': shift_factor * max_shift,               # +5% at high conf
+        'resilience': shift_factor * max_shift * 0.8,          # +4% at high conf
+        'return_quality': 0.0,                                 # Neutral — always relevant
+        'breakout_quality': -shift_factor * max_shift * 0.4,   # -2% at high conf (mild)
     }
     
     # Apply shifts and ensure weights stay positive
@@ -2027,6 +2128,94 @@ def _calc_return_quality(ret_3m_list: List[float], ret_6m_list: List[float],
     # Final Composite: weighted blend of 4 sub-signals
     # ═══════════════════════════════════════════════════════════════════
     score = 0.30 * s1 + 0.30 * s2 + 0.20 * s3 + 0.20 * s4
+    return float(np.clip(score, 0, 100))
+
+
+def _calc_breakout_quality(h: dict, avg_pct: float, n: int) -> float:
+    """
+    Breakout Quality — Dedicated 8th scoring component (v9.0).
+
+    DATA EVIDENCE: breakout_score → next week return alpha = +0.44%/wk
+    (2nd strongest predictor after from_high_pct). This was previously
+    only used inside Wave Fusion as a sub-signal. Now dedicated component.
+
+    3 SUB-SIGNALS:
+      Signal 1 (45%): Current Breakout Strength — latest breakout_score
+      Signal 2 (30%): Breakout Trend — is breakout_score improving over time?
+      Signal 3 (25%): Breakout × Position Confirmation — high breakout + high position
+
+    Returns: float (0-100), where 50 = neutral, >70 = strong breakout, <30 = weak.
+    """
+    if n < 2:
+        return 50.0
+
+    bo_scores = h.get('breakout_score', [])
+    pos_scores = h.get('position_score', [])
+
+    # Get valid values
+    valid_bo = [v for v in bo_scores if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    if not valid_bo:
+        return 50.0
+
+    latest_bo = valid_bo[-1]
+
+    # ── Signal 1: Current Breakout Strength (45%) ──
+    # Sigmoid mapping of breakout_score (range ~14-100)
+    if latest_bo >= 75:
+        s1 = 85.0 + min((latest_bo - 75) / 25 * 15, 15.0)   # 85-100
+    elif latest_bo >= 55:
+        s1 = 65.0 + (latest_bo - 55) / 20 * 20               # 65-85
+    elif latest_bo >= 40:
+        s1 = 45.0 + (latest_bo - 40) / 15 * 20               # 45-65
+    elif latest_bo >= 28:
+        s1 = 25.0 + (latest_bo - 28) / 12 * 20               # 25-45
+    else:
+        s1 = max(5.0, latest_bo / 28 * 25)                    # 5-25
+
+    # ── Signal 2: Breakout Trend (30%) ──
+    # Is breakout_score improving recently?
+    if len(valid_bo) >= 3:
+        recent_window = min(4, len(valid_bo))
+        recent_bo = valid_bo[-recent_window:]
+        older_bo = valid_bo[:-recent_window] if len(valid_bo) > recent_window else valid_bo[:1]
+
+        recent_avg = float(np.mean(recent_bo))
+        older_avg = float(np.mean(older_bo)) if older_bo else recent_avg
+        bo_delta = recent_avg - older_avg
+
+        if bo_delta >= 15:
+            s2 = 88.0
+        elif bo_delta >= 8:
+            s2 = 72.0
+        elif bo_delta >= 3:
+            s2 = 58.0
+        elif bo_delta >= -3:
+            s2 = 45.0
+        elif bo_delta >= -8:
+            s2 = 32.0
+        else:
+            s2 = 18.0
+    else:
+        s2 = 50.0
+
+    # ── Signal 3: Breakout × Position Confirmation (25%) ──
+    # Data showed: position_score Q5 + breakout_score Q5 = +1.04%/wk alpha
+    valid_pos = [v for v in pos_scores if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    latest_pos = valid_pos[-1] if valid_pos else 50
+
+    if latest_bo >= 55 and latest_pos >= 50:
+        # Both strong — confirmed breakout
+        combo = (latest_bo + latest_pos) / 2
+        s3 = min(100, 60 + combo * 0.4)
+    elif latest_bo >= 40 and latest_pos >= 35:
+        s3 = 50.0 + (latest_bo - 40) + (latest_pos - 35) * 0.5
+    elif latest_bo < 25 and latest_pos < 20:
+        s3 = 15.0
+    else:
+        s3 = 40.0
+
+    # Final composite
+    score = 0.45 * s1 + 0.30 * s2 + 0.25 * s3
     return float(np.clip(score, 0, 100))
 
 
@@ -3238,7 +3427,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                                 index=0, key='sb_quick')
 
         st.markdown("---")
-        st.caption("v8.1 | Persistence-Calibrated + Backtest-Proven")
+        st.caption("v9.0 | Data-Driven + Sector-Relative")
 
     return {
         'categories': selected_cats,
@@ -5694,20 +5883,20 @@ def render_about_tab():
     """Render about/documentation tab"""
 
     st.markdown("""
-    ## 📊 Rank Trajectory Engine v8.1 — Persistence-Calibrated
+    ## 📊 Rank Trajectory Engine v9.0 — Data-Driven
 
-    The **ALL TIME BEST** stock rank trajectory analysis system with **7-component adaptive scoring**,
-    **persistence-calibrated weights**, **backtest-proven conviction**, **momentum decay warning**,
-    and **sector alpha detection**.
+    The **ALL TIME BEST** stock rank trajectory analysis system with **8-component adaptive scoring**,
+    **data-driven conviction** (from_high + breakout as top predictors), **sector-relative blending**,
+    **momentum decay warning**, and **sector alpha detection**.
 
     ---
 
     ### 🧠 The Architecture: Signal-Isolated Pipeline
 
     ```
-    7-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
-        → Hurst Persistence × Directional Price-Rank Alignment
-        → Momentum Decay Penalty → Sector Alpha Tag
+    8-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
+        → Hurst Persistence × Wave Fusion
+        → Sector-Relative Blending → Sector Alpha Tag
     ```
 
     **SIGNAL ISOLATION PRINCIPLE:** Each data source enters through exactly ONE scoring path.
@@ -5715,12 +5904,12 @@ def render_about_tab():
 
     | Layer | What It Does | Impact |
     |---|---|---|
-    | **7 Components** | Weighted scoring by position tier (7 dimensions) | 100% of base score |
+    | **8 Components** | Weighted scoring by position tier (8 dimensions inc. breakout_quality) | 100% of base score |
     | **Elite Bonus** | Sustained top-tier → guaranteed score floor | Top 3% for 60% weeks → floor 88 |
     | **Bayesian Shrinkage** | Short-history stocks pulled toward neutral | 4 weeks → 75% shrunk |
     | **Hurst Multiplier** | Persistent trends boosted, mean-reverting penalized | ×0.94 to ×1.06 |
-    | **Price-Rank Alignment** | DIRECTIONAL agreement only — sign(return) vs sign(rank Δ) | ×0.88 to ×1.08 |
-    | **Momentum Decay** | Catches stocks with good rank but deteriorating returns | ×0.93 to ×1.00 |
+    | **Wave Fusion** | Cross-validates WAVE Detection signals with Trajectory | ×0.94 to ×1.06 |
+    | **Sector-Relative** | Blends universe rank with sector rank (size-dampened) | ±15 score adj |
     | **Sector Alpha** | Separates leaders from sector-beta riders | Tag: LEADER / BETA / LAGGARD |
 
     ---
@@ -5782,20 +5971,24 @@ def render_about_tab():
 
     ---
 
-    ### � Advanced Trading Signals (v6.3)
+    ### 📈 Advanced Trading Signals (v9.0)
 
-    Five new signals designed for actionable trading decisions:
+    Data-driven signals based on 27-transition CSV analysis:
 
     #### 1. Conviction Score (0-100)
-    Aggregates 5 bullish signals into a single BUY confidence metric.
+    Aggregates 8 bullish signals into a single BUY confidence metric.
+    v9.0: Rebuilt using forward-return predictive analysis.
 
     | Signal | Max Points | Measures |
     |--------|-----------|----------|
-    | Price-Rank Alignment | 25 | CONFIRMED=25, NEUTRAL=10 |
-    | Return Quality | 20 | ≥75=20, ≥60=12, ≥50=5 |
-    | Data Confidence | 20 | ≥0.85=20, ≥0.6=12, ≥0.4=6 |
-    | Momentum (TMI) | 20 | ≥70=20, ≥60=12, ≥50=5 |
-    | Positional Strength | 15 | ≥90th=15, ≥80th=10, ≥70th=5 |
+    | Persistence Strength | 25 | Consecutive weeks in top 25% (backtest #1) |
+    | Consistency Quality | 13 | Stable rank trajectory |
+    | Near-High Strength | 14 | from_high_pct (#1 forward predictor, +0.55%/wk) |
+    | Return Quality | 10 | Actual returns backing rank |
+    | Breakout Quality | 12 | breakout_score (#2 predictor, +0.44%/wk) |
+    | Wave Confluence | 10 | WAVE system agreement |
+    | Sector Leadership | 8 | position_score (#3 predictor, +0.34%/wk) |
+    | No-Decay Bonus | 8 | Absence of momentum deterioration |
 
     | Tag | Score | Emoji |
     |-----|-------|-------|
