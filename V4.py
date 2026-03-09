@@ -5062,6 +5062,549 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
 
 
 # ============================================
+# STRATEGY BACKTEST ENGINE (v8.0)
+# ============================================
+# Walk-forward backtest that proves which selection strategy
+# generates the best ACTUAL returns using your CSV data.
+# Tests 8 strategies from "buy everything" to "max filter".
+# Uses price-based forward returns — no lookahead bias.
+
+def _run_strategy_backtest(uploaded_files, progress_callback=None):
+    """
+    Walk-forward strategy backtest.
+
+    For each week N (where N >= min_history):
+      1. Build histories using ONLY weeks 1..N (no future data)
+      2. Compute trajectory scores at that point
+      3. Apply 8 different selection strategies
+      4. Measure ACTUAL forward returns from week N+1 prices
+
+    Returns dict with results per strategy, or None if insufficient data.
+    """
+    # ── Step 1: Parse all CSVs ──
+    weekly_data = {}
+    for ufile in uploaded_files:
+        date = parse_date_from_filename(ufile.name)
+        if date is None:
+            continue
+        try:
+            ufile.seek(0)
+            df = pd.read_csv(ufile)
+            if 'rank' in df.columns and 'ticker' in df.columns:
+                df['ticker'] = df['ticker'].astype(str).str.strip()
+                df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
+                df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
+                df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+                weekly_data[date] = df
+        except Exception as e:
+            logger.warning(f"Backtest: Failed to load {ufile.name}: {e}")
+
+    dates = sorted(weekly_data.keys())
+    n_weeks = len(dates)
+    if n_weeks < 7:  # Need 5 history + 1 test + 1 forward
+        return None
+
+    min_history = 5  # Minimum weeks of data before first test
+
+    strategy_names = [
+        'S1: Universe Avg',
+        'S2: Top 10 Rank',
+        'S3: Top 20 Rank',
+        'S4: Persistent Top 50',
+        'S5: T-Score ≥ 70',
+        'S6: T-Score ≥ 70 + No Decay',
+        'S7: Conviction ≥ 65',
+        'S8: Full Signal',
+    ]
+    all_results = {name: [] for name in strategy_names}
+
+    # ── Step 2: Incremental walk-forward ──
+    histories = {}  # Built incrementally — grows each week
+    total_windows = len(dates) - min_history - 1
+
+    for week_idx, date in enumerate(dates):
+        df = weekly_data[date]
+        total = len(df)
+
+        # ── Add this week's data to histories ──
+        for _, row in df.iterrows():
+            ticker = str(row.get('ticker', '')).strip()
+            if not ticker or ticker == 'nan':
+                continue
+
+            if ticker not in histories:
+                histories[ticker] = {
+                    'dates': [], 'ranks': [], 'scores': [], 'prices': [],
+                    'total_per_week': [],
+                    'trend_qualities': [], 'market_states': [], 'pattern_history': [],
+                    'ret_7d': [], 'ret_30d': [], 'ret_3m': [], 'ret_6m': [],
+                    'from_high_pct': [], 'momentum_score': [], 'volume_score': [],
+                    'position_score': [], 'acceleration_score': [], 'breakout_score': [],
+                    'rvol_score': [], 'pe': [], 'eps_current': [], 'eps_change_pct': [],
+                    'from_low_pct': [], 'ret_1d': [], 'ret_1y': [],
+                    'rvol': [], 'vmi': [], 'money_flow_mm': [],
+                    'position_tension': [], 'momentum_harmony': [],
+                    'eps_tier': [], 'pe_tier': [], 'overall_market_strength': [],
+                    'company_name': '', 'category': '', 'sector': '',
+                    'industry': '', 'market_state': '', 'patterns': ''
+                }
+
+            h = histories[ticker]
+            h['dates'].append(date.strftime('%Y-%m-%d'))
+            h['ranks'].append(float(row['rank']) if pd.notna(row['rank']) else total)
+            h['scores'].append(float(row['master_score']))
+            h['prices'].append(float(row['price']))
+            h['total_per_week'].append(total)
+
+            tq_val = row.get('trend_quality', 0)
+            h['trend_qualities'].append(float(tq_val) if pd.notna(tq_val) else 0)
+            ms_val = row.get('market_state', '')
+            h['market_states'].append(str(ms_val).strip() if pd.notna(ms_val) else '')
+            pat_val = row.get('patterns', '')
+            h['pattern_history'].append(str(pat_val).strip() if pd.notna(pat_val) else '')
+
+            for col_name, hist_key in [
+                ('ret_7d', 'ret_7d'), ('ret_30d', 'ret_30d'), ('ret_3m', 'ret_3m'),
+                ('ret_6m', 'ret_6m'), ('from_high_pct', 'from_high_pct'),
+                ('momentum_score', 'momentum_score'), ('volume_score', 'volume_score'),
+                ('position_score', 'position_score'), ('acceleration_score', 'acceleration_score'),
+                ('breakout_score', 'breakout_score'), ('rvol_score', 'rvol_score'),
+                ('pe', 'pe'), ('eps_current', 'eps_current'),
+                ('eps_change_pct', 'eps_change_pct'), ('from_low_pct', 'from_low_pct'),
+                ('ret_1d', 'ret_1d'), ('ret_1y', 'ret_1y'),
+                ('rvol', 'rvol'), ('vmi', 'vmi'),
+                ('money_flow_mm', 'money_flow_mm'), ('position_tension', 'position_tension'),
+                ('momentum_harmony', 'momentum_harmony'),
+                ('overall_market_strength', 'overall_market_strength'),
+            ]:
+                col_val = row.get(col_name, None)
+                if col_val is not None and pd.notna(col_val):
+                    try:
+                        h[hist_key].append(float(col_val))
+                    except (ValueError, TypeError):
+                        h[hist_key].append(float('nan'))
+                else:
+                    h[hist_key].append(float('nan'))
+
+            for fld in ['company_name', 'category', 'sector', 'industry', 'market_state', 'patterns']:
+                val = row.get(fld, '')
+                if pd.notna(val) and str(val).strip():
+                    h[fld] = str(val).strip()
+
+            for tier_col in ['eps_tier', 'pe_tier']:
+                tier_val = row.get(tier_col, '')
+                h[tier_col].append(str(tier_val).strip() if pd.notna(tier_val) else '')
+
+        # ── Only test when we have enough history AND a next week exists ──
+        if week_idx < min_history or week_idx >= len(dates) - 1:
+            continue
+
+        window_num = week_idx - min_history
+        if progress_callback:
+            progress_callback(window_num / max(total_windows, 1),
+                              f"Testing week {date.strftime('%Y-%m-%d')} ({window_num + 1}/{total_windows})")
+
+        forward_date = dates[week_idx + 1]
+        forward_df = weekly_data[forward_date]
+
+        # ── Compute PRICE-BASED forward returns (ground truth) ──
+        cur_prices = {}
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            p = float(row['price']) if pd.notna(row['price']) and float(row['price']) > 0 else 0
+            if p > 0:
+                cur_prices[t] = p
+
+        fwd_prices = {}
+        for _, row in forward_df.iterrows():
+            t = str(row['ticker']).strip()
+            p = float(row['price']) if pd.notna(row['price']) and float(row['price']) > 0 else 0
+            if p > 0:
+                fwd_prices[t] = p
+
+        forward_rets = {}
+        for t in cur_prices:
+            if t in fwd_prices:
+                forward_rets[t] = (fwd_prices[t] / cur_prices[t] - 1) * 100
+
+        if not forward_rets:
+            continue
+
+        # ── RAW strategies (no trajectory computation needed) ──
+        # S1: Universe average — all stocks with valid forward returns
+        s1_tickers = list(forward_rets.keys())
+
+        # S2: Top 10 by WAVE rank
+        s2_tickers = df.nsmallest(10, 'rank')['ticker'].astype(str).str.strip().tolist()
+
+        # S3: Top 20 by rank (broader basket — tests concentration vs diversification)
+        s3_tickers = df.nsmallest(20, 'rank')['ticker'].astype(str).str.strip().tolist()
+
+        # S4: Persistent top 50 — rank in top 50 for last 4 consecutive weeks
+        s4_tickers = []
+        for t, h_dict in histories.items():
+            ranks_list = h_dict['ranks']
+            totals_list = h_dict['total_per_week']
+            if len(ranks_list) >= 4:
+                last4_pcts = [(1 - ranks_list[-(i+1)] / max(totals_list[-(i+1)], 1)) * 100
+                              for i in range(4)]
+                if all(p >= 97.5 for p in last4_pcts):  # Top ~50 out of ~2100
+                    s4_tickers.append(t)
+        # Relax to top 100 if too few
+        if len(s4_tickers) < 5:
+            for t, h_dict in histories.items():
+                ranks_list = h_dict['ranks']
+                totals_list = h_dict['total_per_week']
+                if len(ranks_list) >= 4 and t not in s4_tickers:
+                    last4_pcts = [(1 - ranks_list[-(i+1)] / max(totals_list[-(i+1)], 1)) * 100
+                                  for i in range(4)]
+                    if all(p >= 95 for p in last4_pcts):
+                        s4_tickers.append(t)
+
+        # ── TRAJECTORY strategies (need full computation) ──
+        traj = {}
+        for ticker, h_dict in histories.items():
+            if len(h_dict['ranks']) >= 2:
+                try:
+                    traj[ticker] = _compute_single_trajectory(h_dict)
+                except Exception:
+                    pass
+
+        # S5: T-Score >= 70
+        s5_tickers = [t for t, r in traj.items() if r['trajectory_score'] >= 70]
+
+        # S6: T-Score >= 70 + No Decay (trap filter)
+        s6_tickers = [t for t, r in traj.items()
+                      if r['trajectory_score'] >= 70
+                      and r.get('decay_label', '') not in ('DECAY_HIGH', 'DECAY_MODERATE')]
+
+        # S7: Conviction >= 65 (HIGH or above)
+        s7_tickers = [t for t, r in traj.items() if r.get('conviction', 0) >= 65]
+
+        # S8: Full Signal — max filtering
+        s8_tickers = [t for t, r in traj.items()
+                      if r['trajectory_score'] >= 70
+                      and r.get('conviction', 0) >= 65
+                      and r.get('decay_label', '') not in ('DECAY_HIGH', 'DECAY_MODERATE')
+                      and r.get('wave_fusion_label', 'WAVE_NEUTRAL') in ('WAVE_CONFIRMED', 'WAVE_STRONG')]
+
+        # ── Measure forward returns for each strategy ──
+        strategy_picks = {
+            'S1: Universe Avg': s1_tickers,
+            'S2: Top 10 Rank': s2_tickers,
+            'S3: Top 20 Rank': s3_tickers,
+            'S4: Persistent Top 50': s4_tickers,
+            'S5: T-Score ≥ 70': s5_tickers,
+            'S6: T-Score ≥ 70 + No Decay': s6_tickers,
+            'S7: Conviction ≥ 65': s7_tickers,
+            'S8: Full Signal': s8_tickers,
+        }
+
+        week_label = date.strftime('%Y-%m-%d')
+
+        for sname, tickers in strategy_picks.items():
+            valid_rets = [forward_rets[t] for t in tickers if t in forward_rets]
+            avg_ret = float(np.mean(valid_rets)) if valid_rets else 0.0
+            med_ret = float(np.median(valid_rets)) if valid_rets else 0.0
+            all_results[sname].append({
+                'week': week_label,
+                'forward_week': forward_date.strftime('%Y-%m-%d'),
+                'avg_return': avg_ret,
+                'median_return': med_ret,
+                'n_stocks': len(valid_rets),
+                'n_positive': sum(1 for r in valid_rets if r > 0),
+                'best': max(valid_rets) if valid_rets else 0,
+                'worst': min(valid_rets) if valid_rets else 0,
+            })
+
+    if progress_callback:
+        progress_callback(1.0, "Backtest complete!")
+
+    return all_results, dates
+
+
+# ============================================
+# UI: BACKTEST TAB
+# ============================================
+
+def render_backtest_tab(uploaded_files):
+    """Render strategy backtest validation tab"""
+    st.markdown("### 📊 Strategy Backtest — Walk-Forward Validation")
+    st.markdown("""
+    <div style="background:#161b22; border-radius:10px; padding:16px; border:1px solid #30363d; margin-bottom:16px;">
+        <div style="font-size:0.85rem; color:#8b949e;">
+            <b>What this does:</b> For each week, it computes scores using ONLY past data,
+            then checks what ACTUALLY happened to the selected stocks next week.
+            No lookahead bias — pure walk-forward validation using real price returns.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Check cache
+    bt_cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
+    cached = st.session_state.get('_bt_result')
+    cached_key = st.session_state.get('_bt_key')
+
+    if cached is not None and cached_key == bt_cache_key:
+        bt_results, bt_dates = cached
+    else:
+        bt_results = None
+
+    col_run, col_info = st.columns([1, 3])
+    with col_run:
+        run_btn = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
+    with col_info:
+        if bt_results is None:
+            st.caption("Click Run to test 8 strategies against actual forward returns")
+        else:
+            st.caption("✅ Backtest results loaded. Click Run to refresh.")
+
+    if run_btn:
+        progress_bar = st.progress(0, text="Initializing backtest...")
+
+        def _progress(pct, text):
+            progress_bar.progress(min(pct, 1.0), text=text)
+
+        with st.spinner("Running walk-forward backtest..."):
+            result = _run_strategy_backtest(uploaded_files, progress_callback=_progress)
+
+        progress_bar.empty()
+
+        if result is None:
+            st.error("❌ Need at least 7 weeks of CSV data for backtest.")
+            return
+
+        bt_results, bt_dates = result
+        st.session_state['_bt_result'] = (bt_results, bt_dates)
+        st.session_state['_bt_key'] = bt_cache_key
+        st.rerun()
+
+    if bt_results is None:
+        return
+
+    # ── Build Summary Statistics ──
+    summary_rows = []
+    for sname, weeks in bt_results.items():
+        if not weeks:
+            continue
+        returns = [w['avg_return'] for w in weeks]
+        n_weeks_tested = len(returns)
+        avg_weekly = np.mean(returns)
+        cumulative = np.prod([1 + r / 100 for r in returns]) * 100 - 100
+        win_rate = sum(1 for r in returns if r > 0) / max(n_weeks_tested, 1) * 100
+        avg_stocks = np.mean([w['n_stocks'] for w in weeks])
+        std_ret = np.std(returns) if len(returns) > 1 else 0.001
+        sharpe = avg_weekly / max(std_ret, 0.001) * np.sqrt(52)  # Annualized
+        worst_week = min(returns)
+        best_week = max(returns)
+
+        summary_rows.append({
+            'Strategy': sname,
+            'Weeks Tested': n_weeks_tested,
+            'Avg Stocks/Wk': round(avg_stocks, 0),
+            'Avg Wk Return %': round(avg_weekly, 2),
+            'Cumulative %': round(cumulative, 2),
+            'Win Rate %': round(win_rate, 1),
+            'Sharpe (Ann.)': round(sharpe, 2),
+            'Best Wk %': round(best_week, 2),
+            'Worst Wk %': round(worst_week, 2),
+        })
+
+    if not summary_rows:
+        st.warning("No test windows available. Need more week coverage.")
+        return
+
+    summary_df = pd.DataFrame(summary_rows)
+
+    # ── Key Insight ──
+    universe_cum = summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Cumulative %']
+    universe_val = float(universe_cum.iloc[0]) if len(universe_cum) > 0 else 0
+
+    best_strat = summary_df.loc[summary_df['Cumulative %'].idxmax()]
+    worst_strat = summary_df.loc[summary_df['Cumulative %'].idxmin()]
+    best_name = best_strat['Strategy']
+    best_cum = best_strat['Cumulative %']
+    best_vs_uni = best_cum - universe_val
+
+    if best_vs_uni > 0:
+        insight_color = '#3fb950'
+        insight_icon = '✅'
+        insight_text = f"**{best_name}** generated **+{best_cum:.1f}%** cumulative return, beating the universe by **+{best_vs_uni:.1f}%**"
+    else:
+        insight_color = '#FF9800'
+        insight_icon = '⚠️'
+        insight_text = f"No strategy beat the universe average ({universe_val:.1f}%). Best: **{best_name}** at {best_cum:.1f}%"
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg, #0d1117, #161b22); border-radius:12px;
+                padding:20px; border:2px solid {insight_color}; margin-bottom:20px;">
+        <div style="font-size:1.2rem; font-weight:800; color:{insight_color}; margin-bottom:8px;">
+            {insight_icon} KEY FINDING
+        </div>
+        <div style="font-size:0.95rem; color:#e6edf3;">
+            {insight_text}
+        </div>
+        <div style="margin-top:8px; font-size:0.75rem; color:#484f58;">
+            Based on {summary_rows[0]['Weeks Tested']} walk-forward test windows with no lookahead bias
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Strategy Performance Table ──
+    st.markdown("#### 📋 Strategy Comparison")
+
+    # Color the key columns
+    def _highlight_returns(val):
+        if isinstance(val, (int, float)):
+            if val > 0:
+                return 'color: #3fb950; font-weight: 700'
+            elif val < 0:
+                return 'color: #ff7b72; font-weight: 700'
+        return ''
+
+    styled_df = summary_df.style.applymap(
+        _highlight_returns,
+        subset=['Avg Wk Return %', 'Cumulative %', 'Best Wk %', 'Worst Wk %']
+    ).format({
+        'Avg Wk Return %': '{:+.2f}',
+        'Cumulative %': '{:+.2f}',
+        'Win Rate %': '{:.0f}',
+        'Sharpe (Ann.)': '{:.2f}',
+        'Best Wk %': '{:+.2f}',
+        'Worst Wk %': '{:+.2f}',
+        'Avg Stocks/Wk': '{:.0f}',
+    })
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+    # ── Cumulative Return Chart ──
+    st.markdown("#### 📈 Cumulative Return Over Time")
+
+    fig = go.Figure()
+    strat_colors = {
+        'S1: Universe Avg': '#484f58',
+        'S2: Top 10 Rank': '#8b949e',
+        'S3: Top 20 Rank': '#79c0ff',
+        'S4: Persistent Top 50': '#d2a8ff',
+        'S5: T-Score ≥ 70': '#ffa657',
+        'S6: T-Score ≥ 70 + No Decay': '#f0883e',
+        'S7: Conviction ≥ 65': '#3fb950',
+        'S8: Full Signal': '#FFD700',
+    }
+
+    for sname, weeks in bt_results.items():
+        if not weeks:
+            continue
+        cum_vals = []
+        cum = 100  # Start at 100
+        x_dates = []
+        for w in weeks:
+            cum = cum * (1 + w['avg_return'] / 100)
+            cum_vals.append(cum)
+            x_dates.append(w['forward_week'])
+
+        line_width = 3 if sname in ('S1: Universe Avg', best_name) else 1.5
+        dash = 'dash' if sname == 'S1: Universe Avg' else None
+
+        fig.add_trace(go.Scatter(
+            x=x_dates, y=cum_vals,
+            name=sname,
+            mode='lines+markers',
+            marker=dict(size=5),
+            line=dict(color=strat_colors.get(sname, '#8b949e'), width=line_width, dash=dash),
+            hovertemplate=f'{sname}<br>Week: %{{x}}<br>Value: %{{y:.1f}}<br>Return: %{{customdata:+.2f}}%<extra></extra>',
+            customdata=[w['avg_return'] for w in weeks],
+        ))
+
+    fig.update_layout(
+        template='plotly_dark',
+        paper_bgcolor='#0d1117',
+        plot_bgcolor='#0d1117',
+        height=450,
+        margin=dict(l=40, r=20, t=30, b=40),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.35, xanchor='center', x=0.5,
+                    font=dict(size=10)),
+        yaxis=dict(title='Portfolio Value (₹100 start)', gridcolor='#21262d'),
+        xaxis=dict(title='Week', gridcolor='#21262d'),
+        hovermode='x unified',
+    )
+    fig.add_hline(y=100, line_dash='dot', line_color='#484f58', opacity=0.5)
+    st.plotly_chart(fig, use_container_width=True, key='bt_cumulative_chart')
+
+    # ── Weekly Breakdown ──
+    with st.expander("📅 Weekly Breakdown", expanded=False):
+        # Create a combined table: rows = weeks, columns = strategies
+        if bt_results:
+            first_strat = list(bt_results.keys())[0]
+            week_labels = [w['week'] for w in bt_results[first_strat]]
+
+            breakdown_data = {'Decision Week': week_labels}
+            for sname in bt_results:
+                breakdown_data[sname] = [f"{w['avg_return']:+.2f}% ({w['n_stocks']})"
+                                         for w in bt_results[sname]]
+
+            breakdown_df = pd.DataFrame(breakdown_data)
+            st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
+
+    # ── Excess Return vs Universe ──
+    st.markdown("#### 🎯 Excess Return vs Universe (Alpha)")
+
+    fig2 = go.Figure()
+    universe_returns = [w['avg_return'] for w in bt_results.get('S1: Universe Avg', [])]
+
+    for sname, weeks in bt_results.items():
+        if sname == 'S1: Universe Avg' or not weeks:
+            continue
+        excess = [w['avg_return'] - ur for w, ur in zip(weeks, universe_returns)]
+        x_dates = [w['forward_week'] for w in weeks]
+        avg_excess = np.mean(excess) if excess else 0
+
+        colors = ['#3fb950' if e >= 0 else '#ff7b72' for e in excess]
+
+        fig2.add_trace(go.Bar(
+            x=x_dates, y=excess,
+            name=f"{sname} (avg: {avg_excess:+.2f}%)",
+            marker_color=strat_colors.get(sname, '#8b949e'),
+            opacity=0.7,
+            visible=True if sname == best_name else 'legendonly',
+            hovertemplate=f'{sname}<br>Week: %{{x}}<br>Alpha: %{{y:+.2f}}%<extra></extra>',
+        ))
+
+    fig2.update_layout(
+        template='plotly_dark',
+        paper_bgcolor='#0d1117',
+        plot_bgcolor='#0d1117',
+        height=350,
+        margin=dict(l=40, r=20, t=30, b=40),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.4, xanchor='center', x=0.5,
+                    font=dict(size=10)),
+        yaxis=dict(title='Excess Return vs Universe %', gridcolor='#21262d', zeroline=True,
+                   zerolinecolor='#484f58'),
+        xaxis=dict(title='Week', gridcolor='#21262d'),
+        barmode='group',
+    )
+    st.plotly_chart(fig2, use_container_width=True, key='bt_alpha_chart')
+
+    # ── Strategy Descriptions ──
+    with st.expander("📖 Strategy Definitions", expanded=False):
+        st.markdown("""
+        | Strategy | Selection Rule | Tests |
+        |----------|---------------|-------|
+        | **S1: Universe Avg** | Buy all stocks equally | Baseline — market average |
+        | **S2: Top 10 Rank** | 10 lowest WAVE rank numbers | Does raw ranking predict? |
+        | **S3: Top 20 Rank** | 20 lowest WAVE rank numbers | Does broader selection reduce risk? |
+        | **S4: Persistent Top 50** | Top ~2.5% for 4+ consecutive weeks | Does persistence add value? |
+        | **S5: T-Score ≥ 70** | Full Trajectory Engine score ≥ 70 | Does the 7-component system work? |
+        | **S6: T-Score ≥ 70 + No Decay** | S5 + no momentum decay trap | Does trap detection help? |
+        | **S7: Conviction ≥ 65** | Multi-signal conviction score ≥ 65 | Does conviction predict returns? |
+        | **S8: Full Signal** | T-Score ≥ 70 + Conviction ≥ 65 + No Decay + WAVE Confirmed/Strong | Does max filtering produce best results? |
+
+        **Forward Return:** Actual price change from current week to next week. Computed from price data, not ret_7d.
+
+        **Walk-Forward:** At each test point, only data available UP TO that week is used. No future information leaks into the scoring.
+        """)
+
+
+# ============================================
 # UI: ABOUT TAB
 # ============================================
 
@@ -5441,8 +5984,9 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_ranking, tab_search, tab_funnel, tab_alerts, tab_export, tab_about = st.tabs([
-        "🏆 Rankings", "🔍 Search & Analyze", "🎯 Funnel", "🚨 Alerts", "📤 Export", "ℹ️ About"
+    tab_ranking, tab_search, tab_funnel, tab_backtest, tab_alerts, tab_export, tab_about = st.tabs([
+        "🏆 Rankings", "🔍 Search & Analyze", "🎯 Funnel", "📊 Backtest",
+        "🚨 Alerts", "📤 Export", "ℹ️ About"
     ])
 
     with tab_ranking:
@@ -5453,6 +5997,9 @@ def main():
 
     with tab_funnel:
         render_funnel_tab(filtered_df, traj_df, histories, metadata)
+
+    with tab_backtest:
+        render_backtest_tab(uploaded_files)
 
     with tab_alerts:
         render_alerts_tab(filtered_df, histories)
