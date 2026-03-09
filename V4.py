@@ -10,8 +10,8 @@ and WAVE SIGNAL FUSION ENGINE — Deep integration of 18 WAVE Detection signals.
 
 CORE ARCHITECTURE:
   7-Component Adaptive Scoring → Elite Dominance Bonus → Bayesian Shrinkage
-    → Hurst Persistence Multiplier → Wave Signal Fusion Multiplier
-    → Directional Price-Rank Alignment → Momentum Decay Penalty → Sector Alpha Tag
+    → Unified Multiplier (Hurst × Wave Fusion × Price Alignment × Momentum Decay)
+    → Sector Alpha Tag
 
   Wave Signal Fusion: Cross-validates WAVE Detection scores with Trajectory calculations.
     4 Fusion Signals: Confluence (35%) + Institutional Flow (30%) + Momentum Harmony (20%)
@@ -38,7 +38,7 @@ Components: Adaptive Weights by Tier (7 components)
   Stage 2: Validation — 5 Wave Engine rules, must pass 4/5    → 20-30 stocks
   Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND  → 5-10 FINAL BUYS
 
-Version: 6.3.0
+Version: 8.0.0
 Last Updated: March 2026
 """
 
@@ -1221,19 +1221,19 @@ def _compute_single_trajectory(h: dict) -> dict:
     # ── Price-Rank Alignment Multiplier (v6.1 — purely directional) ──
     price_multiplier, price_label, price_alignment = _calc_price_alignment(ret_7d, ret_30d, pcts, avg_pct)
 
-    # ── v8.0: Apply multipliers with TOTAL CAP (hurst × wave_fusion × price) ──
-    # Theoretical range: hurst(0.94-1.06) × fusion(0.92-1.10) × price(0.88-1.08) = 0.761-1.258
-    # Symmetric cap: ×0.82 to ×1.18 (generous but bounded)
-    pre_price_score = trajectory_score  # Save for diagnostics
-    combined_mult = hurst_multiplier * wave_fusion_multiplier * price_multiplier
-    combined_mult = float(np.clip(combined_mult, 0.82, 1.18))
-    trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
-
     # ── Momentum Decay Warning (v6.1) ──
     # Catches stocks with good rank but deteriorating returns
     decay_multiplier, decay_label, decay_score = _calc_momentum_decay(ret_7d, ret_30d, from_high, pcts, avg_pct, ret_6m)
-    pre_decay_score = trajectory_score
-    trajectory_score = float(np.clip(trajectory_score * decay_multiplier, 0, 100))
+
+    # ── v8.0: Apply ALL multipliers with UNIFIED CAP ──
+    # All 4 multipliers combined into one capped product.
+    # Theoretical range: hurst(0.94-1.06) × fusion(0.92-1.10) × price(0.88-1.08) × decay(0.93-1.0)
+    # Without cap: 0.709 to 1.258.  Symmetric cap: ×0.78 to ×1.18
+    pre_price_score = trajectory_score  # Save for diagnostics
+    combined_mult = hurst_multiplier * wave_fusion_multiplier * price_multiplier * decay_multiplier
+    combined_mult = float(np.clip(combined_mult, 0.78, 1.18))
+    trajectory_score = float(np.clip(trajectory_score * combined_mult, 0, 100))
+    pre_decay_score = trajectory_score  # Same as final after unified cap (kept for backward compat)
 
     # ── Grade ──
     grade, grade_emoji = get_grade(trajectory_score)
@@ -1329,7 +1329,7 @@ def _compute_single_trajectory(h: dict) -> dict:
         conviction += 20
     elif price_label == 'NEUTRAL':
         conviction += 8
-    # Signal 2: Sector Leadership (15 pts max)
+    # Signal 2: Return Quality (15 pts max)
     if return_quality >= 75:
         conviction += 15
     elif return_quality >= 60:
@@ -1544,6 +1544,7 @@ def _compute_single_trajectory(h: dict) -> dict:
         'decay_label': decay_label,
         'decay_tag': decay_tag,
         'pre_decay_score': round(pre_decay_score, 2),
+        'combined_mult': round(combined_mult, 4),
         'signal_tags': signal_tags,
         'current_rank': current_rank,
         'best_rank': best_rank,
@@ -1601,6 +1602,7 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'decay_score': 0, 'decay_multiplier': 1.0,
         'decay_label': '', 'decay_tag': '',
         'pre_decay_score': 0,
+        'combined_mult': 1.0,
         'signal_tags': '',
         'sector_alpha_tag': 'NEUTRAL', 'sector_alpha_value': 0,
         'current_rank': int(ranks[-1]) if ranks else 0,
@@ -3453,7 +3455,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             key='custom_cols'
         )
         if not selected_cols:
-            selected_cols = ['#', 'Ticker', 'T-Score', 'Grade']
+            selected_cols = ['T-Rank', 'Ticker', 'T-Score', 'Grade']
     else:
         selected_cols = VIEW_PRESETS.get(view_mode, VIEW_PRESETS['Standard'])
 
@@ -3875,7 +3877,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 <span style="color:#8b949e; font-size:0.8rem;">Status</span>
                 <span style="color:{pa_color}; font-weight:700;">{pa_label.replace('_', ' ')}</span>
             </div>
-            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Pre: {row.get('pre_price_score', row['trajectory_score']):.1f} → Post: {row.get('pre_decay_score', row['trajectory_score']):.1f}</div>
+            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Base Score: {row.get('pre_price_score', row['trajectory_score']):.1f}</div>
         </div>
         <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
             <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🔻 Momentum Decay</div>
@@ -3891,7 +3893,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 <span style="color:#8b949e; font-size:0.8rem;">Status</span>
                 <span style="color:{d_color}; font-weight:700;">{d_label if d_label else 'CLEAN ✅'}</span>
             </div>
-            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Pre: {row.get('pre_decay_score', row['trajectory_score']):.1f} → Final: {row['trajectory_score']:.1f}</div>
+            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Unified ×{row.get('combined_mult', 1.0):.3f} → Final: {row['trajectory_score']:.1f}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -3949,8 +3951,8 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     wf_flow  = row.get('wave_inst_flow', 50)
     wf_harm  = row.get('wave_harmony', 50)
     wf_fund  = row.get('wave_fundamental', 50)
-    wf_tension = row.get('wave_position_tension', 0)
-    wf_from_low = row.get('wave_from_low', 0)
+    wf_tension = row.get('wave_position_tension') or 0
+    wf_from_low = row.get('wave_from_low') or 0
     wf_colors = {'WAVE_STRONG': '#00E676', 'WAVE_CONFIRMED': '#3fb950', 'WAVE_NEUTRAL': '#484f58',
                  'WAVE_WEAK': '#FF9800', 'WAVE_CONFLICT': '#FF1744'}
     wf_c = wf_colors.get(wf_label, '#484f58')
@@ -4012,11 +4014,11 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                 <span style="color:#8b949e; font-size:0.8rem;">1D Return</span>
-                <span style="color:#8b949e; font-weight:600;">{row.get('wave_ret_1d', 0):.2f}%</span>
+                <span style="color:#8b949e; font-weight:600;">{(row.get('wave_ret_1d') or 0):.2f}%</span>
             </div>
             <div style="display:flex; justify-content:space-between;">
                 <span style="color:#8b949e; font-size:0.8rem;">1Y Return</span>
-                <span style="color:#8b949e; font-weight:600;">{row.get('wave_ret_1y', 0):.1f}%</span>
+                <span style="color:#8b949e; font-weight:600;">{(row.get('wave_ret_1y') or 0):.1f}%</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
