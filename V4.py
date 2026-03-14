@@ -1181,8 +1181,55 @@ def _compute_wave_fusion(h: dict, traj_components: dict) -> dict:
     # ── Supplementary signals for downstream use ──
     position_tension = _latest_valid(h.get('position_tension', []), 0)
     from_low = _latest_valid(h.get('from_low_pct', []))
+    from_high_raw = _latest_valid(h.get('from_high_pct', []))
     ret_1d = _latest_valid(h.get('ret_1d', []))
     ret_1y = _latest_valid(h.get('ret_1y', []))
+
+    # ── Rally Leg: detect where the CURRENT rally started (recent price trough) ──
+    # Uses actual price history — NOT the 52w annual low (which is stale/irrelevant).
+    # Find the lowest price in last 12 weeks → that is where this rally leg began.
+    # rally_gain   = % the stock has already risen this leg
+    # rally_room   = % still remaining to reach 52w high (gap to close)
+    # rally_leg_pct = rally_gain / (rally_gain + rally_room) × 100
+    #   0%   = just started climbing (most room ahead)
+    #   100% = already at 52w high (rally leg fully realised)
+    # rally_weeks = how many weeks since the trough (age of this move)
+    #
+    # Stage logic is gain-magnitude based (absolute %, not range ratio):
+    #   FRESH   < 5%   gain  → rally just kicked off
+    #   EARLY   5-15%  gain  → solid momentum, lots of room
+    #   RUNNING 15-30% gain  → good move, watch for resistance
+    #   MATURE  30-50% gain  → significant leg, be selective
+    #   LATE    > 50%  gain  → extended move, risk/reward narrows
+    prices = h.get('prices', [])
+    _lookback = min(16, len(prices))
+    rally_gain = 0.0
+    rally_weeks = 0
+    rally_leg_pct = 50.0
+    rally_stage = 'UNKNOWN'
+    if _lookback >= 2 and prices:
+        _recent = prices[-_lookback:]
+        _trough_idx = int(np.argmin(_recent))
+        _trough_price = _recent[_trough_idx]
+        _cur_price = prices[-1]
+        rally_weeks = _lookback - 1 - _trough_idx   # weeks since trough
+        if _trough_price > 0:
+            rally_gain = round((_cur_price - _trough_price) / _trough_price * 100, 1)
+        # Gap remaining to 52w high
+        _gap_to_high = abs(from_high_raw) if (from_high_raw is not None) else 0.0
+        _total = rally_gain + _gap_to_high
+        rally_leg_pct = round((rally_gain / _total * 100), 1) if (_total > 1 and rally_gain >= 0) else 0.0
+        # Stage by magnitude of gain already captured
+        if rally_gain < 5:
+            rally_stage = 'FRESH'
+        elif rally_gain < 15:
+            rally_stage = 'EARLY'
+        elif rally_gain < 30:
+            rally_stage = 'RUNNING'
+        elif rally_gain < 50:
+            rally_stage = 'MATURE'
+        else:
+            rally_stage = 'LATE'
 
     return {
         'wave_fusion_score': round(fusion_score, 1),
@@ -1195,6 +1242,11 @@ def _compute_wave_fusion(h: dict, traj_components: dict) -> dict:
         'wave_fundamental': round(fund_quality, 1),
         'wave_position_tension': round(position_tension, 2) if position_tension else 0,
         'wave_from_low': round(from_low, 1) if from_low is not None else None,
+        'wave_from_high': round(from_high_raw, 1) if from_high_raw is not None else None,
+        'rally_gain': rally_gain,
+        'rally_weeks': rally_weeks,
+        'rally_leg_pct': rally_leg_pct,
+        'rally_stage': rally_stage,
         'wave_ret_1d': round(ret_1d, 2) if ret_1d is not None else None,
         'wave_ret_1y': round(ret_1y, 2) if ret_1y is not None else None,
     }
@@ -1701,6 +1753,11 @@ def _compute_single_trajectory(h: dict) -> dict:
         'wave_fundamental': wave_fusion.get('wave_fundamental', 50),
         'wave_position_tension': wave_fusion.get('wave_position_tension', 0),
         'wave_from_low': wave_fusion.get('wave_from_low'),
+        'wave_from_high': wave_fusion.get('wave_from_high'),
+        'rally_gain': wave_fusion.get('rally_gain', 0.0),
+        'rally_weeks': wave_fusion.get('rally_weeks', 0),
+        'rally_leg_pct': wave_fusion.get('rally_leg_pct', 50.0),
+        'rally_stage': wave_fusion.get('rally_stage', 'UNKNOWN'),
         'wave_ret_1d': wave_fusion.get('wave_ret_1d'),
         'wave_ret_1y': wave_fusion.get('wave_ret_1y'),
     }
@@ -1739,7 +1796,9 @@ def _empty_trajectory(ranks, totals, pcts, n):
         'wave_fusion_label': 'WAVE_NEUTRAL', 'wave_confluence': 50,
         'wave_inst_flow': 50, 'wave_harmony': 50,
         'wave_fundamental': 50, 'wave_position_tension': 0,
-        'wave_from_low': None, 'wave_ret_1d': None, 'wave_ret_1y': None,
+        'wave_from_low': None, 'wave_from_high': None,
+        'rally_gain': 0.0, 'rally_weeks': 0, 'rally_leg_pct': 50.0, 'rally_stage': 'UNKNOWN',
+        'wave_ret_1d': None, 'wave_ret_1y': None,
     }
 
 
@@ -3613,6 +3672,12 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                       st.column_config.ProgressColumn('Flow', min_value=0, max_value=100, format="%.0f")),
         'Harmony':  ('wave_harmony', 'Harm', 'Momentum harmony score 0-100',
                      st.column_config.ProgressColumn('Harm', min_value=0, max_value=100, format="%.0f")),
+        # Rally Leg (price-trough based — where the current move actually started)
+        'Rally%':   ('rally_leg_pct', 'Rally%', 'Rally leg completion: % of current move from recent trough to 52w high. 0%=just started, 100%=at 52w high.',
+                     st.column_config.ProgressColumn('Rally%', min_value=0, max_value=100, format="%.0f%%")),
+        'Stage':    ('rally_stage', 'Stage', 'Rally stage by gain size: FRESH(<5%)/EARLY(5-15%)/RUNNING(15-30%)/MATURE(30-50%)/LATE(>50%)', None),
+        'RallyGain': ('rally_gain', 'RallyGain', '% price gain from recent trough (where this specific rally started)',
+                     st.column_config.NumberColumn(format="+%.1f%%")),
     }
 
     VIEW_PRESETS = {
@@ -3624,12 +3689,12 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
         'Trading':  ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Grade', 'Conviction',
                      'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak', 'Vol Conf',
-                     'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Streak', 'Trajectory'],
+                     'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Rally%', 'RallyGain', 'Stage', 'Streak', 'Trajectory'],
         'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
                      'Grade', 'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Alpha', 
                      'Conviction', 'Risk-Adj', 'Exit Risk', 'Hot Streak', 'Vol Conf',
-                     'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Harmony', 'Trajectory'],
+                     'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Harmony', 'Rally%', 'RallyGain', 'Stage', 'Trajectory'],
     }
 
     # ── Custom view: user picks columns ──
@@ -4132,6 +4197,15 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     wf_fund  = row.get('wave_fundamental', 50)
     wf_tension = row.get('wave_position_tension') or 0
     wf_from_low = row.get('wave_from_low') or 0
+    wf_from_high = row.get('wave_from_high') or 0
+    rally_pos = row.get('rally_position') or 50
+    rally_gain = row.get('rally_gain', 0.0)
+    rally_weeks = row.get('rally_weeks', 0)
+    rally_leg_pct = row.get('rally_leg_pct', 50.0)
+    rally_stage = row.get('rally_stage', 'UNKNOWN')
+    # FRESH/EARLY = green (good entry), RUNNING = orange (riding), MATURE/LATE = red (extended)
+    _stage_colors = {'FRESH': '#00E676', 'EARLY': '#3fb950', 'RUNNING': '#FF9800', 'MATURE': '#FF5722', 'LATE': '#FF1744', 'UNKNOWN': '#484f58'}
+    _stage_c = _stage_colors.get(rally_stage, '#8b949e')
     wf_colors = {'WAVE_STRONG': '#00E676', 'WAVE_CONFIRMED': '#3fb950', 'WAVE_NEUTRAL': '#484f58',
                  'WAVE_WEAK': '#FF9800', 'WAVE_CONFLICT': '#FF1744'}
     wf_c = wf_colors.get(wf_label, '#484f58')
@@ -4182,22 +4256,31 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         _tens_c = '#FF1744' if wf_tension > 0.7 else '#FF9800' if wf_tension > 0.4 else '#3fb950'
         st.markdown(f"""
         <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
-            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">⚡ Supplementary</div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                <span style="color:#8b949e; font-size:0.8rem;">Position Tension</span>
-                <span style="color:{_tens_c}; font-weight:600;">{wf_tension:.2f}</span>
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">📈 Rally Leg Status</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Stage</span>
+                <span style="color:{_stage_c}; font-weight:700; font-size:0.85rem;">{rally_stage}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Gain this leg</span>
+                <span style="color:{_stage_c}; font-weight:700;">+{rally_gain:.1f}%</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Age of move</span>
+                <span style="color:#8b949e; font-weight:600;">{rally_weeks} wk{'s' if rally_weeks != 1 else ''} ago</span>
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                <span style="color:#8b949e; font-size:0.8rem;">From 52w Low</span>
-                <span style="color:#8b949e; font-weight:600;">{wf_from_low:.1f}%</span>
+                <span style="color:#8b949e; font-size:0.8rem;">Gap to 52w high</span>
+                <span style="color:#8b949e; font-weight:600;">{wf_from_high:.1f}%</span>
             </div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                <span style="color:#8b949e; font-size:0.8rem;">1D Return</span>
-                <span style="color:#8b949e; font-weight:600;">{(row.get('wave_ret_1d') or 0):.2f}%</span>
+            <div style="font-size:0.7rem; color:#8b949e; margin-bottom:2px;">Leg completion (gain vs. gap to 52w high)</div>
+            <div style="background:#21262d; border-radius:4px; height:6px; overflow:hidden; margin-bottom:4px;">
+                <div style="width:{min(rally_leg_pct, 100):.1f}%; background:linear-gradient(90deg, #00E676 0%, #FF9800 55%, #FF1744 100%); height:100%;"></div>
             </div>
             <div style="display:flex; justify-content:space-between;">
-                <span style="color:#8b949e; font-size:0.8rem;">1Y Return</span>
-                <span style="color:#8b949e; font-weight:600;">{(row.get('wave_ret_1y') or 0):.1f}%</span>
+                <span style="color:#484f58; font-size:0.7rem;">0% (fresh)</span>
+                <span style="color:{_stage_c}; font-weight:700; font-size:0.75rem;">{rally_leg_pct:.0f}% done</span>
+                <span style="color:#484f58; font-size:0.7rem;">100% (52w high)</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
