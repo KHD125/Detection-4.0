@@ -3389,6 +3389,11 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         md_options = ['All', '✅ No Decay', '🔻 High Decay', '⚡ Moderate Decay', '~ Mild Decay']
         selected_md = st.selectbox("Momentum Decay", md_options, index=0, key='sb_md')
 
+        # Rally Leg Stage filter
+        rally_stage_options = ['🌱 Fresh', '🚀 Early', '🏃 Running', '🧱 Mature', '⏳ Late']
+        rally_stage_map = {'🌱 Fresh': 'FRESH', '🚀 Early': 'EARLY', '🏃 Running': 'RUNNING', '🧱 Mature': 'MATURE', '⏳ Late': 'LATE'}
+        selected_rally = st.multiselect("📈 Rally Stage", rally_stage_options, default=[], placeholder="All", key='sb_rally')
+
         # Min weeks
         min_weeks = st.slider("Min Weeks of Data", 2, metadata['total_weeks'], MIN_WEEKS_DEFAULT, key='sb_weeks')
 
@@ -3414,7 +3419,8 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'momentum_decay': selected_md,
         'min_weeks': min_weeks,
         'min_score': min_score,
-        'quick_filter': quick_filter
+        'quick_filter': quick_filter,
+        'rally_stage': [rally_stage_map[r] for r in selected_rally]
     }
 
 
@@ -3453,6 +3459,12 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         df = df[df['decay_label'] == 'DECAY_MILD']
     elif md == '✅ No Decay':
         df = df[~df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE', 'DECAY_MILD'])]
+
+    # Rally Stage
+    rally_stages = filters.get('rally_stage', [])
+    if rally_stages:
+        if 'rally_stage' in df.columns:
+            df = df[df['rally_stage'].isin(rally_stages)]
 
     # Min weeks
     df = df[df['weeks'] >= filters['min_weeks']]
