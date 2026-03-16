@@ -3504,6 +3504,9 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         rally_stage_map = {'🌱 Fresh': 'FRESH', '🚀 Early': 'EARLY', '🏃 Running': 'RUNNING', '🧱 Mature': 'MATURE', '⏳ Late': 'LATE'}
         selected_rally = st.multiselect("📈 Rally Stage", rally_stage_options, default=[], placeholder="All", key='sb_rally')
 
+        # Age of Move (rally weeks) filter
+        age_range = st.slider("📅 Age of Move (weeks)", 0, 20, (0, 20), key='sb_age')
+
         # Min weeks
         min_weeks = st.slider("Min Weeks of Data", 2, metadata['total_weeks'], MIN_WEEKS_DEFAULT, key='sb_weeks')
 
@@ -3530,7 +3533,8 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'min_weeks': min_weeks,
         'min_score': min_score,
         'quick_filter': quick_filter,
-        'rally_stage': [rally_stage_map[r] for r in selected_rally]
+        'rally_stage': [rally_stage_map[r] for r in selected_rally],
+        'age_range': age_range
     }
 
 
@@ -3575,6 +3579,11 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     if rally_stages:
         if 'rally_stage' in df.columns:
             df = df[df['rally_stage'].isin(rally_stages)]
+
+    # Age of Move (rally weeks)
+    age_lo, age_hi = filters.get('age_range', (0, 20))
+    if 'rally_weeks' in df.columns and (age_lo > 0 or age_hi < 20):
+        df = df[(df['rally_weeks'] >= age_lo) & (df['rally_weeks'] <= age_hi)]
 
     # Min weeks
     df = df[df['weeks'] >= filters['min_weeks']]
@@ -3687,7 +3696,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         sort_by = st.selectbox("Sort by", [
             'Trajectory Score', 'Current Rank', 'Rank Change', 'TMI',
             'Positional Quality', 'Best Rank', 'Streak', 'Trend', 'Velocity',
-            'Consistency', 'Return Quality', 'Price Alignment', 'Decay Score', 'Sector Alpha'
+            'Consistency', 'Return Quality', 'Rally Gain', 'Price Alignment', 'Decay Score', 'Sector Alpha'
         ], key='rank_sort', label_visibility='collapsed')
     with ctl2:
         view_mode = st.selectbox("View", [
@@ -3722,6 +3731,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Velocity': ('velocity', False),
         'Consistency': ('consistency', False),
         'Return Quality': ('return_quality', False),
+        'Rally Gain': ('rally_gain', False),
         'Price Alignment': ('price_alignment', False),
         'Decay Score': ('decay_score', True),
         'Sector Alpha': ('sector_alpha_value', False),
