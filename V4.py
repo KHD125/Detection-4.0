@@ -5472,10 +5472,11 @@ def render_early_discovery_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame,
     top_picks = candidates.head(8)
 
     for i in range(0, len(top_picks), 2):
-        cols = st.columns(2)
-        for j, col in enumerate(cols):
+        row_cards = []
+        for j in range(2):
             if i + j >= len(top_picks):
-                break
+                row_cards.append('<div></div>')
+                continue
             r = top_picks.iloc[i + j]
             rh = histories.get(r['ticker'], {})
             latest_price = rh['prices'][-1] if rh.get('prices') else 0
@@ -5503,48 +5504,55 @@ def render_early_discovery_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame,
 
             lw_change = int(r.get('last_week_change', 0) or 0)
             lw_color = '#3fb950' if lw_change > 0 else '#f85149' if lw_change < 0 else '#8b949e'
+            company = str(r.get('company_name', ''))[:35]
+            category = r.get('category', '')
+            sector = r.get('sector', '')
+            rally_gain = r.get('rally_gain', 0)
+            breakout_q = r.get('breakout_quality', 50)
+            t_score = r['trajectory_score']
 
-            with col:
-                st.markdown(f"""
-                <div style="background:rgba(0,230,118,0.03); border:1px solid rgba(0,230,118,0.25);
-                            border-radius:12px; padding:14px; border-left:3px solid {st_color};">
-                    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                        <div>
-                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px; flex-wrap:wrap;">
-                                <span style="font-size:1.15rem; font-weight:800; color:#e6edf3;">{r['ticker']}</span>
-                                <span style="background:{st_color}22; color:{st_color}; padding:2px 8px;
-                                      border-radius:10px; font-size:0.68rem; border:1px solid {st_color}44;">🌱 {rally_st}</span>
-                                <span style="background:{p_color}22; color:{p_color}; padding:2px 8px;
-                                      border-radius:10px; font-size:0.68rem; border:1px solid {p_color}44;">{p_emoji} {p_name}</span>
-                                {bounce_badge}
-                            </div>
-                            <div style="color:#8b949e; font-size:0.8rem;">{str(r.get('company_name', ''))[:35]}</div>
-                            <div style="color:#484f58; font-size:0.7rem;">{r.get('category', '')} • {r.get('sector', '')}</div>
-                        </div>
-                        <div style="text-align:right;">
-                            <div style="font-size:1.5rem; font-weight:800; color:#00E676;">{disc_score:.0f}</div>
-                            <div style="font-size:0.6rem; color:#8b949e;">{d_emoji} {d_label}</div>
-                        </div>
-                    </div>
-                    <div style="display:flex; gap:12px; margin-top:10px; padding-top:8px;
-                                border-top:1px solid #21262d; flex-wrap:wrap;">
-                        <div><span style="color:#6e7681; font-size:0.65rem;">T-Rank</span><br>
-                             <span style="color:#58a6ff; font-weight:700;">#{t_rank}</span></div>
-                        <div><span style="color:#6e7681; font-size:0.65rem;">T-Score</span><br>
-                             <span style="color:#FF6B35; font-weight:700;">{r['trajectory_score']:.0f}</span></div>
-                        <div><span style="color:#6e7681; font-size:0.65rem;">From High</span><br>
-                             <span style="color:#e6edf3; font-weight:700;">{fh_text}</span></div>
-                        <div><span style="color:#6e7681; font-size:0.65rem;">Rally Gain</span><br>
-                             <span style="color:{st_color}; font-weight:700;">+{r.get('rally_gain', 0):.1f}%</span></div>
-                        <div><span style="color:#6e7681; font-size:0.65rem;">Δ Week</span><br>
-                             <span style="color:{lw_color}; font-weight:700;">{lw_change:+d}</span></div>
-                        <div><span style="color:#6e7681; font-size:0.65rem;">Breakout</span><br>
-                             <span style="color:#e6edf3; font-weight:700;">{r.get('breakout_quality', 50):.0f}</span></div>
-                        <div><span style="color:#6e7681; font-size:0.65rem;">Price</span><br>
-                             <span style="color:#e6edf3; font-weight:700;">₹{latest_price:,.1f}</span></div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+            def _m(lbl, val, clr='#e6edf3'):
+                return (f'<div><span style="color:#6e7681;font-size:0.65rem;">{lbl}</span><br>'
+                        f'<span style="color:{clr};font-weight:700;">{val}</span></div>')
+
+            card = (
+                f'<div style="background:rgba(0,230,118,0.03);border:1px solid rgba(0,230,118,0.25);'
+                f'border-radius:12px;padding:14px;border-left:3px solid {st_color};">'
+                f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
+                f'<div>'
+                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;flex-wrap:wrap;">'
+                f'<span style="font-size:1.15rem;font-weight:800;color:#e6edf3;">{r["ticker"]}</span>'
+                f'<span style="background:{st_color}22;color:{st_color};padding:2px 8px;'
+                f'border-radius:10px;font-size:0.68rem;border:1px solid {st_color}44;">🌱 {rally_st}</span>'
+                f'<span style="background:{p_color}22;color:{p_color};padding:2px 8px;'
+                f'border-radius:10px;font-size:0.68rem;border:1px solid {p_color}44;">{p_emoji} {p_name}</span>'
+                f'{bounce_badge}'
+                f'</div>'
+                f'<div style="color:#8b949e;font-size:0.8rem;">{company}</div>'
+                f'<div style="color:#484f58;font-size:0.7rem;">{category} • {sector}</div>'
+                f'</div>'
+                f'<div style="text-align:right;">'
+                f'<div style="font-size:1.5rem;font-weight:800;color:#00E676;">{disc_score:.0f}</div>'
+                f'<div style="font-size:0.6rem;color:#8b949e;">{d_emoji} {d_label}</div>'
+                f'</div></div>'
+                f'<div style="display:flex;gap:12px;margin-top:10px;padding-top:8px;'
+                f'border-top:1px solid #21262d;flex-wrap:wrap;">'
+                f'{_m("T-Rank", f"#{t_rank}", "#58a6ff")}'
+                f'{_m("T-Score", f"{t_score:.0f}", "#FF6B35")}'
+                f'{_m("From High", fh_text)}'
+                f'{_m("Rally Gain", f"+{rally_gain:.1f}%", st_color)}'
+                f'{_m("Δ Week", f"{lw_change:+d}", lw_color)}'
+                f'{_m("Breakout", f"{breakout_q:.0f}")}'
+                f'{_m("Price", f"₹{latest_price:,.1f}")}'
+                f'</div></div>'
+            )
+            row_cards.append(card)
+
+        st.markdown(
+            f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">'
+            f'{row_cards[0]}{row_cards[1]}</div>',
+            unsafe_allow_html=True
+        )
 
     st.markdown("")
 
