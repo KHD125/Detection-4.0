@@ -3182,6 +3182,116 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
 
 
 # ============================================
+# EARLY DISCOVERY ENGINE
+# ============================================
+# Catches stocks EARLY in upward moves — before the main
+# T-Score confirms them. Built on v9.0 data-proven alpha:
+#   from_high_pct:  #1 predictor (+0.55%/wk)
+#   breakout_score: #2 predictor (+0.44%/wk)
+#   position_score: #3 predictor (+0.34%/wk)
+#   BOUNCE state:   +1.17%/wk mean-reversion signal
+
+def _compute_early_discovery_score(row, h):
+    """
+    Early Discovery Score (0-100).
+
+    Unlike T-Score (confirms established leaders), this score
+    identifies stocks in the EARLY stages of strong upward moves
+    before they reach the top tier.
+
+    Weights:
+      25% Rank Momentum   — recent rank acceleration
+      25% Breakout Strength — v9.0 #2 predictor
+      20% Near-High Signal  — v9.0 #1 predictor
+      15% Entry Timing      — rally freshness + velocity
+      15% Cross-Validation  — wave fusion − decay penalty
+      +BOUNCE bonus (+12%), +UPTREND bonus (+3%)
+    """
+    # ── 1. RANK MOMENTUM (25%) ──────────────────────────────────
+    rank_momentum = 0.0
+    lw = float(row.get('last_week_change', 0) or 0)
+    rc = float(row.get('rank_change', 0) or 0)
+
+    if lw > 0:
+        rank_momentum += min(lw / 80.0, 1.0) * 60.0   # +80 ranks in 1w → 60 pts
+    elif lw < 0:
+        rank_momentum += max(lw / 40.0, -1.0) * 15.0   # mild penalty for decline
+
+    if rc > 0:
+        rank_momentum += min(rc / 200.0, 1.0) * 40.0   # +200 total → 40 pts
+
+    rank_momentum = max(0.0, min(100.0, rank_momentum))
+
+    # ── 2. BREAKOUT STRENGTH (25%) ──────────────────────────────
+    breakout = max(0.0, min(100.0, float(row.get('breakout_quality', 50) or 50)))
+
+    # ── 3. NEAR-HIGH SIGNAL (20%) — #1 forward predictor ───────
+    fh_list = h.get('from_high_pct', [])
+    from_high = -50.0
+    if fh_list:
+        fh_val = fh_list[-1]
+        if fh_val is not None and isinstance(fh_val, (int, float)):
+            try:
+                if not np.isnan(fh_val):
+                    from_high = float(fh_val)
+            except (TypeError, ValueError):
+                pass
+    # 0% from high → 100,  -10% → 80,  -20% → 60,  -50% → 0
+    near_high = max(0.0, min(100.0, 100.0 + from_high * 2.0))
+
+    # ── 4. ENTRY TIMING (15%) — rally freshness + velocity ─────
+    rally = str(row.get('rally_stage', 'UNKNOWN') or 'UNKNOWN')
+    rally_pts = {
+        'FRESH': 100, 'EARLY': 85, 'RUNNING': 55,
+        'MATURE': 20, 'LATE': 5, 'UNKNOWN': 40
+    }
+    rally_score = float(rally_pts.get(rally, 40))
+    velocity = max(0.0, min(100.0, float(row.get('velocity', 50) or 50)))
+    entry_timing = rally_score * 0.6 + velocity * 0.4
+
+    # ── 5. CROSS-VALIDATION (15%) — wave fusion − decay ────────
+    wave = max(0.0, min(100.0, float(row.get('wave_fusion_score', 50) or 50)))
+    decay_label = str(row.get('decay_label', '') or '')
+    decay_penalty = {
+        'DECAY_HIGH': 40, 'DECAY_MODERATE': 20, 'DECAY_MILD': 8
+    }.get(decay_label, 0)
+    cross_val = max(0.0, min(100.0, wave - decay_penalty))
+
+    # ── COMBINE ─────────────────────────────────────────────────
+    raw = (
+        rank_momentum * 0.25 +
+        breakout      * 0.25 +
+        near_high     * 0.20 +
+        entry_timing  * 0.15 +
+        cross_val     * 0.15
+    )
+
+    # ── MARKET STATE BONUS ──────────────────────────────────────
+    ms = str(row.get('market_state', '') or '').strip().upper()
+    if ms == 'BOUNCE':
+        raw = min(100, raw * 1.12)   # +12% — strongest alpha signal
+    elif ms == 'UPTREND':
+        raw = min(100, raw * 1.03)   # +3%
+    elif ms in ('DOWNTREND', 'STRONG_DOWNTREND'):
+        raw *= 0.85                   # −15% penalty
+
+    return round(max(0.0, min(100.0, raw)), 1)
+
+
+def _get_discovery_grade(score):
+    """Grade label for Early Discovery score."""
+    if score >= 80:
+        return '🔥', 'PRIME'
+    if score >= 65:
+        return '✅', 'STRONG'
+    if score >= 50:
+        return '⚡', 'EMERGING'
+    if score >= 35:
+        return '👀', 'WATCH'
+    return '➖', 'WEAK'
+
+
+# ============================================
 # 3-STAGE SELECTION FUNNEL ENGINE
 # ============================================
 
@@ -5217,6 +5327,319 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
 
 
 # ============================================
+# UI: EARLY DISCOVERY TAB
+# ============================================
+
+def render_early_discovery_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame,
+                                histories: dict, metadata: dict):
+    """🔮 Early Discovery — catch stocks EARLY in their upward moves.
+
+    Uses v9.0 data-proven alpha signals (from_high, breakout, BOUNCE)
+    instead of position confirmation used by the main T-Score.
+    """
+
+    # ── Header Card ──────────────────────────────────────────────
+    st.markdown("""
+    <div style="background:#0d1117; border-radius:14px; padding:18px 24px; margin-bottom:16px; border:1px solid #30363d;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div>
+                <span style="font-size:1.4rem; font-weight:800; color:#fff;">🔮 Early Discovery</span>
+                <div style="color:#8b949e; font-size:0.85rem; margin-top:2px;">Catch stocks EARLY — before the main T-Score confirms them</div>
+            </div>
+            <div style="display:flex; gap:6px;">
+                <span style="background:#00E67622; color:#00E676; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #00E67644;">from_high: +0.55%/wk</span>
+                <span style="background:#FF6B3522; color:#FF6B35; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #FF6B3544;">breakout: +0.44%/wk</span>
+                <span style="background:#58a6ff22; color:#58a6ff; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #58a6ff44;">BOUNCE: +1.17%/wk</span>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Configuration ────────────────────────────────────────────
+    with st.expander("⚙️ Discovery Configuration", expanded=False):
+        dc1, dc2, dc3 = st.columns(3)
+        with dc1:
+            min_disc_score = st.slider("Min Discovery Score", 0, 80, 45, key='disc_min')
+        with dc2:
+            disc_rally_stages = st.multiselect(
+                "Rally Stages",
+                ['FRESH', 'EARLY', 'RUNNING', 'MATURE', 'LATE'],
+                default=['FRESH', 'EARLY', 'RUNNING'],
+                key='disc_rally'
+            )
+        with dc3:
+            disc_exclude_decay = st.checkbox("Exclude Severe Decay", value=True, key='disc_nodecay')
+
+    # ── Compute discovery scores for all filtered stocks ─────────
+    disc_rows = []
+    for _, row in filtered_df.iterrows():
+        h = histories.get(row['ticker'], {})
+        if not h or int(row.get('weeks', 0) or 0) < 2:
+            continue
+
+        ed_score = _compute_early_discovery_score(row, h)
+
+        # Get from_high for display
+        fh_list = h.get('from_high_pct', [])
+        from_high_disp = None
+        if fh_list:
+            fh_val = fh_list[-1]
+            if fh_val is not None and isinstance(fh_val, (int, float)):
+                try:
+                    if not np.isnan(fh_val):
+                        from_high_disp = float(fh_val)
+                except (TypeError, ValueError):
+                    pass
+
+        d = row.to_dict()
+        d['discovery_score'] = ed_score
+        d['from_high_display'] = from_high_disp
+        d_emoji, d_label = _get_discovery_grade(ed_score)
+        d['disc_grade_emoji'] = d_emoji
+        d['disc_grade'] = d_label
+        disc_rows.append(d)
+
+    if not disc_rows:
+        st.info("No stocks available for Early Discovery analysis. Upload more data or adjust filters.")
+        return
+
+    disc_df = pd.DataFrame(disc_rows)
+
+    # ── Apply discovery-specific filters ─────────────────────────
+    mask = disc_df['discovery_score'] >= min_disc_score
+
+    if disc_rally_stages and 'rally_stage' in disc_df.columns:
+        mask = mask & disc_df['rally_stage'].isin(disc_rally_stages)
+
+    if disc_exclude_decay and 'decay_label' in disc_df.columns:
+        mask = mask & (~disc_df['decay_label'].isin(['DECAY_HIGH']))
+
+    candidates = disc_df[mask].sort_values('discovery_score', ascending=False).copy().reset_index(drop=True)
+
+    # ── Metric Strip ─────────────────────────────────────────────
+    n_cand = len(candidates)
+    avg_disc = candidates['discovery_score'].mean() if n_cand > 0 else 0
+    n_prime = int((candidates['discovery_score'] >= 80).sum()) if n_cand > 0 else 0
+    n_strong = int((candidates['discovery_score'] >= 65).sum()) if n_cand > 0 else 0
+    n_fresh = int((candidates.get('rally_stage', pd.Series(dtype=str)) == 'FRESH').sum()) if n_cand > 0 else 0
+    n_early = int((candidates.get('rally_stage', pd.Series(dtype=str)) == 'EARLY').sum()) if n_cand > 0 else 0
+    n_bounce = 0
+    if n_cand > 0 and 'market_state' in candidates.columns:
+        n_bounce = int(candidates['market_state'].astype(str).str.strip().str.upper().eq('BOUNCE').sum())
+
+    def _chip(val, lbl, cls=''):
+        return f'<div class="m-chip {cls}"><div class="m-val">{val}</div><div class="m-lbl">{lbl}</div></div>'
+
+    chips = ''.join([
+        _chip(f'{n_cand}', 'Candidates'),
+        _chip(f'{avg_disc:.0f}', 'Avg D-Score', 'm-orange' if avg_disc >= 50 else ''),
+        _chip(f'{n_prime}', '🔥 Prime', 'm-green' if n_prime > 0 else ''),
+        _chip(f'{n_strong}', '✅ Strong', 'm-green' if n_strong > 0 else ''),
+        _chip(f'{n_fresh}', '🌱 Fresh'),
+        _chip(f'{n_early}', '🚀 Early'),
+        _chip(f'{n_bounce}', '⚡ Bounce', 'm-gold' if n_bounce > 0 else ''),
+    ])
+    st.markdown(f'<div class="m-strip">{chips}</div>', unsafe_allow_html=True)
+    st.markdown("")
+
+    if candidates.empty:
+        st.markdown("""
+        <div style="background:#161b22; border-radius:10px; padding:24px; text-align:center; border:1px solid #30363d;">
+            <div style="font-size:1.3rem; margin-bottom:6px;">🔍</div>
+            <div style="color:#8b949e; font-size:0.9rem;">No stocks match Early Discovery criteria</div>
+            <div style="color:#484f58; font-size:0.8rem; margin-top:4px;">Try lowering the minimum score or adding more rally stages</div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    # ── T-Rank map (for display) ─────────────────────────────────
+    t_rank_sorted = traj_df.sort_values(
+        ['trajectory_score', 'confidence', 'consistency'],
+        ascending=[False, False, False]
+    ).reset_index(drop=True)
+    t_rank_map = {t: i + 1 for i, t in enumerate(t_rank_sorted['ticker'])}
+
+    _stage_colors = {
+        'FRESH': '#00E676', 'EARLY': '#3fb950', 'RUNNING': '#FF9800',
+        'MATURE': '#FF5722', 'LATE': '#FF1744', 'UNKNOWN': '#484f58'
+    }
+
+    # ══════════════════════════════════════════════════════════════
+    # TOP PICKS — Card Grid (2 per row, max 8)
+    # ══════════════════════════════════════════════════════════════
+    st.markdown('<div class="sec-head">🔮 Top Early Picks</div>', unsafe_allow_html=True)
+
+    top_picks = candidates.head(8)
+
+    for i in range(0, len(top_picks), 2):
+        cols = st.columns(2)
+        for j, col in enumerate(cols):
+            if i + j >= len(top_picks):
+                break
+            r = top_picks.iloc[i + j]
+            rh = histories.get(r['ticker'], {})
+            latest_price = rh['prices'][-1] if rh.get('prices') else 0
+
+            p_key = r.get('pattern_key', 'neutral')
+            p_emoji, p_name, _ = PATTERN_DEFS.get(p_key, ('➖', 'Neutral', ''))
+            p_color = PATTERN_COLORS.get(p_key, '#8b949e')
+            t_rank = t_rank_map.get(r['ticker'], 0)
+            rally_st = str(r.get('rally_stage', 'UNKNOWN') or 'UNKNOWN')
+            st_color = _stage_colors.get(rally_st, '#484f58')
+
+            fh_disp = r.get('from_high_display')
+            fh_text = f"{fh_disp:.0f}%" if fh_disp is not None else '—'
+
+            disc_score = r['discovery_score']
+            d_emoji = r.get('disc_grade_emoji', '⚡')
+            d_label = r.get('disc_grade', 'WATCH')
+
+            ms = str(r.get('market_state', '') or '').strip().upper()
+            bounce_badge = (
+                '<span style="background:#FFD70022;color:#FFD700;padding:2px 6px;'
+                'border-radius:8px;font-size:0.65rem;border:1px solid #FFD70044;'
+                'margin-left:6px;">⚡ BOUNCE</span>'
+            ) if ms == 'BOUNCE' else ''
+
+            lw_change = int(r.get('last_week_change', 0) or 0)
+            lw_color = '#3fb950' if lw_change > 0 else '#f85149' if lw_change < 0 else '#8b949e'
+
+            with col:
+                st.markdown(f"""
+                <div style="background:rgba(0,230,118,0.03); border:1px solid rgba(0,230,118,0.25);
+                            border-radius:12px; padding:14px; border-left:3px solid {st_color};">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                        <div>
+                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px; flex-wrap:wrap;">
+                                <span style="font-size:1.15rem; font-weight:800; color:#e6edf3;">{r['ticker']}</span>
+                                <span style="background:{st_color}22; color:{st_color}; padding:2px 8px;
+                                      border-radius:10px; font-size:0.68rem; border:1px solid {st_color}44;">🌱 {rally_st}</span>
+                                <span style="background:{p_color}22; color:{p_color}; padding:2px 8px;
+                                      border-radius:10px; font-size:0.68rem; border:1px solid {p_color}44;">{p_emoji} {p_name}</span>
+                                {bounce_badge}
+                            </div>
+                            <div style="color:#8b949e; font-size:0.8rem;">{str(r.get('company_name', ''))[:35]}</div>
+                            <div style="color:#484f58; font-size:0.7rem;">{r.get('category', '')} • {r.get('sector', '')}</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:1.5rem; font-weight:800; color:#00E676;">{disc_score:.0f}</div>
+                            <div style="font-size:0.6rem; color:#8b949e;">{d_emoji} {d_label}</div>
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:12px; margin-top:10px; padding-top:8px;
+                                border-top:1px solid #21262d; flex-wrap:wrap;">
+                        <div><span style="color:#6e7681; font-size:0.65rem;">T-Rank</span><br>
+                             <span style="color:#58a6ff; font-weight:700;">#{t_rank}</span></div>
+                        <div><span style="color:#6e7681; font-size:0.65rem;">T-Score</span><br>
+                             <span style="color:#FF6B35; font-weight:700;">{r['trajectory_score']:.0f}</span></div>
+                        <div><span style="color:#6e7681; font-size:0.65rem;">From High</span><br>
+                             <span style="color:#e6edf3; font-weight:700;">{fh_text}</span></div>
+                        <div><span style="color:#6e7681; font-size:0.65rem;">Rally Gain</span><br>
+                             <span style="color:{st_color}; font-weight:700;">+{r.get('rally_gain', 0):.1f}%</span></div>
+                        <div><span style="color:#6e7681; font-size:0.65rem;">Δ Week</span><br>
+                             <span style="color:{lw_color}; font-weight:700;">{lw_change:+d}</span></div>
+                        <div><span style="color:#6e7681; font-size:0.65rem;">Breakout</span><br>
+                             <span style="color:#e6edf3; font-weight:700;">{r.get('breakout_quality', 50):.0f}</span></div>
+                        <div><span style="color:#6e7681; font-size:0.65rem;">Price</span><br>
+                             <span style="color:#e6edf3; font-weight:700;">₹{latest_price:,.1f}</span></div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ══════════════════════════════════════════════════════════════
+    # FULL DISCOVERY TABLE
+    # ══════════════════════════════════════════════════════════════
+    st.markdown('<div class="sec-head">📋 All Discovery Candidates</div>', unsafe_allow_html=True)
+
+    # Ensure columns with safe defaults
+    for col_name, default_val in [
+        ('rally_stage', 'UNKNOWN'), ('rally_gain', 0.0), ('rally_leg_pct', 50.0),
+        ('breakout_quality', 50.0), ('company_name', ''), ('sector', ''),
+        ('velocity', 50.0), ('wave_fusion_score', 50.0),
+    ]:
+        if col_name not in candidates.columns:
+            candidates[col_name] = default_val
+
+    table_cols = [
+        'ticker', 'company_name', 'sector', 'discovery_score', 'disc_grade',
+        'trajectory_score', 'grade', 'pattern', 'rally_stage', 'rally_gain',
+        'from_high_display', 'last_week_change', 'rank_change',
+        'breakout_quality', 'velocity', 'wave_fusion_score',
+        'current_rank', 'weeks'
+    ]
+    available_cols = [c for c in table_cols if c in candidates.columns]
+    table_df = candidates[available_cols].copy()
+
+    rename_map = {
+        'ticker': 'Ticker', 'company_name': 'Company', 'sector': 'Sector',
+        'discovery_score': 'D-Score', 'disc_grade': 'D-Grade',
+        'trajectory_score': 'T-Score', 'grade': 'Grade', 'pattern': 'Pattern',
+        'rally_stage': 'Rally', 'rally_gain': 'Rally%',
+        'from_high_display': 'FromHigh%', 'last_week_change': 'Δ Week',
+        'rank_change': 'Δ Total', 'breakout_quality': 'Breakout',
+        'velocity': 'Velocity', 'wave_fusion_score': 'Wave',
+        'current_rank': 'Rank', 'weeks': 'Wks'
+    }
+    table_df = table_df.rename(columns={k: v for k, v in rename_map.items() if k in table_df.columns})
+
+    if 'Company' in table_df.columns:
+        table_df['Company'] = table_df['Company'].astype(str).str[:24]
+    if 'Sector' in table_df.columns:
+        table_df['Sector'] = table_df['Sector'].astype(str).str[:18]
+
+    col_config = {
+        'D-Score': st.column_config.ProgressColumn('D-Score', min_value=0, max_value=100, format="%.0f"),
+        'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.0f"),
+        'Breakout': st.column_config.ProgressColumn('Breakout', min_value=0, max_value=100, format="%.0f"),
+        'Velocity': st.column_config.ProgressColumn('Velocity', min_value=0, max_value=100, format="%.0f"),
+        'Wave': st.column_config.ProgressColumn('Wave', min_value=0, max_value=100, format="%.0f"),
+        'Δ Week': st.column_config.NumberColumn(format="%+d"),
+        'Δ Total': st.column_config.NumberColumn(format="%+d"),
+        'Rally%': st.column_config.NumberColumn(format="+%.1f%%"),
+        'FromHigh%': st.column_config.NumberColumn(format="%.0f%%"),
+    }
+
+    tbl_height = min(750, max(180, len(table_df) * 35 + 60))
+    st.dataframe(table_df, column_config=col_config,
+                 hide_index=True, use_container_width=True, height=tbl_height)
+
+    # ── How It Works ─────────────────────────────────────────────
+    with st.expander("📖 How Early Discovery Works", expanded=False):
+        st.markdown("""
+        **Early Discovery** uses a different scoring model than the main T-Score.
+
+        The main T-Score rewards stocks **already confirmed at the top** (positional quality = 18-40% weight,
+        elite bonus, Bayesian shrinkage penalizing new entries). Early Discovery has **zero weight on current
+        position** — it scores the *rate of change* and *breakout signals* that predict the **NEXT** move.
+
+        | Component | Weight | Signal | Alpha |
+        |-----------|--------|--------|-------|
+        | **Rank Momentum** | 25% | Recent rank acceleration (weekly + total) | Speed of move |
+        | **Breakout Strength** | 25% | Breakout quality from WAVE Detection | +0.44%/wk |
+        | **Near-High Signal** | 20% | Distance from 52-week high (from_high_pct) | +0.55%/wk |
+        | **Entry Timing** | 15% | Rally freshness (FRESH/EARLY) + velocity | Early = best |
+        | **Cross-Validation** | 15% | Wave Fusion score − decay penalty | Confirmation |
+
+        **Bonuses:** BOUNCE market state → +12%, UPTREND → +3%
+
+        **Discovery Grades:**
+
+        | Grade | Score | Meaning |
+        |-------|-------|---------|
+        | 🔥 PRIME | ≥ 80 | All signals aligned — highest conviction early entry |
+        | ✅ STRONG | ≥ 65 | Strong signals — good early entry candidate |
+        | ⚡ EMERGING | ≥ 50 | Early signals present — watch closely |
+        | 👀 WATCH | ≥ 35 | Weak signals — monitor but don't act yet |
+        | ➖ WEAK | < 35 | Not a discovery candidate |
+
+        **Best used for:** Finding stocks that are starting a rally (FRESH/EARLY stage),
+        breaking out with strong WAVE confirmation, and near their 52-week high.
+        """)
+
+
+# ============================================
 # UI: EXPORT TAB
 # ============================================
 
@@ -6263,9 +6686,9 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_ranking, tab_search, tab_funnel, tab_backtest, tab_alerts, tab_export, tab_about = st.tabs([
-        "🏆 Rankings", "🔍 Search & Analyze", "🎯 Funnel", "📊 Backtest",
-        "🚨 Alerts", "📤 Export", "ℹ️ About"
+    tab_ranking, tab_search, tab_funnel, tab_discovery, tab_backtest, tab_alerts, tab_export, tab_about = st.tabs([
+        "🏆 Rankings", "🔍 Search & Analyze", "🎯 Funnel", "🔮 Early Discovery",
+        "📊 Backtest", "🚨 Alerts", "📤 Export", "ℹ️ About"
     ])
 
     with tab_ranking:
@@ -6276,6 +6699,9 @@ def main():
 
     with tab_funnel:
         render_funnel_tab(filtered_df, traj_df, histories, metadata)
+
+    with tab_discovery:
+        render_early_discovery_tab(filtered_df, traj_df, histories, metadata)
 
     with tab_backtest:
         render_backtest_tab(uploaded_files)
