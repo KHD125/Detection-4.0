@@ -3703,7 +3703,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             'Standard', 'Compact', 'Signals', 'Trading', 'Complete', 'Custom'
         ], key='rank_view', label_visibility='collapsed')
     with ctl3:
-        export_btn = st.button("📥 Export CSV", key='rank_export', use_container_width=True)
+        st.write("")  # placeholder — export button rendered below after data is ready
 
     # ── Apply Show Top limit ──
     filtered_df = filtered_df.head(display_n).copy()
@@ -3879,14 +3879,18 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         hide_index=True, use_container_width=True, height=tbl_height
     )
 
-    # ── Export CSV ──
-    if export_btn:
-        csv_data = table_df.drop(columns=['Trajectory'], errors='ignore').to_csv(index=False)
-        st.download_button(
-            label="⬇️ Download CSV", data=csv_data,
-            file_name=f"trajectory_rankings_{metadata.get('last_date','export')}.csv",
-            mime='text/csv', key='csv_download'
-        )
+    # ── Export CSV — always rendered (single-click download) ──
+    # NOTE: Streamlit's st.button + conditional st.download_button requires TWO clicks.
+    # Fix: always render download_button directly so it works in one click.
+    _csv_data = table_df.drop(columns=['Trajectory'], errors='ignore').to_csv(index=False)
+    st.download_button(
+        label="📥 Download CSV",
+        data=_csv_data,
+        file_name=f"trajectory_rankings_{metadata.get('last_date', 'export')}.csv",
+        mime='text/csv',
+        key='csv_download',
+        use_container_width=False,
+    )
 
     # ════════════════════════════════════════════
     # SECTION 6 — INTELLIGENCE DASHBOARD (tabs)
