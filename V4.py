@@ -6762,9 +6762,23 @@ def main():
                 drive_folder_key = _normalize_drive_folder_key(drive_folder_key)
                 drive_folder_url = _drive_folder_url(drive_folder_key)
                 st.markdown(f"🔗 Folder Link: {drive_folder_url}")
-                st.caption("Click 'Load from Drive' to fetch CSVs and run analysis directly.")
+                st.caption("Auto-fetch is enabled: files are fetched directly after key paste.")
 
-                if st.button("⬇️ Load CSVs from Drive", key='load_from_drive', use_container_width=True):
+                # Auto-fetch once per new key so user does not need extra clicks.
+                key_changed = st.session_state.get('_drive_key_loaded') != drive_folder_key
+                if key_changed:
+                    with st.spinner("Fetching CSV files from Google Drive..."):
+                        drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key)
+                    if drive_err:
+                        st.error(f"❌ {drive_err}")
+                        st.session_state.pop('_drive_uploads', None)
+                        st.session_state.pop('_drive_key_loaded', None)
+                    else:
+                        st.session_state['_drive_uploads'] = drive_uploads
+                        st.session_state['_drive_key_loaded'] = drive_folder_key
+                        st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s) from Drive")
+
+                if st.button("🔄 Refresh Drive Fetch", key='refresh_drive_fetch', use_container_width=True):
                     with st.spinner("Fetching CSV files from Google Drive..."):
                         drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key)
                     if drive_err:
@@ -6787,12 +6801,12 @@ def main():
 
     if not uploaded_files:
         if data_source_mode == "🔗 Google Drive Folder Key":
-            st.info("👈 Paste your Google Drive folder key in the sidebar and click 'Load CSVs from Drive'.")
+            st.info("👈 Paste your Google Drive folder key in the sidebar. App will fetch CSVs automatically.")
             st.markdown("""
             **Google Drive mode:**
             1. Paste your folder key in sidebar (or full folder URL)
-            2. Click **Load CSVs from Drive**
-            3. App fetches all CSV files from that folder and starts analysis
+            2. App auto-fetches all CSV files from that folder
+            3. Analysis starts immediately when files are loaded
             """)
         else:
             st.info("👈 Upload your weekly CSV snapshots from the sidebar to begin trajectory analysis")
