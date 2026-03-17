@@ -143,7 +143,7 @@ def _drive_folder_url(folder_key: str) -> str:
     return f"https://drive.google.com/drive/folders/{folder_key}?usp=drive_link"
 
 
-def _load_csv_uploads_from_drive(folder_key: str) -> Tuple[List[InMemoryUpload], Optional[str]]:
+def _load_csv_uploads_from_drive(folder_key: str, max_files: int = 28) -> Tuple[List[InMemoryUpload], Optional[str]]:
     """Download CSVs from a public Google Drive folder and return upload-like objects."""
     key = _normalize_drive_folder_key(folder_key)
     if not key:
@@ -164,6 +164,28 @@ def _load_csv_uploads_from_drive(folder_key: str) -> Tuple[List[InMemoryUpload],
             csv_paths.extend([p for p in downloaded if isinstance(p, str) and p.lower().endswith('.csv')])
         csv_paths.extend(glob.glob(os.path.join(tmpdir, '**', '*.csv'), recursive=True))
         csv_paths = sorted(set(csv_paths))
+
+        # Keep only latest N weekly files for faster compute.
+        # Drive folders may contain many months/years of data; processing all is slow.
+        # This path prefers files with parseable weekly dates from filename.
+        dated = []
+        undated = []
+        for p in csv_paths:
+            fname = os.path.basename(p)
+            try:
+                d = parse_date_from_filename(fname)
+            except Exception:
+                d = None
+            if d is not None:
+                dated.append((d, p))
+            else:
+                undated.append(p)
+
+        dated_sorted = [p for _, p in sorted(dated, key=lambda x: x[0], reverse=True)]
+        chosen = dated_sorted + undated
+        if max_files and max_files > 0:
+            chosen = chosen[:max_files]
+        csv_paths = chosen
 
         uploads: List[InMemoryUpload] = []
         for p in csv_paths:
@@ -6750,6 +6772,20 @@ def main():
                 help="Upload your Wave Detection weekly CSV exports (Stocks_Weekly_YYYY-MM-DD_*_data.csv)"
             )
         else:
+            drive_max_files = st.slider(
+                "⚡ Fast Mode: Latest CSVs to Process",
+                min_value=8,
+                max_value=300,
+                value=60,
+                step=2,
+                help="Lower value = faster fetch + compute. Increase for longer history (supports 100+ files)."
+            )
+            drive_all_files = st.checkbox(
+                "Process ALL files in folder (slow)",
+                value=False,
+                help="Enable when you want full history. Disable for faster analysis."
+            )
+
             drive_folder_key = st.text_input(
                 "Google Drive Folder Key",
                 value="",
@@ -6762,36 +6798,44 @@ def main():
                 drive_folder_key = _normalize_drive_folder_key(drive_folder_key)
                 drive_folder_url = _drive_folder_url(drive_folder_key)
                 st.markdown(f"🔗 Folder Link: {drive_folder_url}")
-                st.caption("Auto-fetch is enabled: files are fetched directly after key paste.")
+                st.caption("Auto-fetch is enabled. Fast mode processes only latest selected CSVs.")
 
-                # Auto-fetch once per new key so user does not need extra clicks.
-                key_changed = st.session_state.get('_drive_key_loaded') != drive_folder_key
+                # Auto-fetch once per new key/settings so user does not need extra clicks.
+                max_files_effective = 0 if drive_all_files else int(drive_max_files)
+                fetch_sig = (drive_folder_key, max_files_effective)
+                key_changed = st.session_state.get('_drive_fetch_sig_loaded') != fetch_sig
                 if key_changed:
-                    with st.spinner("Fetching CSV files from Google Drive..."):
-                        drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key)
+                    _scope = "all CSVs" if max_files_effective == 0 else f"latest {max_files_effective} CSVs"
+                    with st.spinner(f"Fetching {_scope} from Google Drive..."):
+                        drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key, max_files=max_files_effective)
                     if drive_err:
                         st.error(f"❌ {drive_err}")
                         st.session_state.pop('_drive_uploads', None)
                         st.session_state.pop('_drive_key_loaded', None)
+                        st.session_state.pop('_drive_fetch_sig_loaded', None)
                     else:
                         st.session_state['_drive_uploads'] = drive_uploads
                         st.session_state['_drive_key_loaded'] = drive_folder_key
+                        st.session_state['_drive_fetch_sig_loaded'] = fetch_sig
                         st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s) from Drive")
 
                 if st.button("🔄 Refresh Drive Fetch", key='refresh_drive_fetch', use_container_width=True):
-                    with st.spinner("Fetching CSV files from Google Drive..."):
-                        drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key)
+                    _scope = "all CSVs" if max_files_effective == 0 else f"latest {max_files_effective} CSVs"
+                    with st.spinner(f"Refreshing {_scope} from Google Drive..."):
+                        drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key, max_files=max_files_effective)
                     if drive_err:
                         st.error(f"❌ {drive_err}")
                         st.session_state.pop('_drive_uploads', None)
                         st.session_state.pop('_drive_key_loaded', None)
+                        st.session_state.pop('_drive_fetch_sig_loaded', None)
                     else:
                         st.session_state['_drive_uploads'] = drive_uploads
                         st.session_state['_drive_key_loaded'] = drive_folder_key
+                        st.session_state['_drive_fetch_sig_loaded'] = fetch_sig
                         st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s) from Drive")
 
                 # Reuse previously fetched files for the same key
-                if st.session_state.get('_drive_key_loaded') == drive_folder_key:
+                if st.session_state.get('_drive_fetch_sig_loaded') == fetch_sig:
                     uploaded_files = st.session_state.get('_drive_uploads', [])
 
     # Header
