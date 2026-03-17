@@ -184,46 +184,6 @@ def _load_csv_uploads_from_drive(folder_key: str) -> Tuple[List[InMemoryUpload],
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _scan_csv_folder_dates(folder_path: str) -> List[Tuple[datetime, str]]:
-    """Scan a local folder for CSV files and return list of (date, filepath) tuples sorted by date."""
-    results = []
-    if not os.path.isdir(folder_path):
-        return results
-    for fname in os.listdir(folder_path):
-        if not fname.lower().endswith('.csv'):
-            continue
-        dt = parse_date_from_filename(fname)
-        if dt:
-            results.append((dt, os.path.join(folder_path, fname)))
-    return sorted(results, key=lambda x: x[0])
-
-
-def _load_csv_from_local_folder(folder_path: str, date_start: datetime, date_end: datetime) -> Tuple[List[InMemoryUpload], Optional[str]]:
-    """Load CSVs from a local folder filtered by date range, returning InMemoryUpload objects."""
-    if not os.path.isdir(folder_path):
-        return [], f"Folder not found: {folder_path}"
-
-    all_files = _scan_csv_folder_dates(folder_path)
-    if not all_files:
-        return [], "No CSV files with valid dates found in this folder."
-
-    # Filter by date range
-    filtered = [(dt, fp) for dt, fp in all_files if date_start <= dt <= date_end]
-    if not filtered:
-        return [], f"No CSV files found between {date_start.strftime('%Y-%m-%d')} and {date_end.strftime('%Y-%m-%d')}."
-
-    uploads: List[InMemoryUpload] = []
-    for dt, fp in filtered:
-        try:
-            with open(fp, 'rb') as f:
-                uploads.append(InMemoryUpload(os.path.basename(fp), f.read()))
-        except Exception:
-            continue
-
-    if not uploads:
-        return [], "Failed to read selected CSV files."
-    return uploads, None
-
 # ============================================
 # CONFIGURATION
 # ============================================
@@ -722,6 +682,20 @@ def parse_date_from_filename(filename: str) -> Optional[datetime]:
     """Extract date from CSV filename: Stocks_Weekly_YYYY-MM-DD_..."""
     match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
     return datetime.strptime(match.group(1), '%Y-%m-%d') if match else None
+
+
+def _extract_dated_files(uploaded_files: list) -> Tuple[List[Tuple[datetime, Any]], int]:
+    """Return sorted dated file tuples and count of files without parseable date."""
+    dated: List[Tuple[datetime, Any]] = []
+    undated = 0
+    for f in uploaded_files:
+        dt = parse_date_from_filename(getattr(f, 'name', ''))
+        if dt is None:
+            undated += 1
+            continue
+        dated.append((dt, f))
+    dated.sort(key=lambda x: x[0])
+    return dated, undated
 
 
 def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Optional[dict], Optional[list], Optional[dict]]:
@@ -6966,7 +6940,67 @@ def main():
             """)
         return
 
-    st.caption(f"📁 {len(uploaded_files)} file{'s' if len(uploaded_files) != 1 else ''} uploaded")
+    dated_files, undated_count = _extract_dated_files(uploaded_files)
+    total_uploaded = len(uploaded_files)
+
+    if dated_files:
+        min_dt = dated_files[0][0].date()
+        max_dt = dated_files[-1][0].date()
+
+        with st.sidebar:
+            st.markdown('<div class="sb-section-head">🗓️ FILE RANGE</div>', unsafe_allow_html=True)
+            range_mode = st.radio(
+                "File Range",
+                ["All Time", "Custom"],
+                index=0,
+                key='file_range_mode',
+                horizontal=True,
+                label_visibility='collapsed'
+            )
+
+            if range_mode == "Custom":
+                col_from, col_to = st.columns(2)
+                with col_from:
+                    range_start = st.date_input(
+                        "From",
+                        value=min_dt,
+                        min_value=min_dt,
+                        max_value=max_dt,
+                        key='file_range_start'
+                    )
+                with col_to:
+                    range_end = st.date_input(
+                        "To",
+                        value=max_dt,
+                        min_value=min_dt,
+                        max_value=max_dt,
+                        key='file_range_end'
+                    )
+            else:
+                range_start = min_dt
+                range_end = max_dt
+
+            if range_start > range_end:
+                st.warning("Start date is after end date. Using full file range.")
+                range_start = min_dt
+                range_end = max_dt
+
+            selected = [f for dt, f in dated_files if range_start <= dt.date() <= range_end]
+            st.caption(f"Range: {range_start.strftime('%Y-%m-%d')} → {range_end.strftime('%Y-%m-%d')}")
+            st.caption(f"📊 {len(selected)} of {len(dated_files)} dated files selected")
+
+        uploaded_files = selected
+    else:
+        with st.sidebar:
+            st.info("No parseable dates in filenames; using all uploaded files.")
+
+    st.caption(f"📁 {len(uploaded_files)} file{'s' if len(uploaded_files) != 1 else ''} selected from {total_uploaded}")
+    if undated_count > 0:
+        st.caption(f"ℹ️ Ignored {undated_count} file{'s' if undated_count != 1 else ''} without date in filename")
+
+    if not uploaded_files:
+        st.warning("No files fall inside the selected range. Adjust date range in sidebar.")
+        return
 
     # ── Session-state caching (recompute only when files change) ──
     cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
