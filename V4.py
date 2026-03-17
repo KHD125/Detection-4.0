@@ -3885,8 +3885,10 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ── Control row: Show Top | Sort | View | Export ──
     ctl0, ctl1, ctl2, ctl3 = st.columns([0.8, 1.3, 1.3, 1.0])
     with ctl0:
-        display_n = st.selectbox("Show Top", [10, 20, 50, 100, 200, 500],
-                                  index=3, key='rank_topn')
+        show_top_options = [10, 20, 50, 100, 200, 500, "All"]
+        display_n_select = st.selectbox("Show Top", show_top_options,
+                                         index=3, key='rank_topn')
+        display_n = len(filtered_df) if display_n_select == "All" else display_n_select
     with ctl1:
         sort_by = st.selectbox("Sort by", [
             'Trajectory Score', 'Current Rank', 'Rank Change', 'TMI',
@@ -6849,7 +6851,7 @@ def main():
         st.markdown('<div class="sb-section-head">📥 DATA SOURCE</div>', unsafe_allow_html=True)
         data_source_mode = st.radio(
             "Data Source",
-            ["📂 Upload CSV Files", "📁 Local CSV Folder", "☁️ Google Drive"],
+            ["📂 Upload CSV Files", "☁️ Google Drive"],
             index=0,
             key='data_source_mode',
             label_visibility='collapsed',
@@ -6872,87 +6874,7 @@ def main():
             )
 
         # ═══════════════════════════════════════════
-        # MODE 2: Local CSV Folder (NEW)
-        # ═══════════════════════════════════════════
-        elif data_source_mode == "📁 Local CSV Folder":
-            default_csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'CSV')
-            csv_folder = st.text_input(
-                "CSV Folder Path",
-                value=default_csv_path,
-                key='local_csv_folder',
-                help="Path to the folder containing your weekly CSV files"
-            ).strip()
-
-            if csv_folder and os.path.isdir(csv_folder):
-                # Scan folder for available dates
-                available_files = _scan_csv_folder_dates(csv_folder)
-                if available_files:
-                    dates_available = [dt for dt, _ in available_files]
-                    min_date = dates_available[0].date()
-                    max_date = dates_available[-1].date()
-
-                    # File count badge
-                    st.markdown(
-                        f'<div class="sb-cached-badge">📁 {len(available_files)} files found · '
-                        f'{min_date.strftime("%b %Y")} → {max_date.strftime("%b %Y")}</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    # Date range picker
-                    st.markdown('<div class="sb-section-head">📅 DATE RANGE</div>', unsafe_allow_html=True)
-                    col_start, col_end = st.columns(2)
-                    with col_start:
-                        date_start = st.date_input("From", value=min_date, min_value=min_date,
-                                                   max_value=max_date, key='local_date_start')
-                    with col_end:
-                        date_end = st.date_input("To", value=max_date, min_value=min_date,
-                                                 max_value=max_date, key='local_date_end')
-
-                    # Convert date to datetime for comparison
-                    dt_start = datetime.combine(date_start, datetime.min.time())
-                    dt_end = datetime.combine(date_end, datetime.max.time())
-
-                    # Filter and show selected files as chips
-                    selected_files = [(dt, fp) for dt, fp in available_files if dt_start <= dt <= dt_end]
-                    file_chips = ''.join(
-                        f'<span class="sb-file-chip sb-file-chip-active">{dt.strftime("%m/%d")}</span>'
-                        for dt, _ in selected_files
-                    )
-                    if file_chips:
-                        st.markdown(f'{file_chips}', unsafe_allow_html=True)
-                        st.caption(f"📊 {len(selected_files)} of {len(available_files)} files selected")
-
-                    # Load button with caching
-                    cache_key_local = f"{csv_folder}|{date_start}|{date_end}"
-                    key_changed = st.session_state.get('_local_key_loaded') != cache_key_local
-
-                    if key_changed:
-                        # Auto-load on date change
-                        local_uploads, local_err = _load_csv_from_local_folder(csv_folder, dt_start, dt_end)
-                        if local_err:
-                            st.error(f"❌ {local_err}")
-                        else:
-                            st.session_state['_local_uploads'] = local_uploads
-                            st.session_state['_local_key_loaded'] = cache_key_local
-                            st.session_state['_local_load_time'] = datetime.now()
-
-                    if st.session_state.get('_local_key_loaded') == cache_key_local:
-                        uploaded_files = st.session_state.get('_local_uploads', [])
-                        load_time = st.session_state.get('_local_load_time')
-                        if load_time:
-                            elapsed = (datetime.now() - load_time).seconds
-                            if elapsed > 0:
-                                st.markdown(
-                                    f'<div class="sb-cached-badge">⚡ Cached · loaded {elapsed}s ago</div>',
-                                    unsafe_allow_html=True
-                                )
-                else:
-                    st.warning("No CSV files with recognizable dates found in this folder.")
-            elif csv_folder:
-                st.error(f"❌ Folder not found: {csv_folder}")
-
-        # ═══════════════════════════════════════════
-        # MODE 3: Google Drive
+        # MODE 2: Google Drive
         # ═══════════════════════════════════════════
         else:
             drive_folder_key = st.text_input(
@@ -7031,14 +6953,6 @@ def main():
             1. Paste your folder key in sidebar (or full folder URL)
             2. App auto-fetches all CSV files from that folder
             3. Analysis starts immediately when files are loaded
-            """)
-        elif data_source_mode == "📁 Local CSV Folder":
-            st.info("👈 Set your local CSV folder path in the sidebar and select a date range.")
-            st.markdown("""
-            **Local CSV Folder mode:**
-            1. Enter the path to your CSV folder (auto-detects `CSV/` subfolder)
-            2. Select a **date range** to choose which weeks to analyze
-            3. Files must be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year_data.csv`
             """)
         else:
             st.info("👈 Upload your weekly CSV snapshots from the sidebar to begin trajectory analysis")
