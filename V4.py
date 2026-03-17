@@ -6654,12 +6654,40 @@ def main():
     # ── Sidebar: Upload CSVs ──
     with st.sidebar:
         st.markdown("### 📊 Rank Trajectory Engine")
-        uploaded_files = st.file_uploader(
-            "📂 Upload Weekly CSV Snapshots",
-            type=['csv'],
-            accept_multiple_files=True,
-            help="Upload your Wave Detection weekly CSV exports (Stocks_Weekly_YYYY-MM-DD_*_data.csv)"
+        data_source_mode = st.radio(
+            "Data Source",
+            ["📂 Upload CSV Files", "🔗 Google Drive Folder Key"],
+            index=0,
+            key='data_source_mode'
         )
+
+        uploaded_files = []
+        drive_folder_key = ""
+        drive_folder_url = ""
+
+        if data_source_mode == "📂 Upload CSV Files":
+            uploaded_files = st.file_uploader(
+                "📂 Upload Weekly CSV Snapshots",
+                type=['csv'],
+                accept_multiple_files=True,
+                help="Upload your Wave Detection weekly CSV exports (Stocks_Weekly_YYYY-MM-DD_*_data.csv)"
+            )
+        else:
+            drive_folder_key = st.text_input(
+                "Google Drive Folder Key",
+                value="",
+                placeholder="Paste folder key, e.g. 1S5nrTQy4GN0GWuIrnEYtbXi2zZtauIl7",
+                key='drive_folder_key'
+            ).strip()
+
+            # Accept either raw key or full drive URL and normalize to key
+            if drive_folder_key:
+                if 'drive.google.com' in drive_folder_key and '/folders/' in drive_folder_key:
+                    key_part = drive_folder_key.split('/folders/', 1)[1]
+                    drive_folder_key = key_part.split('?', 1)[0].split('/', 1)[0].strip()
+                drive_folder_url = f"https://drive.google.com/drive/folders/{drive_folder_key}?usp=drive_link"
+                st.markdown(f"🔗 Folder Link: {drive_folder_url}")
+                st.caption("Tip: Open this folder link and download CSVs, then use Upload mode for analysis.")
 
     # Header
     st.markdown('<div class="main-header">📊 RANK TRAJECTORY ENGINE</div>', unsafe_allow_html=True)
@@ -6667,15 +6695,25 @@ def main():
                 unsafe_allow_html=True)
 
     if not uploaded_files:
-        st.info("👈 Upload your weekly CSV snapshots from the sidebar to begin trajectory analysis")
-        st.markdown("""
-        **How to use:**
-        1. Open the **sidebar** (click `>` at the top-left if collapsed)
-        2. Click **Browse files** or drag-and-drop your Wave Detection weekly CSV exports
-        3. Upload multiple weeks at once (select all CSVs together)
-        4. Files should be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year_data.csv`
-        5. Minimum **3 weeks** recommended for meaningful trajectory analysis
-        """)
+        if data_source_mode == "🔗 Google Drive Folder Key":
+            st.info("👈 Paste your Google Drive folder key in the sidebar to auto-build the folder link.")
+            st.markdown("""
+            **Google Drive mode:**
+            1. Paste your folder key in sidebar (or full folder URL)
+            2. Copy/open the generated folder link
+            3. Download required weekly CSV files
+            4. Switch to **Upload CSV Files** mode and upload them for full analysis
+            """)
+        else:
+            st.info("👈 Upload your weekly CSV snapshots from the sidebar to begin trajectory analysis")
+            st.markdown("""
+            **How to use:**
+            1. Open the **sidebar** (click `>` at the top-left if collapsed)
+            2. Click **Browse files** or drag-and-drop your Wave Detection weekly CSV exports
+            3. Upload multiple weeks at once (select all CSVs together)
+            4. Files should be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year_data.csv`
+            5. Minimum **3 weeks** recommended for meaningful trajectory analysis
+            """)
         return
 
     st.caption(f"📁 {len(uploaded_files)} file{'s' if len(uploaded_files) != 1 else ''} uploaded")
