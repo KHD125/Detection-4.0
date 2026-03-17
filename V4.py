@@ -143,7 +143,7 @@ def _drive_folder_url(folder_key: str) -> str:
     return f"https://drive.google.com/drive/folders/{folder_key}?usp=drive_link"
 
 
-def _load_csv_uploads_from_drive(folder_key: str, max_files: int = 28) -> Tuple[List[InMemoryUpload], Optional[str]]:
+def _load_csv_uploads_from_drive(folder_key: str) -> Tuple[List[InMemoryUpload], Optional[str]]:
     """Download CSVs from a public Google Drive folder and return upload-like objects."""
     key = _normalize_drive_folder_key(folder_key)
     if not key:
@@ -165,28 +165,6 @@ def _load_csv_uploads_from_drive(folder_key: str, max_files: int = 28) -> Tuple[
         csv_paths.extend(glob.glob(os.path.join(tmpdir, '**', '*.csv'), recursive=True))
         csv_paths = sorted(set(csv_paths))
 
-        # Keep only latest N weekly files for faster compute.
-        # Drive folders may contain many months/years of data; processing all is slow.
-        # This path prefers files with parseable weekly dates from filename.
-        dated = []
-        undated = []
-        for p in csv_paths:
-            fname = os.path.basename(p)
-            try:
-                d = parse_date_from_filename(fname)
-            except Exception:
-                d = None
-            if d is not None:
-                dated.append((d, p))
-            else:
-                undated.append(p)
-
-        dated_sorted = [p for _, p in sorted(dated, key=lambda x: x[0], reverse=True)]
-        chosen = dated_sorted + undated
-        if max_files and max_files > 0:
-            chosen = chosen[:max_files]
-        csv_paths = chosen
-
         uploads: List[InMemoryUpload] = []
         for p in csv_paths:
             try:
@@ -204,6 +182,47 @@ def _load_csv_uploads_from_drive(folder_key: str, max_files: int = 28) -> Tuple[
         return [], f"Drive fetch failed: {e}"
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _scan_csv_folder_dates(folder_path: str) -> List[Tuple[datetime, str]]:
+    """Scan a local folder for CSV files and return list of (date, filepath) tuples sorted by date."""
+    results = []
+    if not os.path.isdir(folder_path):
+        return results
+    for fname in os.listdir(folder_path):
+        if not fname.lower().endswith('.csv'):
+            continue
+        dt = parse_date_from_filename(fname)
+        if dt:
+            results.append((dt, os.path.join(folder_path, fname)))
+    return sorted(results, key=lambda x: x[0])
+
+
+def _load_csv_from_local_folder(folder_path: str, date_start: datetime, date_end: datetime) -> Tuple[List[InMemoryUpload], Optional[str]]:
+    """Load CSVs from a local folder filtered by date range, returning InMemoryUpload objects."""
+    if not os.path.isdir(folder_path):
+        return [], f"Folder not found: {folder_path}"
+
+    all_files = _scan_csv_folder_dates(folder_path)
+    if not all_files:
+        return [], "No CSV files with valid dates found in this folder."
+
+    # Filter by date range
+    filtered = [(dt, fp) for dt, fp in all_files if date_start <= dt <= date_end]
+    if not filtered:
+        return [], f"No CSV files found between {date_start.strftime('%Y-%m-%d')} and {date_end.strftime('%Y-%m-%d')}."
+
+    uploads: List[InMemoryUpload] = []
+    for dt, fp in filtered:
+        try:
+            with open(fp, 'rb') as f:
+                uploads.append(InMemoryUpload(os.path.basename(fp), f.read()))
+        except Exception:
+            continue
+
+    if not uploads:
+        return [], "Failed to read selected CSV files."
+    return uploads, None
 
 # ============================================
 # CONFIGURATION
@@ -569,7 +588,68 @@ st.markdown("""
     }
     .funnel-stat-value { font-size: 1.8rem; font-weight: 700; }
     .funnel-stat-label { font-size: 0.72rem; color: #8b949e; text-transform: uppercase; }
+
+    /* ── Sidebar Premium Styling ── */
+    .sb-brand {
+        background: linear-gradient(135deg, rgba(255,107,53,0.12) 0%, rgba(88,166,255,0.10) 100%);
+        border: 1px solid rgba(255,107,53,0.25); border-radius: 14px;
+        padding: 18px 14px 14px; text-align: center; margin-bottom: 16px;
+        position: relative; overflow: hidden;
+    }
+    .sb-brand::before {
+        content: ''; position: absolute; top: -40%; left: -40%;
+        width: 180%; height: 180%;
+        background: radial-gradient(circle, rgba(255,107,53,0.06) 0%, transparent 70%);
+        animation: sb-pulse 6s ease-in-out infinite;
+    }
+    @keyframes sb-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+    .sb-brand-title {
+        font-size: 1.15rem; font-weight: 800; position: relative;
+        background: linear-gradient(120deg, #FF6B35 30%, #58a6ff 100%);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .sb-brand-ver {
+        display: inline-block; font-size: 0.6rem; font-weight: 700; color: #FF6B35;
+        background: rgba(255,107,53,0.12); border: 1px solid rgba(255,107,53,0.3);
+        padding: 1px 7px; border-radius: 8px; margin-top: 4px; position: relative;
+    }
+    .sb-status-card {
+        background: rgba(22,27,34,0.85); backdrop-filter: blur(8px);
+        border: 1px solid #30363d; border-radius: 12px;
+        padding: 12px 14px; margin: 10px 0;
+    }
+    .sb-status-row {
+        display: flex; justify-content: space-between; align-items: center;
+        font-size: 0.78rem; color: #c9d1d9; padding: 3px 0;
+    }
+    .sb-status-val { font-weight: 700; color: #e6edf3; }
+    .sb-status-dot {
+        display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+        background: #3fb950; margin-right: 5px; animation: sb-blink 2s infinite;
+    }
+    @keyframes sb-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .sb-cached-badge {
+        display: inline-flex; align-items: center; gap: 4px;
+        font-size: 0.65rem; font-weight: 600; color: #3fb950;
+        background: rgba(63,185,80,0.08); border: 1px solid rgba(63,185,80,0.25);
+        padding: 2px 8px; border-radius: 8px; margin-top: 4px;
+    }
+    .sb-file-chip {
+        display: inline-block; font-size: 0.62rem; color: #8b949e;
+        background: #161b22; border: 1px solid #21262d; border-radius: 6px;
+        padding: 2px 6px; margin: 1px;
+    }
+    .sb-file-chip-active {
+        color: #58a6ff; border-color: rgba(88,166,255,0.3);
+        background: rgba(88,166,255,0.06);
+    }
+    .sb-section-head {
+        font-size: 0.75rem; font-weight: 700; color: #8b949e;
+        text-transform: uppercase; letter-spacing: 0.8px;
+        margin: 14px 0 6px 0; display: flex; align-items: center; gap: 5px;
+    }
 </style>
+
 """, unsafe_allow_html=True)
 
 
@@ -3556,73 +3636,79 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
 # ============================================
 
 def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
-    """Render sidebar with data info and global filters"""
+    """Render sidebar with premium data info card and collapsible global filters"""
     with st.sidebar:
-        st.markdown("---")
+        # ── Glassmorphism Data Status Card ──
+        st.markdown(f"""
+        <div class="sb-status-card">
+            <div class="sb-status-row">
+                <span><span class="sb-status-dot"></span>Live Data</span>
+                <span class="sb-status-val">{metadata['total_weeks']} weeks</span>
+            </div>
+            <div class="sb-status-row">
+                <span>📅 Range</span>
+                <span class="sb-status-val" style="font-size:0.7rem">{metadata['date_range']}</span>
+            </div>
+            <div class="sb-status-row">
+                <span>📊 Tickers</span>
+                <span class="sb-status-val">{metadata['total_tickers']:,}</span>
+            </div>
+            <div class="sb-status-row">
+                <span>📈 Avg/Week</span>
+                <span class="sb-status-val">{metadata['avg_stocks_per_week']:,}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        # Data status
-        st.markdown("#### 📂 Data Status")
-        st.markdown(f"**Weeks Loaded:** {metadata['total_weeks']}")
-        st.markdown(f"**Date Range:** {metadata['date_range']}")
-        st.markdown(f"**Total Tickers:** {metadata['total_tickers']:,}")
-        st.markdown(f"**Avg Stocks/Week:** {metadata['avg_stocks_per_week']:,}")
-        st.markdown("---")
+        # ── Sector / Category Filters (collapsible) ──
+        with st.expander("🏢 Sector & Category", expanded=False):
+            categories = sorted(traj_df['category'].dropna().unique().tolist())
+            selected_cats = st.multiselect("Category", categories, default=[], placeholder="All", key='sb_cat')
 
-        # Filters
-        st.markdown("#### ⚙️ Filters")
+            sector_counts = traj_df['sector'].value_counts()
+            top_sectors = sector_counts[sector_counts >= 3].index.tolist()
+            sectors = sorted(top_sectors)
+            selected_sectors = st.multiselect("Sector", sectors, default=[], placeholder="All", key='sb_sector')
 
-        # Category filter
-        categories = sorted(traj_df['category'].dropna().unique().tolist())
-        selected_cats = st.multiselect("Category", categories, default=[], placeholder="All", key='sb_cat')
+            industry_pool = traj_df
+            if selected_cats:
+                industry_pool = industry_pool[industry_pool['category'].isin(selected_cats)]
+            if selected_sectors:
+                industry_pool = industry_pool[industry_pool['sector'].isin(selected_sectors)]
+            industries = sorted(industry_pool['industry'].dropna().loc[lambda s: s.str.strip() != ''].unique().tolist())
+            selected_industries = st.multiselect("Industry", industries, default=[], placeholder="All", key='sb_industry')
 
-        # Sector filter (top sectors by count)
-        sector_counts = traj_df['sector'].value_counts()
-        top_sectors = sector_counts[sector_counts >= 3].index.tolist()
-        sectors = sorted(top_sectors)
-        selected_sectors = st.multiselect("Sector", sectors, default=[], placeholder="All", key='sb_sector')
+        # ── Signal Filters (collapsible) ──
+        with st.expander("📡 Signal Filters", expanded=False):
+            pa_options = ['All', '💰 Confirmed', '⚠️ Divergent', '➖ Neutral']
+            selected_pa = st.selectbox("Price Alignment", pa_options, index=0, key='sb_pa')
 
-        # Industry filter (dynamic — cascades from category/sector selection)
-        industry_pool = traj_df
-        if selected_cats:
-            industry_pool = industry_pool[industry_pool['category'].isin(selected_cats)]
-        if selected_sectors:
-            industry_pool = industry_pool[industry_pool['sector'].isin(selected_sectors)]
-        industries = sorted(industry_pool['industry'].dropna().loc[lambda s: s.str.strip() != ''].unique().tolist())
-        selected_industries = st.multiselect("Industry", industries, default=[], placeholder="All", key='sb_industry')
+            md_options = ['All', '✅ No Decay', '🔻 High Decay', '⚡ Moderate Decay', '~ Mild Decay']
+            selected_md = st.selectbox("Momentum Decay", md_options, index=0, key='sb_md')
 
-        # Price Alignment filter
-        pa_options = ['All', '💰 Confirmed', '⚠️ Divergent', '➖ Neutral']
-        selected_pa = st.selectbox("Price Alignment", pa_options, index=0, key='sb_pa')
+        # ── Rally Filters (collapsible) ──
+        with st.expander("📈 Rally & Momentum", expanded=False):
+            rally_stage_options = ['🌱 Fresh', '🚀 Early', '🏃 Running', '🧱 Mature', '⏳ Late']
+            rally_stage_map = {'🌱 Fresh': 'FRESH', '🚀 Early': 'EARLY', '🏃 Running': 'RUNNING', '🧱 Mature': 'MATURE', '⏳ Late': 'LATE'}
+            selected_rally = st.multiselect("Rally Stage", rally_stage_options, default=[], placeholder="All", key='sb_rally')
+            age_range = st.slider("Age of Move (weeks)", 0, 20, (0, 20), key='sb_age')
 
-        # Momentum Decay filter
-        md_options = ['All', '✅ No Decay', '🔻 High Decay', '⚡ Moderate Decay', '~ Mild Decay']
-        selected_md = st.selectbox("Momentum Decay", md_options, index=0, key='sb_md')
+        # ── Thresholds (collapsible) ──
+        with st.expander("🎚️ Thresholds", expanded=False):
+            min_weeks = st.slider("Min Weeks of Data", 2, metadata['total_weeks'], MIN_WEEKS_DEFAULT, key='sb_weeks')
+            min_score = st.slider("Min Trajectory Score", 0, 100, 0, key='sb_score')
 
-        # Rally Leg Stage filter
-        rally_stage_options = ['🌱 Fresh', '🚀 Early', '🏃 Running', '🧱 Mature', '⏳ Late']
-        rally_stage_map = {'🌱 Fresh': 'FRESH', '🚀 Early': 'EARLY', '🏃 Running': 'RUNNING', '🧱 Mature': 'MATURE', '⏳ Late': 'LATE'}
-        selected_rally = st.multiselect("📈 Rally Stage", rally_stage_options, default=[], placeholder="All", key='sb_rally')
-
-        # Age of Move (rally weeks) filter
-        age_range = st.slider("📅 Age of Move (weeks)", 0, 20, (0, 20), key='sb_age')
-
-        # Min weeks
-        min_weeks = st.slider("Min Weeks of Data", 2, metadata['total_weeks'], MIN_WEEKS_DEFAULT, key='sb_weeks')
-
-        # Min T-Score
-        min_score = st.slider("Min Trajectory Score", 0, 100, 0, key='sb_score')
-
-        st.markdown("---")
-        st.markdown("#### 📋 Quick Filters")
+        # ── Quick Filters ──
+        st.markdown('<div class="sb-section-head">⚡ QUICK FILTERS</div>', unsafe_allow_html=True)
         quick_filter = st.radio("Preset", ['None', '🚀 Rockets Only', '🎯 Elite Only',
                                            '📈 Climbers', '⚡ Breakouts', '🏔️ At Peak',
                                            '🔥 Momentum', '💥 Crashes', '⛰️ Topping',
                                            '⏳ Consolidating', 'Conviction ≥ 65', 'Positional > 80',
                                            '🧪 EARLY_RIDE_PROVEN (Top 10 Conviction)'],
-                                index=0, key='sb_quick')
+                                index=0, key='sb_quick', label_visibility='collapsed')
 
         st.markdown("---")
-        st.caption("v9.0 | Data-Driven + Sector-Relative")
+        st.caption("v9.0 · Data-Driven · Sector-Relative")
 
     return {
         'categories': selected_cats,
@@ -6750,93 +6836,187 @@ def render_about_tab():
 def main():
     """Main application entry point"""
 
-    # ── Sidebar: Upload CSVs ──
+    # ── Sidebar: Branded Header + Data Source ──
     with st.sidebar:
-        st.markdown("### 📊 Rank Trajectory Engine")
+        # Branded header card
+        st.markdown("""
+        <div class="sb-brand">
+            <div class="sb-brand-title">📊 RANK TRAJECTORY</div>
+            <div class="sb-brand-ver">ENGINE v9.0</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown('<div class="sb-section-head">📥 DATA SOURCE</div>', unsafe_allow_html=True)
         data_source_mode = st.radio(
             "Data Source",
-            ["📂 Upload CSV Files", "🔗 Google Drive Folder Key"],
+            ["📂 Upload CSV Files", "📁 Local CSV Folder", "☁️ Google Drive"],
             index=0,
-            key='data_source_mode'
+            key='data_source_mode',
+            label_visibility='collapsed',
+            horizontal=True
         )
 
         uploaded_files = []
         drive_folder_key = ""
-        drive_folder_url = ""
 
+        # ═══════════════════════════════════════════
+        # MODE 1: Upload CSV Files
+        # ═══════════════════════════════════════════
         if data_source_mode == "📂 Upload CSV Files":
             uploaded_files = st.file_uploader(
-                "📂 Upload Weekly CSV Snapshots",
+                "Upload Weekly CSV Snapshots",
                 type=['csv'],
                 accept_multiple_files=True,
-                help="Upload your Wave Detection weekly CSV exports (Stocks_Weekly_YYYY-MM-DD_*_data.csv)"
-            )
-        else:
-            drive_max_files = st.slider(
-                "⚡ Fast Mode: Latest CSVs to Process",
-                min_value=8,
-                max_value=300,
-                value=60,
-                step=2,
-                help="Lower value = faster fetch + compute. Increase for longer history (supports 100+ files)."
-            )
-            drive_all_files = st.checkbox(
-                "Process ALL files in folder (slow)",
-                value=False,
-                help="Enable when you want full history. Disable for faster analysis."
+                help="Upload Wave Detection weekly CSVs (Stocks_Weekly_YYYY-MM-DD_*_data.csv)",
+                label_visibility='collapsed'
             )
 
+        # ═══════════════════════════════════════════
+        # MODE 2: Local CSV Folder (NEW)
+        # ═══════════════════════════════════════════
+        elif data_source_mode == "📁 Local CSV Folder":
+            default_csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'CSV')
+            csv_folder = st.text_input(
+                "CSV Folder Path",
+                value=default_csv_path,
+                key='local_csv_folder',
+                help="Path to the folder containing your weekly CSV files"
+            ).strip()
+
+            if csv_folder and os.path.isdir(csv_folder):
+                # Scan folder for available dates
+                available_files = _scan_csv_folder_dates(csv_folder)
+                if available_files:
+                    dates_available = [dt for dt, _ in available_files]
+                    min_date = dates_available[0].date()
+                    max_date = dates_available[-1].date()
+
+                    # File count badge
+                    st.markdown(
+                        f'<div class="sb-cached-badge">📁 {len(available_files)} files found · '
+                        f'{min_date.strftime("%b %Y")} → {max_date.strftime("%b %Y")}</div>',
+                        unsafe_allow_html=True
+                    )
+
+                    # Date range picker
+                    st.markdown('<div class="sb-section-head">📅 DATE RANGE</div>', unsafe_allow_html=True)
+                    col_start, col_end = st.columns(2)
+                    with col_start:
+                        date_start = st.date_input("From", value=min_date, min_value=min_date,
+                                                   max_value=max_date, key='local_date_start')
+                    with col_end:
+                        date_end = st.date_input("To", value=max_date, min_value=min_date,
+                                                 max_value=max_date, key='local_date_end')
+
+                    # Convert date to datetime for comparison
+                    dt_start = datetime.combine(date_start, datetime.min.time())
+                    dt_end = datetime.combine(date_end, datetime.max.time())
+
+                    # Filter and show selected files as chips
+                    selected_files = [(dt, fp) for dt, fp in available_files if dt_start <= dt <= dt_end]
+                    file_chips = ''.join(
+                        f'<span class="sb-file-chip sb-file-chip-active">{dt.strftime("%m/%d")}</span>'
+                        for dt, _ in selected_files
+                    )
+                    if file_chips:
+                        st.markdown(f'{file_chips}', unsafe_allow_html=True)
+                        st.caption(f"📊 {len(selected_files)} of {len(available_files)} files selected")
+
+                    # Load button with caching
+                    cache_key_local = f"{csv_folder}|{date_start}|{date_end}"
+                    key_changed = st.session_state.get('_local_key_loaded') != cache_key_local
+
+                    if key_changed:
+                        # Auto-load on date change
+                        local_uploads, local_err = _load_csv_from_local_folder(csv_folder, dt_start, dt_end)
+                        if local_err:
+                            st.error(f"❌ {local_err}")
+                        else:
+                            st.session_state['_local_uploads'] = local_uploads
+                            st.session_state['_local_key_loaded'] = cache_key_local
+                            st.session_state['_local_load_time'] = datetime.now()
+
+                    if st.session_state.get('_local_key_loaded') == cache_key_local:
+                        uploaded_files = st.session_state.get('_local_uploads', [])
+                        load_time = st.session_state.get('_local_load_time')
+                        if load_time:
+                            elapsed = (datetime.now() - load_time).seconds
+                            if elapsed > 0:
+                                st.markdown(
+                                    f'<div class="sb-cached-badge">⚡ Cached · loaded {elapsed}s ago</div>',
+                                    unsafe_allow_html=True
+                                )
+                else:
+                    st.warning("No CSV files with recognizable dates found in this folder.")
+            elif csv_folder:
+                st.error(f"❌ Folder not found: {csv_folder}")
+
+        # ═══════════════════════════════════════════
+        # MODE 3: Google Drive
+        # ═══════════════════════════════════════════
+        else:
             drive_folder_key = st.text_input(
                 "Google Drive Folder Key",
                 value="",
-                placeholder="Paste folder key, e.g. 1S5nrTQy4GN0GWuIrnEYtbXi2zZtauIl7",
+                placeholder="Paste key or full folder URL",
                 key='drive_folder_key'
             ).strip()
 
-            # Accept either raw key or full drive URL and normalize to key
             if drive_folder_key:
                 drive_folder_key = _normalize_drive_folder_key(drive_folder_key)
                 drive_folder_url = _drive_folder_url(drive_folder_key)
-                st.markdown(f"🔗 Folder Link: {drive_folder_url}")
-                st.caption("Auto-fetch is enabled. Fast mode processes only latest selected CSVs.")
+                st.markdown(
+                    f'<div class="sb-cached-badge">🔗 <a href="{drive_folder_url}" '
+                    f'target="_blank" style="color:#58a6ff;text-decoration:none">Open in Drive</a></div>',
+                    unsafe_allow_html=True
+                )
 
-                # Auto-fetch once per new key/settings so user does not need extra clicks.
-                max_files_effective = 0 if drive_all_files else int(drive_max_files)
-                fetch_sig = (drive_folder_key, max_files_effective)
-                key_changed = st.session_state.get('_drive_fetch_sig_loaded') != fetch_sig
+                # Auto-fetch once per new key
+                key_changed = st.session_state.get('_drive_key_loaded') != drive_folder_key
                 if key_changed:
-                    _scope = "all CSVs" if max_files_effective == 0 else f"latest {max_files_effective} CSVs"
-                    with st.spinner(f"Fetching {_scope} from Google Drive..."):
-                        drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key, max_files=max_files_effective)
+                    progress_bar = st.progress(0, text="Connecting to Google Drive...")
+                    progress_bar.progress(20, text="Downloading CSV files...")
+                    drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key)
+                    progress_bar.progress(100, text="Complete!")
                     if drive_err:
                         st.error(f"❌ {drive_err}")
                         st.session_state.pop('_drive_uploads', None)
                         st.session_state.pop('_drive_key_loaded', None)
-                        st.session_state.pop('_drive_fetch_sig_loaded', None)
                     else:
                         st.session_state['_drive_uploads'] = drive_uploads
                         st.session_state['_drive_key_loaded'] = drive_folder_key
-                        st.session_state['_drive_fetch_sig_loaded'] = fetch_sig
-                        st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s) from Drive")
+                        st.session_state['_drive_load_time'] = datetime.now()
+                        st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s)")
+                    progress_bar.empty()
 
-                if st.button("🔄 Refresh Drive Fetch", key='refresh_drive_fetch', use_container_width=True):
-                    _scope = "all CSVs" if max_files_effective == 0 else f"latest {max_files_effective} CSVs"
-                    with st.spinner(f"Refreshing {_scope} from Google Drive..."):
-                        drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key, max_files=max_files_effective)
+                if st.button("🔄 Refresh", key='refresh_drive_fetch', use_container_width=True):
+                    progress_bar = st.progress(0, text="Re-fetching from Drive...")
+                    progress_bar.progress(20, text="Downloading...")
+                    drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key)
+                    progress_bar.progress(100, text="Complete!")
                     if drive_err:
                         st.error(f"❌ {drive_err}")
                         st.session_state.pop('_drive_uploads', None)
                         st.session_state.pop('_drive_key_loaded', None)
-                        st.session_state.pop('_drive_fetch_sig_loaded', None)
                     else:
                         st.session_state['_drive_uploads'] = drive_uploads
                         st.session_state['_drive_key_loaded'] = drive_folder_key
-                        st.session_state['_drive_fetch_sig_loaded'] = fetch_sig
-                        st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s) from Drive")
+                        st.session_state['_drive_load_time'] = datetime.now()
+                        st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s)")
+                    progress_bar.empty()
 
-                # Reuse previously fetched files for the same key
-                if st.session_state.get('_drive_fetch_sig_loaded') == fetch_sig:
+                # Reuse previously fetched files
+                if st.session_state.get('_drive_key_loaded') == drive_folder_key:
                     uploaded_files = st.session_state.get('_drive_uploads', [])
+                    load_time = st.session_state.get('_drive_load_time')
+                    if load_time:
+                        mins = (datetime.now() - load_time).seconds // 60
+                        time_label = f"{mins} min ago" if mins > 0 else "just now"
+                        st.markdown(
+                            f'<div class="sb-cached-badge">⚡ Cached · {time_label} · '
+                            f'{len(uploaded_files)} files</div>',
+                            unsafe_allow_html=True
+                        )
 
     # Header
     st.markdown('<div class="main-header">📊 RANK TRAJECTORY ENGINE</div>', unsafe_allow_html=True)
@@ -6844,13 +7024,21 @@ def main():
                 unsafe_allow_html=True)
 
     if not uploaded_files:
-        if data_source_mode == "🔗 Google Drive Folder Key":
+        if data_source_mode == "☁️ Google Drive":
             st.info("👈 Paste your Google Drive folder key in the sidebar. App will fetch CSVs automatically.")
             st.markdown("""
             **Google Drive mode:**
             1. Paste your folder key in sidebar (or full folder URL)
             2. App auto-fetches all CSV files from that folder
             3. Analysis starts immediately when files are loaded
+            """)
+        elif data_source_mode == "📁 Local CSV Folder":
+            st.info("👈 Set your local CSV folder path in the sidebar and select a date range.")
+            st.markdown("""
+            **Local CSV Folder mode:**
+            1. Enter the path to your CSV folder (auto-detects `CSV/` subfolder)
+            2. Select a **date range** to choose which weeks to analyze
+            3. Files must be named: `Stocks_Weekly_YYYY-MM-DD_Month_Year_data.csv`
             """)
         else:
             st.info("👈 Upload your weekly CSV snapshots from the sidebar to begin trajectory analysis")
