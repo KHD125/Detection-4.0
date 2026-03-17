@@ -97,6 +97,9 @@ from datetime import datetime
 import re
 import warnings
 import logging
+import glob
+import tempfile
+import shutil
 from typing import Dict, List, Tuple, Optional, Any
 from io import BytesIO
 
@@ -105,6 +108,80 @@ np.seterr(all='ignore')
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger(__name__)
+
+
+class InMemoryUpload:
+    """Upload-like wrapper so Drive-downloaded bytes can reuse existing pipeline."""
+    def __init__(self, name: str, data: bytes):
+        self.name = name
+        self.size = len(data)
+        self._data = data
+        self._buf = BytesIO(data)
+
+    def getvalue(self):
+        return self._data
+
+    def seek(self, pos: int, whence: int = 0):
+        return self._buf.seek(pos, whence)
+
+    def read(self, size: int = -1):
+        return self._buf.read(size)
+
+
+def _normalize_drive_folder_key(raw: str) -> str:
+    """Accept raw key or full URL and return normalized folder key."""
+    key = (raw or '').strip()
+    if not key:
+        return ''
+    if 'drive.google.com' in key and '/folders/' in key:
+        key_part = key.split('/folders/', 1)[1]
+        key = key_part.split('?', 1)[0].split('/', 1)[0].strip()
+    return key
+
+
+def _drive_folder_url(folder_key: str) -> str:
+    return f"https://drive.google.com/drive/folders/{folder_key}?usp=drive_link"
+
+
+def _load_csv_uploads_from_drive(folder_key: str) -> Tuple[List[InMemoryUpload], Optional[str]]:
+    """Download CSVs from a public Google Drive folder and return upload-like objects."""
+    key = _normalize_drive_folder_key(folder_key)
+    if not key:
+        return [], "Folder key is empty."
+
+    try:
+        import gdown  # type: ignore
+    except Exception:
+        return [], "Drive download dependency missing. Install with: pip install gdown"
+
+    tmpdir = tempfile.mkdtemp(prefix='rte_drive_')
+    try:
+        url = _drive_folder_url(key)
+        downloaded = gdown.download_folder(url=url, output=tmpdir, quiet=True, use_cookies=False, remaining_ok=True)
+
+        csv_paths = []
+        if downloaded:
+            csv_paths.extend([p for p in downloaded if isinstance(p, str) and p.lower().endswith('.csv')])
+        csv_paths.extend(glob.glob(os.path.join(tmpdir, '**', '*.csv'), recursive=True))
+        csv_paths = sorted(set(csv_paths))
+
+        uploads: List[InMemoryUpload] = []
+        for p in csv_paths:
+            try:
+                with open(p, 'rb') as f:
+                    uploads.append(InMemoryUpload(os.path.basename(p), f.read()))
+            except Exception:
+                continue
+
+        if not uploads:
+            return [], "No CSV files found in this Drive folder (or folder is not publicly accessible)."
+
+        return uploads, None
+    except Exception as e:
+        logger.exception("Drive folder load failed")
+        return [], f"Drive fetch failed: {e}"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 # ============================================
 # CONFIGURATION
@@ -6682,12 +6759,26 @@ def main():
 
             # Accept either raw key or full drive URL and normalize to key
             if drive_folder_key:
-                if 'drive.google.com' in drive_folder_key and '/folders/' in drive_folder_key:
-                    key_part = drive_folder_key.split('/folders/', 1)[1]
-                    drive_folder_key = key_part.split('?', 1)[0].split('/', 1)[0].strip()
-                drive_folder_url = f"https://drive.google.com/drive/folders/{drive_folder_key}?usp=drive_link"
+                drive_folder_key = _normalize_drive_folder_key(drive_folder_key)
+                drive_folder_url = _drive_folder_url(drive_folder_key)
                 st.markdown(f"🔗 Folder Link: {drive_folder_url}")
-                st.caption("Tip: Open this folder link and download CSVs, then use Upload mode for analysis.")
+                st.caption("Click 'Load from Drive' to fetch CSVs and run analysis directly.")
+
+                if st.button("⬇️ Load CSVs from Drive", key='load_from_drive', use_container_width=True):
+                    with st.spinner("Fetching CSV files from Google Drive..."):
+                        drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key)
+                    if drive_err:
+                        st.error(f"❌ {drive_err}")
+                        st.session_state.pop('_drive_uploads', None)
+                        st.session_state.pop('_drive_key_loaded', None)
+                    else:
+                        st.session_state['_drive_uploads'] = drive_uploads
+                        st.session_state['_drive_key_loaded'] = drive_folder_key
+                        st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s) from Drive")
+
+                # Reuse previously fetched files for the same key
+                if st.session_state.get('_drive_key_loaded') == drive_folder_key:
+                    uploaded_files = st.session_state.get('_drive_uploads', [])
 
     # Header
     st.markdown('<div class="main-header">📊 RANK TRAJECTORY ENGINE</div>', unsafe_allow_html=True)
@@ -6696,13 +6787,12 @@ def main():
 
     if not uploaded_files:
         if data_source_mode == "🔗 Google Drive Folder Key":
-            st.info("👈 Paste your Google Drive folder key in the sidebar to auto-build the folder link.")
+            st.info("👈 Paste your Google Drive folder key in the sidebar and click 'Load CSVs from Drive'.")
             st.markdown("""
             **Google Drive mode:**
             1. Paste your folder key in sidebar (or full folder URL)
-            2. Copy/open the generated folder link
-            3. Download required weekly CSV files
-            4. Switch to **Upload CSV Files** mode and upload them for full analysis
+            2. Click **Load CSVs from Drive**
+            3. App fetches all CSV files from that folder and starts analysis
             """)
         else:
             st.info("👈 Upload your weekly CSV snapshots from the sidebar to begin trajectory analysis")
