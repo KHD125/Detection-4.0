@@ -3518,7 +3518,8 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         quick_filter = st.radio("Preset", ['None', '🚀 Rockets Only', '🎯 Elite Only',
                                            '📈 Climbers', '⚡ Breakouts', '🏔️ At Peak',
                                            '🔥 Momentum', '💥 Crashes', '⛰️ Topping',
-                                           '⏳ Consolidating', 'Conviction ≥ 65', 'Positional > 80'],
+                                           '⏳ Consolidating', 'Conviction ≥ 65', 'Positional > 80',
+                                           '🧪 EARLY_RIDE_PROVEN (Top 10 Conviction)'],
                                 index=0, key='sb_quick')
 
         st.markdown("---")
@@ -3615,6 +3616,15 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         df = df[df['conviction'] >= 65] if 'conviction' in df.columns else df
     elif qf == 'Positional > 80':
         df = df[df['positional'] > 80]
+    elif qf == '🧪 EARLY_RIDE_PROVEN (Top 10 Conviction)':
+        # Walk-forward validated recipe:
+        # 1) Keep only early/running rally candidates
+        # 2) Rank by conviction and keep top 10 tradable picks
+        if 'rally_stage' in df.columns and 'conviction' in df.columns:
+            early = df[df['rally_stage'].isin(['FRESH', 'EARLY', 'RUNNING'])]
+            df = early.sort_values('conviction', ascending=False).head(10)
+        else:
+            df = df.head(0)
 
     # Re-rank after filtering (no display_n limit — applied per-tab where needed)
     df = df.reset_index(drop=True)
@@ -3814,10 +3824,10 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     VIEW_PRESETS = {
         'Compact':  ['T-Rank', 'Ticker', '₹ Price', 'T-Score', 'Grade', 'Pattern',
                      'Δ Total', 'Streak', 'Trajectory'],
-        'Standard': ['T-Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
+        'Standard': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Stage', 'RallyGain', 'Rally%', 'Trajectory'],
-        'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', '₹ Price', 'T-Score', 'Grade',
+        'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Grade',
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
         'Trading':  ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Grade', 'Conviction',
                      'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak',
