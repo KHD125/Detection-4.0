@@ -3660,12 +3660,69 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             md_options = ['All', '✅ No Decay', '🔻 High Decay', '⚡ Moderate Decay', '~ Mild Decay']
             selected_md = st.selectbox("Momentum Decay", md_options, index=0, key='sb_md')
 
-        # ── Rally Filters (collapsible) ──
-        with st.expander("📈 Rally & Momentum", expanded=False):
-            rally_stage_options = ['🌱 Fresh', '🚀 Early', '🏃 Running', '🧱 Mature', '⏳ Late']
-            rally_stage_map = {'🌱 Fresh': 'FRESH', '🚀 Early': 'EARLY', '🏃 Running': 'RUNNING', '🧱 Mature': 'MATURE', '⏳ Late': 'LATE'}
-            selected_rally = st.multiselect("Rally Stage", rally_stage_options, default=[], placeholder="All", key='sb_rally')
-            age_range = st.slider("Age of Move (weeks)", 0, 20, (0, 20), key='sb_age')
+        # ── Rally Leg Status Filters (collapsible) ──
+        with st.expander("📈 Rally Leg Status", expanded=False):
+            # 1) Stage multi-select
+            rally_stage_options = ['🌱 Fresh (<5%)', '🚀 Early (5-15%)', '🏃 Running (15-30%)', '🧱 Mature (30-50%)', '⏳ Late (>50%)']
+            rally_stage_map = {
+                '🌱 Fresh (<5%)': 'FRESH', '🚀 Early (5-15%)': 'EARLY',
+                '🏃 Running (15-30%)': 'RUNNING', '🧱 Mature (30-50%)': 'MATURE', '⏳ Late (>50%)': 'LATE'
+            }
+            selected_rally = st.multiselect("Stage", rally_stage_options, default=[], placeholder="All stages", key='sb_rally')
+
+            st.markdown("---")
+
+            # 2) Gain this leg
+            gain_presets = ['All', '🟢 Fresh Start (<5%)', '🔵 Early Momentum (5-15%)',
+                           '🟠 Strong Run (15-30%)', '🔴 Extended (>30%)', '🎯 Custom Range']
+            gain_choice = st.selectbox("Gain This Leg", gain_presets, index=0, key='sb_gain_preset')
+            gain_range = (0.0, 999.0)  # default: all
+            if gain_choice == '🟢 Fresh Start (<5%)':
+                gain_range = (0.0, 5.0)
+            elif gain_choice == '🔵 Early Momentum (5-15%)':
+                gain_range = (5.0, 15.0)
+            elif gain_choice == '🟠 Strong Run (15-30%)':
+                gain_range = (15.0, 30.0)
+            elif gain_choice == '🔴 Extended (>30%)':
+                gain_range = (30.0, 999.0)
+            elif gain_choice == '🎯 Custom Range':
+                gain_range = st.slider("Gain % range", 0.0, 100.0, (0.0, 100.0), step=1.0, key='sb_gain_slider')
+
+            st.markdown("---")
+
+            # 3) Age of move (weeks since trough)
+            age_presets = ['All', '⚡ Just Started (0-2w)', '🕐 Recent (2-5w)',
+                          '📅 Established (5-10w)', '🏛️ Mature (10w+)', '🎯 Custom Range']
+            age_choice = st.selectbox("Age of Move", age_presets, index=0, key='sb_age_preset')
+            age_range = (0, 99)  # default: all
+            if age_choice == '⚡ Just Started (0-2w)':
+                age_range = (0, 2)
+            elif age_choice == '🕐 Recent (2-5w)':
+                age_range = (2, 5)
+            elif age_choice == '📅 Established (5-10w)':
+                age_range = (5, 10)
+            elif age_choice == '🏛️ Mature (10w+)':
+                age_range = (10, 99)
+            elif age_choice == '🎯 Custom Range':
+                age_range = st.slider("Age (weeks)", 0, 20, (0, 20), key='sb_age_slider')
+
+            st.markdown("---")
+
+            # 4) Gap to 52w high
+            gap_presets = ['All', '🔥 Near High (<5%)', '✅ Close (5-15%)',
+                          '📏 Moderate Gap (15-30%)', '📉 Far from High (>30%)', '🎯 Custom Range']
+            gap_choice = st.selectbox("Gap to 52w High", gap_presets, index=0, key='sb_gap_preset')
+            gap_range = (0.0, 999.0)  # default: all
+            if gap_choice == '🔥 Near High (<5%)':
+                gap_range = (0.0, 5.0)
+            elif gap_choice == '✅ Close (5-15%)':
+                gap_range = (5.0, 15.0)
+            elif gap_choice == '📏 Moderate Gap (15-30%)':
+                gap_range = (15.0, 30.0)
+            elif gap_choice == '📉 Far from High (>30%)':
+                gap_range = (30.0, 999.0)
+            elif gap_choice == '🎯 Custom Range':
+                gap_range = st.slider("Gap % range", 0.0, 80.0, (0.0, 80.0), step=1.0, key='sb_gap_slider')
 
         # ── Thresholds (collapsible) ──
         with st.expander("🎚️ Thresholds", expanded=False):
@@ -3694,7 +3751,9 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'min_score': min_score,
         'quick_filter': quick_filter,
         'rally_stage': [rally_stage_map[r] for r in selected_rally],
-        'age_range': age_range
+        'gain_range': gain_range,
+        'age_range': age_range,
+        'gap_range': gap_range,
     }
 
 
@@ -3740,10 +3799,21 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         if 'rally_stage' in df.columns:
             df = df[df['rally_stage'].isin(rally_stages)]
 
-    # Age of Move (rally weeks)
-    age_lo, age_hi = filters.get('age_range', (0, 20))
-    if 'rally_weeks' in df.columns and (age_lo > 0 or age_hi < 20):
+    # Gain this leg
+    g_lo, g_hi = filters.get('gain_range', (0.0, 999.0))
+    if 'rally_gain' in df.columns and (g_lo > 0 or g_hi < 999):
+        df = df[(df['rally_gain'] >= g_lo) & (df['rally_gain'] <= g_hi)]
+
+    # Age of Move (rally weeks since trough)
+    age_lo, age_hi = filters.get('age_range', (0, 99))
+    if 'rally_weeks' in df.columns and (age_lo > 0 or age_hi < 99):
         df = df[(df['rally_weeks'] >= age_lo) & (df['rally_weeks'] <= age_hi)]
+
+    # Gap to 52w high (wave_from_high is negative; convert to positive gap)
+    gap_lo, gap_hi = filters.get('gap_range', (0.0, 999.0))
+    if 'wave_from_high' in df.columns and (gap_lo > 0 or gap_hi < 999):
+        gap_abs = df['wave_from_high'].fillna(-999).abs()
+        df = df[(gap_abs >= gap_lo) & (gap_abs <= gap_hi)]
 
     # Min weeks
     df = df[df['weeks'] >= filters['min_weeks']]
