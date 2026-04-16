@@ -144,47 +144,140 @@ def _drive_folder_url(folder_key: str) -> str:
 
 
 def _load_csv_uploads_from_drive(folder_key: str) -> Tuple[List[InMemoryUpload], Optional[str]]:
-    """Download CSVs from a public Google Drive folder and return upload-like objects."""
+    """Download CSVs from a public Google Drive folder using requests (no gdown needed).
+
+    Strategy:
+      1. Fetch the public folder HTML page
+      2. Extract file IDs and names via regex
+      3. Download each CSV individually via export URL
+    """
+    import requests
+
     key = _normalize_drive_folder_key(folder_key)
     if not key:
         return [], "Folder key is empty."
 
-    try:
-        import gdown  # type: ignore
-    except Exception:
-        return [], "Drive download dependency missing. Install with: pip install gdown"
+    # Step 1: Fetch folder listing HTML
+    folder_url = f"https://drive.google.com/drive/folders/{key}"
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                       '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
 
-    tmpdir = tempfile.mkdtemp(prefix='rte_drive_')
     try:
-        url = _drive_folder_url(key)
+        resp = session.get(folder_url, timeout=30)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        if resp.status_code == 404:
+            return [], "Folder not found. Check the folder key."
+        return [], f"Drive folder HTTP error {resp.status_code}: {e}"
+    except Exception as e:
+        return [], f"Failed to connect to Google Drive: {e}"
+
+    html = resp.text
+
+    # Step 2: Extract file IDs and names from the HTML
+    # Google Drive folder pages contain file metadata in JS data structures
+    # Pattern: data-id="FILE_ID" ... file name appears nearby
+    file_entries: List[Tuple[str, str]] = []  # (file_id, filename)
+
+    # Method A: Extract from JS arrays — Google embeds file info as arrays
+    # Typical pattern: ["FILE_ID","FILENAME", ...]
+    id_name_pattern = re.findall(
+        r'\["(1[a-zA-Z0-9_-]{10,})","([^"]+\.csv)"',
+        html,
+        re.IGNORECASE
+    )
+    for fid, fname in id_name_pattern:
+        if fname.lower().endswith('.csv'):
+            file_entries.append((fid, fname))
+
+    # Method B: Fallback — find all file IDs and pair with nearby filenames
+    if not file_entries:
+        # Look for /file/d/ID patterns and data-id attributes
+        all_ids = re.findall(r'/file/d/(1[a-zA-Z0-9_-]{10,})', html)
+        all_ids += re.findall(r'data-id="(1[a-zA-Z0-9_-]{10,})"', html)
+        all_ids = list(dict.fromkeys(all_ids))  # deduplicate, keep order
+
+        # Extract CSV filenames from HTML
+        csv_names = re.findall(r'(Stocks_Weekly[^"<>\s]*\.csv)', html, re.IGNORECASE)
+        if not csv_names:
+            csv_names = re.findall(r'([^"<>\s/]+\.csv)', html, re.IGNORECASE)
+
+        # If we have both IDs and names, pair them
+        if all_ids and csv_names:
+            for fid, fname in zip(all_ids, csv_names):
+                file_entries.append((fid, fname))
+        elif all_ids:
+            # Have IDs but no names — download each and check if it's CSV
+            for fid in all_ids:
+                file_entries.append((fid, f"file_{fid}.csv"))
+
+    # Deduplicate by file ID
+    seen_ids = set()
+    unique_entries = []
+    for fid, fname in file_entries:
+        if fid not in seen_ids:
+            seen_ids.add(fid)
+            unique_entries.append((fid, fname))
+    file_entries = unique_entries
+
+    if not file_entries:
+        return [], (
+            "No CSV files found in this Drive folder.\n"
+            "Make sure:\n"
+            "1. Folder sharing is set to 'Anyone with the link → Viewer'\n"
+            "2. The folder contains CSV files\n"
+            "3. The folder key/URL is correct"
+        )
+
+    # Step 3: Download each file
+    uploads: List[InMemoryUpload] = []
+    errors = []
+    for fid, fname in file_entries:
+        download_url = f"https://drive.google.com/uc?export=download&id={fid}"
         try:
-            downloaded = gdown.download_folder(url=url, output=tmpdir, quiet=True, use_cookies=False, remaining_ok=True)
-        except TypeError:
-            downloaded = gdown.download_folder(url=url, output=tmpdir, quiet=True, use_cookies=False)
+            dl_resp = session.get(download_url, timeout=30)
+            dl_resp.raise_for_status()
+            content = dl_resp.content
 
-        csv_paths = []
-        if downloaded:
-            csv_paths.extend([p for p in downloaded if isinstance(p, str) and p.lower().endswith('.csv')])
-        csv_paths.extend(glob.glob(os.path.join(tmpdir, '**', '*.csv'), recursive=True))
-        csv_paths = sorted(set(csv_paths))
+            # Handle Google's virus scan warning page for large files
+            if b'<html' in content[:200].lower() and b'confirm=' in content:
+                confirm_match = re.search(r'confirm=([0-9A-Za-z_-]+)', dl_resp.text)
+                if confirm_match:
+                    confirm_url = f"{download_url}&confirm={confirm_match.group(1)}"
+                    dl_resp = session.get(confirm_url, timeout=60)
+                    dl_resp.raise_for_status()
+                    content = dl_resp.content
 
-        uploads: List[InMemoryUpload] = []
-        for p in csv_paths:
-            try:
-                with open(p, 'rb') as f:
-                    uploads.append(InMemoryUpload(os.path.basename(p), f.read()))
-            except Exception:
+            # Validate: content should look like CSV (not HTML error page)
+            head = content[:500].decode('utf-8', errors='ignore').lower()
+            if '<html' in head and 'ticker' not in head and 'rank' not in head:
+                errors.append(f"Skipped {fname}: received HTML instead of CSV (file may not be public)")
                 continue
 
-        if not uploads:
-            return [], "No CSV files found in this Drive folder (or folder is not publicly accessible)."
+            # Determine real filename — prefer Content-Disposition header
+            cd = dl_resp.headers.get('Content-Disposition', '')
+            cd_match = re.search(r'filename="?([^";\n]+)"?', cd)
+            real_name = cd_match.group(1).strip() if cd_match else fname
 
-        return uploads, None
-    except Exception as e:
-        logger.exception("Drive folder load failed")
-        return [], f"Drive fetch failed: {e}"
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+            if not real_name.lower().endswith('.csv'):
+                continue
+
+            uploads.append(InMemoryUpload(real_name, content))
+        except Exception as e:
+            errors.append(f"Failed to download {fname}: {e}")
+            continue
+
+    if not uploads:
+        err_detail = "\n".join(errors[:5]) if errors else ""
+        return [], (
+            f"Could not download any CSV files from this folder.\n{err_detail}\n\n"
+            "Make sure folder sharing is: 'Anyone with the link → Viewer'"
+        )
+
+    return uploads, None
 
 
 # ============================================
