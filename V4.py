@@ -1023,6 +1023,33 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
         traj_df['t_rank'] = range(1, len(traj_df) + 1)
         traj_df['t_percentile'] = ((total_stocks - traj_df['t_rank']) / max(total_stocks - 1, 1) * 100).round(1)
 
+    # ── Step 3e: Bear Market Quality Tilt (v10.0) ──
+    # Backtest evidence: in bear markets, S7 (Conviction ≥ 65) outperforms S2
+    # (Top 10 Rank) by +0.18%/wk. Pure rank concentration picks noisy stocks.
+    # Quality tilt: when market_regime == 'BEAR', blend ranking score with a
+    # conviction-quality composite so the ranking naturally favors defensive
+    # stocks without requiring explicit strategy switching.
+    # Tilt magnitude: 12% in BEAR, 0% in BULL/SIDEWAYS.
+    if market_regime == 'BEAR' and 'conviction' in traj_df.columns:
+        # Quality composite: conviction (80%) + consistency (20%), scaled to score range
+        _score_max = traj_df['sector_blend_score'].max()
+        _score_min = traj_df['sector_blend_score'].min()
+        _score_range = max(_score_max - _score_min, 1)
+        _quality = (traj_df['conviction'] * 0.8 + traj_df['consistency'] * 0.2)
+        _quality_scaled = _score_min + (_quality / 100) * _score_range
+        _tilt_weight = 0.12  # 12% quality tilt in bear markets
+        traj_df['sector_blend_score'] = (
+            (1 - _tilt_weight) * traj_df['sector_blend_score'] +
+            _tilt_weight * _quality_scaled
+        )
+        # Re-rank with quality tilt applied
+        traj_df = traj_df.sort_values(
+            ['sector_blend_score', 'confidence', 'consistency'],
+            ascending=[False, False, False]
+        ).reset_index(drop=True)
+        traj_df['t_rank'] = range(1, len(traj_df) + 1)
+        traj_df['t_percentile'] = ((total_stocks - traj_df['t_rank']) / max(total_stocks - 1, 1) * 100).round(1)
+
     # ── Step 4: Sector Alpha Post-Processing (v2.3) ──
     # Compare each stock's trajectory to its sector average to detect
     # SECTOR_LEADER vs SECTOR_BETA stocks
@@ -1451,7 +1478,26 @@ def _compute_wave_fusion(h: dict, traj_components: dict) -> dict:
     #   MATURE  30-50% gain  → significant leg, be selective
     #   LATE    > 50%  gain  → extended move, risk/reward narrows
     prices = h.get('prices', [])
-    _lookback = min(16, len(prices))
+    # ── v10.0: Adaptive Rally Lookback — volatility-scaled window ──
+    # Fixed 16-week lookback misses fast moves (need short window) and
+    # slow trends (need long window). Scale inversely with price volatility.
+    # High-vol stocks → shorter lookback (min 8wk), recent moves are meaningful
+    # Low-vol stocks → longer lookback (max 26wk), need time to identify trend
+    n_prices = len(prices)
+    if n_prices >= 10:
+        _vol_win = min(20, n_prices - 1)
+        _vol_px = prices[-(_vol_win + 1):]
+        _wk_rets = [(_vol_px[j+1] - _vol_px[j]) / _vol_px[j]
+                     for j in range(len(_vol_px) - 1) if _vol_px[j] > 0]
+        if len(_wk_rets) >= 4:
+            _vol = float(np.std(_wk_rets))
+            _vol_ratio = max(0.3, _vol / 0.035)  # 0.035 ≈ typical weekly vol
+            _lookback = int(np.clip(round(16 / (0.5 + 0.5 * _vol_ratio)), 8, 26))
+        else:
+            _lookback = 16
+    else:
+        _lookback = min(16, n_prices)
+    _lookback = min(_lookback, n_prices)
     rally_gain = 0.0
     rally_weeks = 0
     rally_leg_pct = 50.0
@@ -1553,8 +1599,51 @@ def _compute_single_trajectory(h: dict) -> dict:
     bc = BAYESIAN_CONFIDENCE
     confidence = min(1.0, max(bc['min_confidence'], n / bc['full_confidence_weeks']))
 
-    # ── Select Adaptive Weights Based on Percentile Tier + Confidence (v6.2) ──
-    weights = _get_adaptive_weights(avg_pct, current_pct=pcts[-1], confidence=confidence)
+    # ── v10.0: Per-Stock Regime Signal — shifts weights in bear/bull micro-regimes ──
+    # Stock-level regime proxy from recent returns + distance from high.
+    # Bearish regime → boost consistency/resilience, reduce velocity/acceleration.
+    # Bullish regime → boost breakout/trend. Neutral → no shift.
+    _r30_val = _latest_valid(ret_30d, 0)
+    _r3m_val = _latest_valid(ret_3m, 0)
+    _fh_val = _latest_valid(from_high, -25)
+    _regime_parts = []
+    # 30-day return signal
+    if _r30_val < -10:
+        _regime_parts.append(-1.0)
+    elif _r30_val < -5:
+        _regime_parts.append(-0.5)
+    elif _r30_val > 10:
+        _regime_parts.append(1.0)
+    elif _r30_val > 5:
+        _regime_parts.append(0.5)
+    else:
+        _regime_parts.append(0.0)
+    # 3-month return signal
+    if _r3m_val < -15:
+        _regime_parts.append(-1.0)
+    elif _r3m_val < -5:
+        _regime_parts.append(-0.5)
+    elif _r3m_val > 20:
+        _regime_parts.append(1.0)
+    elif _r3m_val > 10:
+        _regime_parts.append(0.5)
+    else:
+        _regime_parts.append(0.0)
+    # Distance from 52w high signal
+    if _fh_val < -30:
+        _regime_parts.append(-1.0)
+    elif _fh_val < -15:
+        _regime_parts.append(-0.5)
+    elif _fh_val > -2:
+        _regime_parts.append(1.0)
+    elif _fh_val > -5:
+        _regime_parts.append(0.5)
+    else:
+        _regime_parts.append(0.0)
+    regime_signal = float(np.mean(_regime_parts))
+
+    # ── Select Adaptive Weights Based on Percentile Tier + Confidence + Regime (v10.0) ──
+    weights = _get_adaptive_weights(avg_pct, current_pct=pcts[-1], confidence=confidence, regime_signal=regime_signal)
 
     # ── Composite Score (8-Component Adaptive Weighted — v9.0) ──
     trajectory_score = (
@@ -1832,6 +1921,20 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif decay_label == '' or decay_label == 'DECAY_MILD':
         conviction += 2   # Mild decay = marginal bonus
 
+    # Signal 10: Trend-Hurst Persistence Alignment (6 pts max) — v10.0 NEW
+    # Hurst > 0.55 means current rank trajectory is likely to PERSIST.
+    # Combined with positive trend (trend > 55), this identifies stocks whose
+    # rank improvement is NOT random — it has structural persistence.
+    # This is orthogonal to all other conviction signals (captures time-series
+    # persistence property, not current levels or returns).
+    _hurst_raw = _estimate_hurst(pcts) if n >= HURST_CONFIG['min_weeks'] else 0.5
+    if trend >= 60 and _hurst_raw >= 0.57:
+        conviction += 6    # Strong trend + strong persistence = maximum
+    elif trend >= 55 and _hurst_raw >= 0.53:
+        conviction += 4    # Moderate trend + moderate persistence
+    elif trend >= 52 and _hurst_raw >= 0.50:
+        conviction += 2    # Mild trend + random walk boundary
+
     conviction = min(100, conviction)
 
     # Conviction tags for UI
@@ -1850,6 +1953,27 @@ def _compute_single_trajectory(h: dict) -> dict:
     else:
         conviction_tag = 'VERY_LOW'
         conviction_emoji = '❌'
+
+    # ── v10.0: CONVICTION MULTIPLIER ON T-SCORE ──
+    # Backtest evidence: S7 (Conviction ≥ 65) has +0.14%/wk alpha — the best
+    # strategy. S2 (Top 10 Rank) has -0.04%/wk — WORSE than universe.
+    # This means pure T-Score ranking picks noisy stocks; conviction-filtered
+    # stocks are genuinely better. Bake this into the ranking by applying a
+    # gentle conviction multiplier to trajectory_score itself.
+    # Range: ×0.95 (very low conviction) to ×1.05 (very high conviction).
+    # This shifts the ranking toward conviction-confirmed stocks WITHOUT
+    # breaking the scoring architecture — it's a 10% total spread.
+    if conviction >= 75:
+        conv_mult = 1.05
+    elif conviction >= 65:
+        conv_mult = 1.03
+    elif conviction >= 50:
+        conv_mult = 1.00
+    elif conviction >= 35:
+        conv_mult = 0.98
+    else:
+        conv_mult = 0.95
+    trajectory_score = float(np.clip(trajectory_score * conv_mult, 0, 100))
 
     # ── 2. RISK-ADJUSTED T-SCORE ──
     # Penalizes high-volatility stocks that may reverse.
@@ -2053,7 +2177,7 @@ def _empty_trajectory(ranks, totals, pcts, n):
 
 # ── Adaptive Weight Selection ──
 
-def _get_adaptive_weights(avg_pct: float, current_pct: float = None, confidence: float = None) -> dict:
+def _get_adaptive_weights(avg_pct: float, current_pct: float = None, confidence: float = None, regime_signal: float = None) -> dict:
     """
     Select weight profile based on stock's effective percentile position.
     Uses smooth interpolation between tiers for continuous transitions.
@@ -2069,7 +2193,14 @@ def _get_adaptive_weights(avg_pct: float, current_pct: float = None, confidence:
     High-confidence stocks (many weeks): shift weight toward stability signals
     (positional, consistency, resilience) — proven track record matters more.
     
-    Shift magnitude: ±5% max per component (preserves architecture stability).
+    v10.0: Regime-Aware Micro-Shift.
+    Per-stock regime signal (-1=bearish, +1=bullish) shifts weights toward
+    defensive metrics (consistency, resilience) in bear micro-regimes and
+    toward offensive metrics (trend, breakout) in bull micro-regimes.
+    Backtest evidence: S7 conviction (defensive quality) has best alpha in 
+    bear markets. This bakes that insight into the weight selection.
+    
+    Shift magnitude: ±5% confidence, ±4% regime per component.
     """
     effective_pct = avg_pct
     if current_pct is not None and current_pct > avg_pct + 15:
@@ -2095,44 +2226,67 @@ def _get_adaptive_weights(avg_pct: float, current_pct: float = None, confidence:
         base_weights = {k: bottom[k] * (1 - ratio) + mid[k] * ratio for k in bottom}
     
     # ── v6.2: Confidence-Aware Micro-Adjustment ──
-    # Skip if confidence not provided (backward compatible for UI calls)
-    if confidence is None:
-        return base_weights
-    
-    # Shift factor: -1 at confidence=0.25, 0 at confidence=0.625, +1 at confidence=1.0
-    # Low confidence → negative shift → boost momentum signals
-    # High confidence → positive shift → boost stability signals
-    shift_factor = (confidence - 0.625) / 0.375  # Range: -1 to +1
-    shift_factor = float(np.clip(shift_factor, -1.0, 1.0))
-    
-    # Define which components gain/lose weight based on confidence
-    # Momentum signals: velocity, acceleration, trend (gain weight when LOW confidence)
-    # Stability signals: consistency, resilience, positional (gain weight when HIGH confidence)
-    # return_quality: neutral (no shift)
-    # v9.0: Confidence shifts now include breakout_quality component.
-    # Breakout quality is slightly momentum-like so gets mild negative shift at high confidence.
-    
-    # Max shift per component: 5% (0.05)
-    max_shift = 0.05
-    
-    # Calculate shifts (positive shift_factor = boost stability, reduce momentum)
-    shifts = {
-        'positional': shift_factor * max_shift * 0.5,         # +2.5% at high conf
-        'trend': -shift_factor * max_shift * 0.5,             # -2.5% at high conf
-        'velocity': -shift_factor * max_shift * 0.8,          # -4% at high conf
-        'acceleration': -shift_factor * max_shift * 0.6,      # -3% at high conf
-        'consistency': shift_factor * max_shift,               # +5% at high conf
-        'resilience': shift_factor * max_shift * 0.8,          # +4% at high conf
-        'return_quality': 0.0,                                 # Neutral — always relevant
-        'breakout_quality': -shift_factor * max_shift * 0.4,   # -2% at high conf (mild)
-    }
-    
-    # Apply shifts and ensure weights stay positive
-    adjusted = {k: max(0.02, base_weights[k] + shifts[k]) for k in base_weights}
-    
-    # Renormalize to sum to 1.0 (critical for score integrity)
-    total = sum(adjusted.values())
-    return {k: v / total for k, v in adjusted.items()}
+    if confidence is not None:
+        # Shift factor: -1 at confidence=0.25, 0 at confidence=0.625, +1 at confidence=1.0
+        # Low confidence → negative shift → boost momentum signals
+        # High confidence → positive shift → boost stability signals
+        shift_factor = (confidence - 0.625) / 0.375  # Range: -1 to +1
+        shift_factor = float(np.clip(shift_factor, -1.0, 1.0))
+        
+        # Define which components gain/lose weight based on confidence
+        # Momentum signals: velocity, acceleration, trend (gain weight when LOW confidence)
+        # Stability signals: consistency, resilience, positional (gain weight when HIGH confidence)
+        # return_quality: neutral (no shift)
+        # v9.0: Confidence shifts now include breakout_quality component.
+        # Breakout quality is slightly momentum-like so gets mild negative shift at high confidence.
+        
+        # Max shift per component: 5% (0.05)
+        max_shift = 0.05
+        
+        # Calculate shifts (positive shift_factor = boost stability, reduce momentum)
+        shifts = {
+            'positional': shift_factor * max_shift * 0.5,         # +2.5% at high conf
+            'trend': -shift_factor * max_shift * 0.5,             # -2.5% at high conf
+            'velocity': -shift_factor * max_shift * 0.8,          # -4% at high conf
+            'acceleration': -shift_factor * max_shift * 0.6,      # -3% at high conf
+            'consistency': shift_factor * max_shift,               # +5% at high conf
+            'resilience': shift_factor * max_shift * 0.8,          # +4% at high conf
+            'return_quality': 0.0,                                 # Neutral — always relevant
+            'breakout_quality': -shift_factor * max_shift * 0.4,   # -2% at high conf (mild)
+        }
+        
+        # Apply shifts and ensure weights stay positive
+        adjusted = {k: max(0.02, base_weights[k] + shifts[k]) for k in base_weights}
+        
+        # Renormalize to sum to 1.0 (critical for score integrity)
+        total = sum(adjusted.values())
+        adjusted = {k: v / total for k, v in adjusted.items()}
+    else:
+        adjusted = base_weights.copy()
+
+    # ── v10.0: Regime-Aware Micro-Shift ──
+    # Per-stock regime signal shifts weights toward defensive or offensive metrics.
+    # Bear micro-regime: consistency + resilience UP, velocity + acceleration DOWN
+    # Bull micro-regime: trend + breakout UP, consistency slightly DOWN
+    # Deadband: |regime_signal| < 0.2 → no shift (avoids noise in neutral markets)
+    if regime_signal is not None and abs(regime_signal) > 0.2:
+        r_max = 0.04  # Max regime shift per component
+        # Negative regime_signal = bearish → boost defensive (positive shift for consistency)
+        r_shifts = {
+            'positional': 0.0,
+            'trend': regime_signal * r_max * 0.3,              # Bull → +1.2%, Bear → -1.2%
+            'velocity': regime_signal * r_max * 0.5,           # Bull → +2%, Bear → -2%
+            'acceleration': regime_signal * r_max * 0.4,       # Bull → +1.6%, Bear → -1.6%
+            'consistency': -regime_signal * r_max * 0.7,       # Bear → +2.8%, Bull → -2.8%
+            'resilience': -regime_signal * r_max * 0.6,        # Bear → +2.4%, Bull → -2.4%
+            'return_quality': -regime_signal * r_max * 0.3,    # Bear → +1.2% (quality matters)
+            'breakout_quality': regime_signal * r_max * 0.5,   # Bull → +2%, Bear → -2%
+        }
+        adjusted = {k: max(0.02, adjusted[k] + r_shifts[k]) for k in adjusted}
+        total = sum(adjusted.values())
+        adjusted = {k: v / total for k, v in adjusted.items()}
+
+    return adjusted
 
 
 def _apply_elite_bonus(score: float, pcts: List[float], n: int) -> float:
