@@ -157,7 +157,10 @@ def _load_csv_uploads_from_drive(folder_key: str) -> Tuple[List[InMemoryUpload],
     tmpdir = tempfile.mkdtemp(prefix='rte_drive_')
     try:
         url = _drive_folder_url(key)
-        downloaded = gdown.download_folder(url=url, output=tmpdir, quiet=True, use_cookies=False, remaining_ok=True)
+        try:
+            downloaded = gdown.download_folder(url=url, output=tmpdir, quiet=True, use_cookies=False, remaining_ok=True)
+        except TypeError:
+            downloaded = gdown.download_folder(url=url, output=tmpdir, quiet=True, use_cookies=False)
 
         csv_paths = []
         if downloaded:
