@@ -6379,10 +6379,10 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
 
     dates = sorted(weekly_data.keys())
     n_weeks = len(dates)
-    if n_weeks < 7:  # Need 5 history + 1 test + 1 forward
+    if n_weeks < 4:  # Need 2 history + 1 test + 1 forward minimum
         return None
 
-    min_history = 5  # Minimum weeks of data before first test
+    min_history = 2  # Minimum weeks of data before first test (trajectory needs ≥2 points)
 
     strategy_names = [
         'S1: Universe Avg',
@@ -6484,7 +6484,7 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         window_num = week_idx - min_history
         if progress_callback:
             progress_callback(window_num / max(total_windows, 1),
-                              f"Testing week {date.strftime('%Y-%m-%d')} ({window_num + 1}/{total_windows})")
+                              f"Testing week {date.strftime('%Y-%m-%d')} ({window_num + 1}/{total_windows}) · {n_weeks} CSVs loaded")
 
         forward_date = dates[week_idx + 1]
         forward_df = weekly_data[forward_date]
@@ -6702,14 +6702,17 @@ def render_backtest_tab(uploaded_files):
     else:
         bt_results = None
 
+    n_files = len(uploaded_files)
+    n_possible_windows = max(n_files - 3, 0)  # 2 for history + 1 forward
+
     col_run, col_info = st.columns([1, 3])
     with col_run:
         run_btn = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
     with col_info:
         if bt_results is None:
-            st.caption("Click Run to test 12 strategies against actual forward returns")
+            st.caption(f"📁 {n_files} CSVs loaded → up to **{n_possible_windows}** test windows")
         else:
-            st.caption("✅ Backtest results loaded. Click Run to refresh.")
+            st.caption(f"✅ Backtest loaded ({n_files} CSVs). Click Run to refresh.")
 
     if run_btn:
         progress_bar = st.progress(0, text="Initializing backtest...")
@@ -6723,7 +6726,7 @@ def render_backtest_tab(uploaded_files):
         progress_bar.empty()
 
         if result is None:
-            st.error("❌ Need at least 7 weeks of CSV data for backtest.")
+            st.error(f"❌ Need at least 4 weeks of CSV data for backtest. You have {n_files} files.")
             return
 
         bt_results, bt_dates = result
