@@ -92,7 +92,7 @@ os.environ['STREAMLIT_SERVER_FILE_WATCHER_TYPE'] = 'none'
 import streamlit as st
 st.set_page_config(
     page_title="Alpha Trajectory — Stock Intelligence Engine",
-    page_icon="◉",
+    page_icon="🔺",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -557,9 +557,9 @@ st.markdown("""
         pointer-events: none;
     }
     .hero-icon {
-        font-size: 2.4rem; line-height: 1; position: relative;
-        filter: drop-shadow(0 0 12px rgba(228,179,65,0.5));
-        margin-bottom: 2px;
+        font-size: 2.8rem; line-height: 1; position: relative;
+        filter: drop-shadow(0 0 14px rgba(255,69,58,0.5));
+        margin-bottom: 4px;
     }
     .hero-title {
         font-size: 2.2rem; font-weight: 900; position: relative;
@@ -7864,7 +7864,7 @@ def render_about_tab():
     """Render about/documentation tab"""
 
     st.markdown("""
-    ## ◉ Alpha Trajectory v10.1 — Stock Intelligence Engine
+    ## 🔺 Alpha Trajectory v10.1 — Stock Intelligence Engine
 
     The **ALL TIME BEST** stock rank trajectory analysis system with **8-component adaptive scoring**,
     **Alpha Score Engine (8 forward-predictors)**, **data-driven conviction (12 signals)**,
@@ -8271,7 +8271,7 @@ def main():
     # Header
     st.markdown("""
     <div class="hero-banner">
-        <div class="hero-icon">◉</div>
+        <div class="hero-icon">🔺</div>
         <div class="hero-title">ALPHA TRAJECTORY</div>
         <div class="hero-sub">Stock Intelligence Engine • Multi-Week Momentum & Alpha Scoring</div>
         <div class="hero-badge">v10.1 · 14 Strategies · 12 Signals · Max Alpha</div>
