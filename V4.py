@@ -4115,23 +4115,10 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         # ═══════════════════════════════════════════════
         st.markdown('<div class="sb-section-head">🔍 SMART FILTERS</div>', unsafe_allow_html=True)
 
-        _sb_keys = [
-            'sb_quick', 'sb_score_range', 'sb_alpha_range', 'sb_conviction_range',
-            'sb_grade', 'sb_weeks', 'sb_pa', 'sb_md', 'sb_exit_risk',
-            'sb_hot_streak', 'sb_streak', 'sb_tmi', 'sb_hurst',
-            'sb_rally', 'sb_gain_preset', 'sb_gain_slider', 'sb_age_preset',
-            'sb_age_slider', 'sb_gap_preset', 'sb_gap_slider',
-            'sb_wf_label', 'sb_confluence', 'sb_inst_flow', 'sb_harmony',
-            'sb_fundamental', 'sb_rank_chg', 'sb_persist', 'sb_rankvol',
-            'sb_cat', 'sb_sector', 'sb_industry', 'sb_market_state',
-        ]
-
-        # Count active filters
-        _active = 0
         _defaults = {
             'sb_quick': 'None', 'sb_score_range': (0, 100), 'sb_alpha_range': (0, 100),
-            'sb_conviction_range': (0, 100), 'sb_grade': [], 'sb_pa': 'All',
-            'sb_md': 'All', 'sb_exit_risk': 'All', 'sb_hot_streak': False,
+            'sb_conviction_range': (0, 100), 'sb_grade': [], 'sb_weeks': MIN_WEEKS_DEFAULT,
+            'sb_pa': 'All', 'sb_md': 'All', 'sb_exit_risk': 'All', 'sb_hot_streak': False,
             'sb_streak': (-10, 10), 'sb_tmi': (0, 100), 'sb_hurst': 'All',
             'sb_rally': [], 'sb_gain_preset': 'All', 'sb_age_preset': 'All',
             'sb_gap_preset': 'All', 'sb_wf_label': 'All', 'sb_confluence': (0, 100),
@@ -4139,9 +4126,15 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             'sb_rank_chg': 'All', 'sb_persist': (0, 20), 'sb_rankvol': 'All',
             'sb_cat': [], 'sb_sector': [], 'sb_industry': [], 'sb_market_state': [],
         }
+        _sb_keys = list(_defaults.keys())
+        # Conditional slider keys (only rendered when Custom Range is chosen)
+        _conditional_keys = ['sb_gain_slider', 'sb_age_slider', 'sb_gap_slider']
+
+        # Count active filters
+        _active = 0
         for _k in _sb_keys:
             _val = st.session_state.get(_k)
-            if _val is not None and _k in _defaults and _val != _defaults[_k]:
+            if _val is not None and _val != _defaults[_k]:
                 _active += 1
 
         if _active > 0:
@@ -4149,9 +4142,11 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
 
         if st.button("🗑️ Clear All Filters", key='sb_clear_all', use_container_width=True,
                      type='primary' if _active > 0 else 'secondary'):
-            for _k in _sb_keys:
-                if _k in st.session_state:
-                    del st.session_state[_k]
+            for _k, _v in _defaults.items():
+                st.session_state[_k] = _v
+            for _ck in _conditional_keys:
+                if _ck in st.session_state:
+                    del st.session_state[_ck]
             st.rerun()
 
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
@@ -4379,27 +4374,53 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         # § 7  SECTOR & CATEGORY — universe slicing
         # ═══════════════════════════════════════════════
         with st.expander("🏢 Sector & Category", expanded=False):
+            # ── Category (top-level, independent) ──
             categories = sorted(traj_df['category'].dropna().unique().tolist())
             selected_cats = st.multiselect("Category", categories, default=[], placeholder="All", key='sb_cat')
 
-            sector_counts = traj_df['sector'].value_counts()
+            # ── Sector cascades from Category ──
+            sector_pool = traj_df
+            if selected_cats:
+                sector_pool = sector_pool[sector_pool['category'].isin(selected_cats)]
+            sector_counts = sector_pool['sector'].value_counts()
             top_sectors = sector_counts[sector_counts >= 3].index.tolist()
             sectors = sorted(top_sectors)
+            # Prune stale sector selections that are no longer available
+            if 'sb_sector' in st.session_state:
+                _valid_sec = [s for s in st.session_state['sb_sector'] if s in sectors]
+                if _valid_sec != list(st.session_state['sb_sector']):
+                    st.session_state['sb_sector'] = _valid_sec
             selected_sectors = st.multiselect("Sector", sectors, default=[], placeholder="All", key='sb_sector')
 
+            # ── Industry cascades from Category + Sector ──
             industry_pool = traj_df
             if selected_cats:
                 industry_pool = industry_pool[industry_pool['category'].isin(selected_cats)]
             if selected_sectors:
                 industry_pool = industry_pool[industry_pool['sector'].isin(selected_sectors)]
             industries = sorted(industry_pool['industry'].dropna().loc[lambda s: s.str.strip() != ''].unique().tolist())
+            # Prune stale industry selections
+            if 'sb_industry' in st.session_state:
+                _valid_ind = [i for i in st.session_state['sb_industry'] if i in industries]
+                if _valid_ind != list(st.session_state['sb_industry']):
+                    st.session_state['sb_industry'] = _valid_ind
             selected_industries = st.multiselect("Industry", industries, default=[], placeholder="All", key='sb_industry')
 
             st.markdown("---")
 
-            # Market State (from source CSV)
+            # ── Market State (from source CSV) ──
             if 'market_state' in traj_df.columns:
-                ms_vals = sorted(traj_df['market_state'].dropna().unique().tolist())
+                ms_pool = traj_df
+                if selected_cats:
+                    ms_pool = ms_pool[ms_pool['category'].isin(selected_cats)]
+                if selected_sectors:
+                    ms_pool = ms_pool[ms_pool['sector'].isin(selected_sectors)]
+                ms_vals = sorted(ms_pool['market_state'].dropna().unique().tolist())
+                # Prune stale market state selections
+                if 'sb_market_state' in st.session_state:
+                    _valid_ms = [m for m in st.session_state['sb_market_state'] if m in ms_vals]
+                    if _valid_ms != list(st.session_state['sb_market_state']):
+                        st.session_state['sb_market_state'] = _valid_ms
                 if ms_vals:
                     selected_market_states = st.multiselect(
                         "Market State", ms_vals, default=[], placeholder="All states",
@@ -4416,9 +4437,11 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
 
         if st.button("🗑️ Clear All Filters", key='sb_clear_all_bottom', use_container_width=True,
                      type='primary' if _active > 0 else 'secondary'):
-            for _k in _sb_keys:
-                if _k in st.session_state:
-                    del st.session_state[_k]
+            for _k, _v in _defaults.items():
+                st.session_state[_k] = _v
+            for _ck in _conditional_keys:
+                if _ck in st.session_state:
+                    del st.session_state[_ck]
             st.rerun()
 
         st.caption("v10.1 · Alpha Engine · Data-Driven")
