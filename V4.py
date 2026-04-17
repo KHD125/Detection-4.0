@@ -3574,6 +3574,8 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
         prev = int(rk[-(weeks + 1)])
         curr = int(rk[-1])
         change = prev - curr            # Positive = improved
+        prices = h.get('prices', [])
+        latest_price = prices[-1] if prices and prices[-1] > 0 else 0
         movers.append({
             'ticker': ticker,
             'company_name': h['company_name'],
@@ -3581,6 +3583,7 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
             'prev_rank': prev,
             'current_rank': curr,
             'rank_change': change,
+            'price': latest_price,
         })
 
     mover_df = pd.DataFrame(movers)
@@ -5856,6 +5859,7 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             'text-transform:uppercase;letter-spacing:0.5px;">'
             '<span style="min-width:44px;text-align:right;">Chg</span>'
             '<span style="flex:1;">Stock</span>'
+            '<span style="min-width:56px;text-align:right;">Price</span>'
             '<span style="min-width:80px;text-align:center;">Prev → Now</span>'
             '<span style="min-width:36px;text-align:center;">Grd</span>'
             '<span style="min-width:36px;text-align:right;">Score</span></div>'
@@ -5873,6 +5877,10 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             chg_c = '#3fb950' if rc > 0 else '#f85149'
             chg_sign = '+' if rc > 0 else ''
 
+            price_val = m.get('price', 0)
+            price_val = 0 if pd.isna(price_val) else float(price_val)
+            price_str = f'₹{price_val:,.0f}' if price_val >= 100 else (f'₹{price_val:,.2f}' if price_val > 0 else '—')
+
             rows_html.append(
                 f'<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;background:{stripe};'
                 f'border-bottom:1px solid #21262d;">'
@@ -5882,6 +5890,8 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'<span style="color:#e6edf3;font-weight:600;font-size:0.85rem;">{m["ticker"]}</span>'
                 f'<span style="color:#8b949e;font-size:0.75rem;margin-left:6px;">'
                 f'{str(m.get("company_name",""))[:20]}</span></div>'
+                f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:56px;text-align:right;'
+                f'font-variant-numeric:tabular-nums;">{price_str}</span>'
                 f'<span style="color:#8b949e;font-size:0.8rem;min-width:80px;text-align:center;'
                 f'font-variant-numeric:tabular-nums;">{int(m["prev_rank"])} → {int(m["current_rank"])}</span>'
                 f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:36px;text-align:center;">{gr}</span>'
