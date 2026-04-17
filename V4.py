@@ -541,14 +541,44 @@ PATTERN_COLORS = {
 # ============================================
 st.markdown("""
 <style>
-    /* ── Typography ── */
-    .main-header {
-        font-size: 2.1rem; font-weight: 800;
-        background: linear-gradient(120deg, #FF6B35 30%, #58a6ff 100%);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-        margin-bottom: 0; line-height: 1.15;
+    /* ── Hero Banner ── */
+    .hero-banner {
+        text-align: center; padding: 1.6rem 1.2rem 1.3rem;
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 100%);
+        border: 1px solid rgba(88,166,255,0.15);
+        border-radius: 14px; margin-bottom: 1.2rem;
+        position: relative; overflow: hidden;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.05);
     }
-    .sub-header { font-size: 0.95rem; color: #8b949e; margin-top: -4px; margin-bottom: 16px; }
+    .hero-banner::before {
+        content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+        background: radial-gradient(ellipse at 30% 20%, rgba(228,179,65,0.08) 0%, transparent 50%),
+                    radial-gradient(ellipse at 70% 80%, rgba(88,166,255,0.06) 0%, transparent 50%);
+        pointer-events: none;
+    }
+    .hero-icon {
+        font-size: 2.4rem; line-height: 1; position: relative;
+        filter: drop-shadow(0 0 12px rgba(228,179,65,0.5));
+        margin-bottom: 2px;
+    }
+    .hero-title {
+        font-size: 2.2rem; font-weight: 900; position: relative;
+        background: linear-gradient(120deg, #e3b341 0%, #58a6ff 50%, #3fb950 100%);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        letter-spacing: 1.5px; line-height: 1.15; margin: 0;
+    }
+    .hero-sub {
+        font-size: 0.82rem; font-weight: 500; color: #8b949e;
+        letter-spacing: 2px; text-transform: uppercase;
+        position: relative; margin-top: 6px;
+    }
+    .hero-badge {
+        display: inline-block; font-size: 0.62rem; font-weight: 700;
+        color: #e3b341; background: rgba(228,179,65,0.10);
+        border: 1px solid rgba(228,179,65,0.25); padding: 3px 14px;
+        border-radius: 12px; margin-top: 10px; position: relative;
+        letter-spacing: 1px;
+    }
     .sec-head {
         font-size: 0.88rem; font-weight: 600; color: #c9d1d9; letter-spacing: 0.3px;
         margin: 20px 0 8px 0; display: flex; align-items: center; gap: 6px;
@@ -8249,9 +8279,14 @@ def main():
                         )
 
     # Header
-    st.markdown('<div class="main-header">◉ ALPHA TRAJECTORY</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Stock Intelligence Engine • Multi-Week Momentum & Alpha Scoring</div>',
-                unsafe_allow_html=True)
+    st.markdown("""
+    <div class="hero-banner">
+        <div class="hero-icon">◉</div>
+        <div class="hero-title">ALPHA TRAJECTORY</div>
+        <div class="hero-sub">Stock Intelligence Engine • Multi-Week Momentum & Alpha Scoring</div>
+        <div class="hero-badge">v10.1 · 14 Strategies · 12 Signals · Max Alpha</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     if not uploaded_files:
         if data_source_mode == "☁️ Google Drive":
