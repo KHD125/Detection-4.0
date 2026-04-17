@@ -4694,18 +4694,28 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         if prev is None:
             st.info("Need at least 2 weekly snapshots for week-over-week comparison.")
         else:
+            # Build actual-grade map from traj_df (trajectory-score-based grade)
+            _actual_grade = {}
+            for _, row in all_df.iterrows():
+                tk = row.get('ticker', '')
+                if tk and 'grade' in row and pd.notna(row.get('grade')):
+                    _actual_grade[tk] = str(row['grade'])
+
             # Build ticker-keyed lookup for prev & latest week
+            # prev week: use raw-score grade from snapshot (trajectory not available)
             prev_map = {}
             for i, t in enumerate(prev['tickers']):
                 prev_map[t] = {
                     'rank': prev['ranks'][i], 'score': prev['scores'][i],
                     'grade': prev['grades'][i], 'pattern': prev['patterns'][i],
                 }
+            # latest week: override grade with actual trajectory-based grade
             lat_map = {}
             for i, t in enumerate(latest['tickers']):
                 lat_map[t] = {
                     'rank': latest['ranks'][i], 'score': latest['scores'][i],
-                    'grade': latest['grades'][i], 'pattern': latest['patterns'][i],
+                    'grade': _actual_grade.get(t, latest['grades'][i]),
+                    'pattern': latest['patterns'][i],
                     'sector': latest['sectors'][i],
                 }
 
