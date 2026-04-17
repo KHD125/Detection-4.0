@@ -4776,7 +4776,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     ctl0, ctl1, ctl2 = st.columns([0.8, 1.3, 1.3])
     with ctl0:
         show_top_options = [10, 20, 50, 100, 200, 500, "All"]
-        display_n_select = st.selectbox(show_top_options,
+        display_n_select = st.selectbox("Show Top", show_top_options,
                                          index=3, key='rank_topn')
         display_n = len(filtered_df) if display_n_select == "All" else display_n_select
     with ctl1:
