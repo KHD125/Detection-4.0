@@ -4410,9 +4410,17 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                 selected_market_states = []
 
         # ═══════════════════════════════════════════════
-        # FOOTER
+        # FOOTER — Clear All + version
         # ═══════════════════════════════════════════════
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+
+        if st.button("🗑️ Clear All Filters", key='sb_clear_all_bottom', use_container_width=True,
+                     type='primary' if _active > 0 else 'secondary'):
+            for _k in _sb_keys:
+                if _k in st.session_state:
+                    del st.session_state[_k]
+            st.rerun()
+
         st.caption("v10.1 · Alpha Engine · Data-Driven")
 
     # ── Return filter dict ──
