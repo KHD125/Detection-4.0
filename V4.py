@@ -1087,16 +1087,19 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     traj_df['sector_alpha_tag'] = alpha_results[0]
     traj_df['sector_alpha_value'] = alpha_results[1]
 
-    # Add sector alpha icon to signal_tags
+    # Add sector alpha tag to signal_tags
     def _add_alpha_signal(row):
         existing = str(row.get('signal_tags', ''))
         tag = row.get('sector_alpha_tag', 'NEUTRAL')
+        suffix = ''
         if tag == 'SECTOR_LEADER':
-            return existing + '👑'
+            suffix = '👑LDR'
         elif tag == 'SECTOR_BETA':
-            return existing + '🏷️'
+            suffix = '🏷️BTA'
         elif tag == 'SECTOR_LAGGARD':
-            return existing + '📉'
+            suffix = '📉LAG'
+        if suffix:
+            return (existing + ' ' + suffix).strip() if existing else suffix
         return existing
 
     traj_df['signal_tags'] = traj_df.apply(_add_alpha_signal, axis=1)
@@ -1753,23 +1756,28 @@ def _compute_single_trajectory(h: dict) -> dict:
     elif decay_label == 'DECAY_MILD':
         decay_tag = '~'
 
-    # Build signal tags column (combined indicator)
+    # Build signal tags column (combined indicator) — v10.0: readable short-codes
+    # Each tag: emoji + 2-3 letter code so meaning is instantly clear in the table.
     signal_parts = []
-    if price_tag:
-        signal_parts.append(price_tag)
+    if price_label == 'PRICE_CONFIRMED':
+        signal_parts.append('💰PRC')     # Price confirms rank direction
+    elif price_label == 'PRICE_DIVERGENT':
+        signal_parts.append('⚠️DIV')     # Price diverges from rank
     if return_quality >= 75:
-        signal_parts.append('🔥')       # Strong returns
+        signal_parts.append('🔥RET')     # Strong returns
     elif return_quality <= 30:
-        signal_parts.append('💧')       # Weak returns
-    if decay_tag:
-        signal_parts.append(decay_tag)
+        signal_parts.append('💧RET')     # Weak returns
+    if decay_label == 'DECAY_HIGH':
+        signal_parts.append('🔻DEC')     # High momentum decay
+    elif decay_label == 'DECAY_MODERATE':
+        signal_parts.append('⚡DEC')     # Moderate momentum decay
     # v8.0: Wave fusion signal tag
     wf_label = wave_fusion.get('wave_fusion_label', 'WAVE_NEUTRAL')
     if wf_label == 'WAVE_STRONG':
-        signal_parts.append('🌊')
+        signal_parts.append('🌊WAV')     # Wave systems strongly agree
     elif wf_label == 'WAVE_CONFLICT':
-        signal_parts.append('🔇')
-    signal_tags = ''.join(signal_parts)
+        signal_parts.append('🔇WAV')     # Wave systems conflict
+    signal_tags = ' '.join(signal_parts)
 
     # ══════════════════════════════════════════════════════════════════════════
     # v6.3: ADVANCED TRADING SIGNALS — 5 New Features for Better Returns
@@ -4369,6 +4377,25 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         table_df, column_config=col_config,
         hide_index=True, use_container_width=True, height=tbl_height
     )
+
+    # ── Signal Legend (collapsible) ──
+    if 'Signals' in selected_cols:
+        with st.expander("📖 Signal Legend", expanded=False):
+            st.markdown(
+                "| Signal | Meaning |\n"
+                "|--------|--------|\n"
+                "| 💰PRC | **Price Confirmed** — price direction matches rank direction |\n"
+                "| ⚠️DIV | **Price Divergent** — price falling despite good rank (trap risk) |\n"
+                "| 🔥RET | **Strong Returns** — above-average recent returns (return quality ≥ 75) |\n"
+                "| 💧RET | **Weak Returns** — below-average returns despite rank (return quality ≤ 30) |\n"
+                "| 🔻DEC | **High Decay** — momentum collapsing, consider exit |\n"
+                "| ⚡DEC | **Moderate Decay** — momentum fading, watch closely |\n"
+                "| 🌊WAV | **Wave Strong** — all wave detection systems agree (high confidence) |\n"
+                "| 🔇WAV | **Wave Conflict** — wave systems disagree (lower confidence) |\n"
+                "| 👑LDR | **Sector Leader** — significantly outperforming its sector peers |\n"
+                "| 🏷️BTA | **Sector Beta** — riding sector trend, not individual strength |\n"
+                "| 📉LAG | **Sector Laggard** — underperforming its sector peers |"
+            )
 
     # ── Export CSV — always rendered (single-click download) ──
     # NOTE: Streamlit's st.button + conditional st.download_button requires TWO clicks.
