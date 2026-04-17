@@ -537,11 +537,15 @@ st.markdown("""
     /* Prevent any inner element from forcing horizontal scroll */
     div[data-testid="stVerticalBlockBorderWrapper"],
     div[data-testid="stHorizontalBlock"],
-    div[data-testid="stMarkdownContainer"],
+    div[data-testid="stMarkdownContainer"] {
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+    /* Columns must NOT clip — let content flow naturally */
     div[data-testid="column"] {
         max-width: 100%;
-        overflow-x: auto;
         box-sizing: border-box;
+        overflow: visible;
     }
     /* Wide tables / HTML cards: shrink to fit */
     div[data-testid="stMarkdownContainer"] > div,
