@@ -5182,17 +5182,26 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
 # ============================================
 
 def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, histories: dict, dates_iso: list):
-    """Search & Analyse — v3.0 (Price Trajectory, T-Rank, Latest Price, Clean UI)
+    """Search & Analyse — v4.0 (All-Time Best Engineering: Alpha, Exit Risk, Correct Weights, Full Signals)
 
-    Args:
-        filtered_df: Category/sector-filtered stocks (for dropdown).
-        traj_df:     Full unfiltered data (for T-Rank against universe).
+    Fixes from v3.0:
+    - Score Pipeline uses correct 4-arg adaptive weights (avg_pct, current_pct, confidence, regime_signal)
+    - All 8 components shown (including breakout_quality)
+    - Alpha Score, Exit Risk, Hot Streak, Market Regime displayed
+    - T-Rank "of N" uses len(traj_df) not CSV total
+    - rally_gain sign-safe, rally_weeks label corrected
+    - All row[...] accesses use .get() with safe defaults
+    - Chart helpers guard against empty data
+    - Conviction color-coded by tag
+    - Compare section has empty-state guidance
+    - HTML content sanitized via html.escape
     """
+    import html as _html
 
     # ── Search Input — dropdown shows only filtered stocks ──
     label_map = {}
-    for _, row in filtered_df.iterrows():
-        label_map[f"{row['ticker']} — {row['company_name'][:35]}"] = row['ticker']
+    for _, r in filtered_df.iterrows():
+        label_map[f"{r['ticker']} — {r['company_name'][:35]}"] = r['ticker']
     labels = sorted(label_map.keys())
 
     # Clear stale selection if it no longer exists in filtered labels
@@ -5205,7 +5214,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                                    key='search_select')
 
     if selected_label is None:
-        st.info("👆 Select a stock to view detailed trajectory analysis")
+        st.info("👆 Select a stock from the dropdown to view detailed trajectory analysis")
         return
 
     ticker = label_map[selected_label]
@@ -5215,14 +5224,17 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         return
     row = matches.iloc[0]
     h = histories.get(ticker, {})
-    if not h:
+    if not h or not h.get('ranks') or not h.get('prices'):
         st.warning("No history data available for this ticker")
         return
 
-    # ── Derived Data ──
-    latest_price = h['prices'][-1] if h.get('prices') else 0
-    pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
-    total_stocks = h['total_per_week'][-1] if h.get('total_per_week') else 0
+    # ── Derived Data (safe) ──
+    latest_price = h['prices'][-1] if h['prices'] else 0
+    ranks_list = h['ranks']
+    totals_list = h.get('total_per_week', [])
+    pcts = ranks_to_percentiles(ranks_list, totals_list) if ranks_list and totals_list else []
+    universe_size = len(traj_df)
+
     # T-Rank = rank within full universe (all stocks, not filtered)
     sorted_df = traj_df.sort_values(
         ['trajectory_score', 'confidence', 'consistency'],
@@ -5234,43 +5246,62 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     pattern_key = row.get('pattern_key', 'neutral')
     p_emoji, p_name, p_desc = PATTERN_DEFS.get(pattern_key, ('➖', 'Neutral', ''))
     p_color = PATTERN_COLORS.get(pattern_key, '#8b949e')
-    grade_color = {'S': '#FFD700', 'A': '#3fb950', 'B': '#58a6ff', 'C': '#d29922', 'D': '#FF5722', 'F': '#f85149'}.get(row['grade'], '#888')
+    grade = row.get('grade', 'F')
+    grade_emoji = row.get('grade_emoji', '📉')
+    grade_color = {'S': '#FFD700', 'A': '#3fb950', 'B': '#58a6ff', 'C': '#d29922', 'D': '#FF5722', 'F': '#f85149'}.get(grade, '#888')
+    t_score = row.get('trajectory_score', 0)
+    alpha = row.get('alpha_score', 0)
+    alpha_c = '#00E676' if alpha >= 70 else '#3fb950' if alpha >= 50 else '#FF9800' if alpha >= 30 else '#f85149'
+    market_regime = row.get('market_regime', 'SIDEWAYS')
+    mr_colors = {'BULL': '#3fb950', 'BEAR': '#f85149', 'SIDEWAYS': '#d29922'}
+    mr_c = mr_colors.get(market_regime, '#8b949e')
 
     # ── Header Card ──
+    company_esc = _html.escape(str(row.get('company_name', '')))
+    sector_esc = _html.escape(str(row.get('sector', '')))
+    industry_esc = _html.escape(str(row.get('industry', '')))
+    category_esc = _html.escape(str(row.get('category', '')))
     st.markdown(f"""
     <div style="background:#0d1117; border-radius:14px; padding:20px 24px; margin-bottom:16px; border:1px solid #30363d;">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
             <div style="flex:1; min-width:200px;">
-                <div style="display:flex; align-items:center; gap:12px; margin-bottom:4px;">
-                    <span style="font-size:1.6rem; font-weight:800; color:#fff;">{ticker}</span>
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px; flex-wrap:wrap;">
+                    <span style="font-size:1.6rem; font-weight:800; color:#fff;">{_html.escape(ticker)}</span>
                     <span style="background:{p_color}22; color:{p_color}; padding:3px 10px; border-radius:12px; font-size:0.75rem; border:1px solid {p_color}44;">{p_emoji} {p_name}</span>
+                    <span style="background:{mr_c}22; color:{mr_c}; padding:3px 8px; border-radius:10px; font-size:0.7rem; border:1px solid {mr_c}44;">{'📈' if market_regime == 'BULL' else '📉' if market_regime == 'BEAR' else '➡️'} {market_regime}</span>
                 </div>
-                <div style="color:#8b949e; font-size:0.95rem; margin-bottom:2px;">{row['company_name']}</div>
-                <div style="color:#484f58; font-size:0.8rem;">{row['category']} • {row.get('sector', '')} • {row.get('industry', '')}</div>
+                <div style="color:#8b949e; font-size:0.95rem; margin-bottom:2px;">{company_esc}</div>
+                <div style="color:#484f58; font-size:0.8rem;">{category_esc} · {sector_esc} · {industry_esc}</div>
             </div>
-            <div style="display:flex; gap:20px; align-items:center;">
+            <div style="display:flex; gap:18px; align-items:center; flex-wrap:wrap;">
                 <div style="text-align:center;">
-                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">T-Rank</div>
-                    <div style="font-size:1.8rem; font-weight:800; color:#58a6ff;">#{t_rank}</div>
-                    <div style="font-size:0.65rem; color:#484f58;">of {total_stocks}</div>
+                    <div style="font-size:0.62rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">T-Rank</div>
+                    <div style="font-size:1.7rem; font-weight:800; color:#58a6ff;">#{t_rank}</div>
+                    <div style="font-size:0.62rem; color:#484f58;">of {universe_size:,}</div>
                 </div>
-                <div style="width:1px; height:50px; background:#30363d;"></div>
+                <div style="width:1px; height:48px; background:#30363d;"></div>
                 <div style="text-align:center;">
-                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">T-Score</div>
-                    <div style="font-size:1.8rem; font-weight:800; color:#FF6B35;">{row['trajectory_score']:.1f}</div>
-                    <div style="font-size:0.65rem; color:#484f58;">/ 100</div>
+                    <div style="font-size:0.62rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">T-Score</div>
+                    <div style="font-size:1.7rem; font-weight:800; color:#FF6B35;">{t_score:.1f}</div>
+                    <div style="font-size:0.62rem; color:#484f58;">/ 100</div>
                 </div>
-                <div style="width:1px; height:50px; background:#30363d;"></div>
+                <div style="width:1px; height:48px; background:#30363d;"></div>
                 <div style="text-align:center;">
-                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Grade</div>
-                    <div style="font-size:1.8rem; font-weight:800; color:{grade_color};">{row['grade']}</div>
-                    <div style="font-size:0.65rem; color:#484f58;">{row['grade_emoji']}</div>
+                    <div style="font-size:0.62rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Grade</div>
+                    <div style="font-size:1.7rem; font-weight:800; color:{grade_color};">{grade}</div>
+                    <div style="font-size:0.62rem; color:#484f58;">{grade_emoji}</div>
                 </div>
-                <div style="width:1px; height:50px; background:#30363d;"></div>
+                <div style="width:1px; height:48px; background:#30363d;"></div>
                 <div style="text-align:center;">
-                    <div style="font-size:0.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Price</div>
-                    <div style="font-size:1.8rem; font-weight:800; color:#e6edf3;">₹{latest_price:,.1f}</div>
-                    <div style="font-size:0.65rem; color:#484f58;">Latest</div>
+                    <div style="font-size:0.62rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Alpha</div>
+                    <div style="font-size:1.7rem; font-weight:800; color:{alpha_c};">{alpha:.0f}</div>
+                    <div style="font-size:0.62rem; color:#484f58;">/ 100</div>
+                </div>
+                <div style="width:1px; height:48px; background:#30363d;"></div>
+                <div style="text-align:center;">
+                    <div style="font-size:0.62rem; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">Price</div>
+                    <div style="font-size:1.7rem; font-weight:800; color:#e6edf3;">₹{latest_price:,.1f}</div>
+                    <div style="font-size:0.62rem; color:#484f58;">Latest</div>
                 </div>
             </div>
         </div>
@@ -5282,15 +5313,23 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     decay_lbl = row.get('decay_label', '')
     sa_tag = row.get('sector_alpha_tag', 'NEUTRAL')
     sa_icons = {'SECTOR_LEADER': '👑', 'SECTOR_OUTPERFORM': '⬆️', 'SECTOR_ALIGNED': '➖', 'SECTOR_BETA': '🏷️', 'SECTOR_LAGGARD': '📉'}
+    conv_val = row.get('conviction', 0)
+    conv_tag = row.get('conviction_tag', '')
+    conv_emoji = row.get('conviction_emoji', '')
+    exit_risk_val = row.get('exit_risk', 0)
+    exit_emoji = row.get('exit_emoji', '✅')
+    exit_tag = row.get('exit_tag', '')
+    hot = row.get('hot_streak', False)
 
     kpi_items = [
-        ('CSV Rank', f"#{row['current_rank']}", f"{row['last_week_change']:+d}w"),
-        ('Best Rank', f"#{row['best_rank']}", ''),
-        ('Total Δ', f"{row['rank_change']:+d}", 'pos' if row['rank_change'] > 0 else ''),
-        ('Conviction', f"{row.get('conviction', 0)}", row.get('conviction_tag', '')),
-        ('Streak', f"{row['streak']}w", ''),
+        ('CSV Rank', f"#{row.get('current_rank', 0)}", f"{row.get('last_week_change', 0):+d}w"),
+        ('Best Rank', f"#{row.get('best_rank', 0)}", ''),
+        ('Total Δ', f"{row.get('rank_change', 0):+d}", '🔥' if row.get('rank_change', 0) > 0 else ''),
+        ('Conviction', f"{conv_emoji} {conv_val}", conv_tag.replace('_', ' ').title() if conv_tag else ''),
+        ('Streak', f"{row.get('streak', 0)}w", '🔥 HOT' if hot else ''),
         ('Price Align', f"{'💰' if price_label_display == 'PRICE_CONFIRMED' else '⚠️' if price_label_display == 'PRICE_DIVERGENT' else '➖'} {row.get('price_alignment', 50):.0f}", ''),
         ('Decay', f"{'🔻' if decay_lbl == 'DECAY_HIGH' else '⚡' if decay_lbl == 'DECAY_MODERATE' else '✅'} {row.get('decay_score', 0)}", ''),
+        ('Exit Risk', f"{exit_emoji} {exit_risk_val}", exit_tag.replace('_', ' ').title() if exit_tag else 'Clean'),
         ('Sector', f"{sa_icons.get(sa_tag, '➖')}", sa_tag.split('_')[-1].title() if sa_tag != 'NEUTRAL' else 'Neutral'),
     ]
     kpi_html = ''.join([
@@ -5300,6 +5339,17 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         for label, val, sub in kpi_items
     ])
     st.markdown(f'<div class="m-strip">{kpi_html}</div>', unsafe_allow_html=True)
+
+    # ── Exit Warning Banner (if exit risk is high) ──
+    if exit_risk_val >= 60:
+        exit_signals_str = row.get('exit_signals', '')
+        _er_c = '#FF1744' if exit_risk_val >= 80 else '#FF9800'
+        st.markdown(f"""
+        <div style="background:{_er_c}15; border:1px solid {_er_c}44; border-radius:10px; padding:10px 16px; margin:8px 0;">
+            <span style="color:{_er_c}; font-weight:700; font-size:0.85rem;">⚠️ Exit Risk: {exit_risk_val}/100</span>
+            <span style="color:#8b949e; font-size:0.78rem; margin-left:12px;">{_html.escape(exit_signals_str) if exit_signals_str else 'Multiple risk signals detected'}</span>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("")
 
@@ -5318,26 +5368,36 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     st.markdown('<div class="sec-head">💰 Price Trajectory</div>', unsafe_allow_html=True)
     _render_price_chart(h, ticker)
 
-    # ── Score Pipeline Detail ──
+    # ── Score Pipeline Detail (CORRECT weights with all 4 args) ──
     st.markdown('<div class="sec-head">🔬 Score Pipeline</div>', unsafe_allow_html=True)
     sc1, sc2, sc3 = st.columns(3)
 
     with sc1:
-        # Component Scores Table
-        avg_pct_val = float(np.mean(h.get('ranks', [500])))
-        total_wk = h.get('total_per_week', [2000])
-        avg_total = float(np.mean(total_wk)) if total_wk else 2000
-        stock_avg_pct = (1 - avg_pct_val / max(avg_total, 1)) * 100
-        adp_w = _get_adaptive_weights(stock_avg_pct)
+        # Compute avg_pct correctly: mean of per-week percentiles (same as scoring pipeline)
+        _pipe_pcts = ranks_to_percentiles(ranks_list, totals_list) if ranks_list and totals_list else [50]
+        _pipe_avg_pct = float(np.mean(_pipe_pcts))
+        _pipe_current_pct = _pipe_pcts[-1] if _pipe_pcts else 50.0
+        _pipe_confidence = row.get('confidence', 0.5)
+        # Regime signal: map market_regime to numeric
+        _regime_map = {'BULL': 0.5, 'BEAR': -0.5, 'SIDEWAYS': 0.0}
+        _pipe_regime = _regime_map.get(market_regime, 0.0)
+        adp_w = _get_adaptive_weights(_pipe_avg_pct, _pipe_current_pct, _pipe_confidence, _pipe_regime)
+
+        _comp_keys = ['positional', 'trend', 'velocity', 'acceleration', 'consistency', 'resilience', 'return_quality', 'breakout_quality']
+        _comp_labels = ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience', 'RetQuality', 'Breakout']
+        _comp_scores = [row.get(k, 50) for k in _comp_keys]
+        _comp_weights = [adp_w.get(k, 0) for k in _comp_keys]
+        _comp_contribs = [round(row.get(k, 50) * adp_w.get(k, 0), 1) for k in _comp_keys]
+
         comp_data = {
-            'Component': ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience', 'RetQuality'],
-            'Wt': [f"{adp_w[k]*100:.0f}%" for k in ['positional','trend','velocity','acceleration','consistency','resilience','return_quality']],
-            'Score': [row['positional'], row['trend'], row['velocity'], row['acceleration'], row['consistency'], row['resilience'], row.get('return_quality', 50)],
-            'Contrib': [round(row[k] * adp_w[k], 1) for k in ['positional','trend','velocity','acceleration','consistency','resilience','return_quality']]
+            'Component': _comp_labels,
+            'Wt': [f"{w * 100:.0f}%" for w in _comp_weights],
+            'Score': _comp_scores,
+            'Contrib': _comp_contribs,
         }
         st.dataframe(pd.DataFrame(comp_data), column_config={
             'Score': st.column_config.ProgressColumn('Score', min_value=0, max_value=100, format="%.1f")
-        }, hide_index=True, use_container_width=True, height=248)
+        }, hide_index=True, use_container_width=True, height=285)
 
     with sc2:
         # Price Alignment + Momentum Decay
@@ -5357,7 +5417,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 <span style="color:{pa_color}; font-weight:700;">{pa_label.replace('_', ' ')}</span>
             </div>
         </div>
-        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d; margin-bottom:10px;">
             <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🔻 Momentum Decay</div>
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                 <span style="color:#8b949e; font-size:0.8rem;">Score</span>
@@ -5367,7 +5427,17 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
                 <span style="color:#8b949e; font-size:0.8rem;">Status</span>
                 <span style="color:{d_color}; font-weight:700;">{d_label if d_label else 'CLEAN ✅'}</span>
             </div>
-            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Hurst×Wave ×{row.get('combined_mult', 1.0):.3f} → Final: {row['trajectory_score']:.1f}</div>
+            <div style="margin-top:6px; color:#484f58; font-size:0.7rem;">Hurst×Wave ×{row.get('combined_mult', 1.0):.3f} → Final: {t_score:.1f}</div>
+        </div>
+        <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
+            <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🏆 Alpha Score</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Score</span>
+                <span style="color:{alpha_c}; font-weight:700;">{alpha:.0f}/100</span>
+            </div>
+            <div style="background:#21262d; border-radius:4px; height:5px; overflow:hidden;">
+                <div style="width:{min(alpha, 100):.0f}%; background:{alpha_c}; height:100%;"></div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -5381,7 +5451,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">🏛️ Sector Alpha</div>
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                 <span style="color:#8b949e; font-size:0.8rem;">Sector</span>
-                <span style="color:#e6edf3; font-weight:600;">{row.get('sector', 'N/A')}</span>
+                <span style="color:#e6edf3; font-weight:600;">{_html.escape(str(row.get('sector', 'N/A')))}</span>
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                 <span style="color:#8b949e; font-size:0.8rem;">Alpha</span>
@@ -5396,26 +5466,31 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">📊 Trajectory Stats</div>
             <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
                 <span style="color:#8b949e; font-size:0.8rem;">Worst Rank</span>
-                <span style="color:#e6edf3;">#{row['worst_rank']}</span>
+                <span style="color:#e6edf3;">#{row.get('worst_rank', 0)}</span>
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
                 <span style="color:#8b949e; font-size:0.8rem;">Avg Rank</span>
-                <span style="color:#e6edf3;">#{row['avg_rank']}</span>
+                <span style="color:#e6edf3;">#{row.get('avg_rank', 0)}</span>
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
                 <span style="color:#8b949e; font-size:0.8rem;">Rank Volatility</span>
-                <span style="color:#e6edf3;">{row['rank_volatility']:.1f}</span>
+                <span style="color:#e6edf3;">{row.get('rank_volatility', 0):.1f}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
+                <span style="color:#8b949e; font-size:0.8rem;">Weeks</span>
+                <span style="color:#e6edf3;">{row.get('weeks', 0)}</span>
             </div>
             <div style="display:flex; justify-content:space-between;">
-                <span style="color:#8b949e; font-size:0.8rem;">Weeks</span>
-                <span style="color:#e6edf3;">{row['weeks']}</span>
+                <span style="color:#8b949e; font-size:0.8rem;">Confidence</span>
+                <span style="color:#e6edf3;">{row.get('confidence', 0):.2f}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-    # Latest Wave Detection Patterns
-    if row.get('latest_patterns', ''):
-        st.markdown(f'<div style="margin-top:8px;"><span style="color:#8b949e; font-size:0.72rem; text-transform:uppercase;">Wave Patterns:</span> <span class="pattern-tag">{row["latest_patterns"]}</span></div>', unsafe_allow_html=True)
+    # Latest Wave Detection Patterns (sanitized)
+    _lat_pat = row.get('latest_patterns', '')
+    if _lat_pat:
+        st.markdown(f'<div style="margin-top:8px;"><span style="color:#8b949e; font-size:0.72rem; text-transform:uppercase;">Wave Patterns:</span> <span class="pattern-tag">{_html.escape(str(_lat_pat))}</span></div>', unsafe_allow_html=True)
 
     # ── Wave Signal Fusion Detail ──
     wf_score = row.get('wave_fusion_score', 50)
@@ -5426,14 +5501,11 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     wf_harm  = row.get('wave_harmony', 50)
     wf_fund  = row.get('wave_fundamental', 50)
     wf_tension = row.get('wave_position_tension') or 0
-    wf_from_low = row.get('wave_from_low') or 0
     wf_from_high = row.get('wave_from_high') or 0
-    rally_pos = row.get('rally_position') or 50
     rally_gain = row.get('rally_gain', 0.0)
     rally_weeks = row.get('rally_weeks', 0)
     rally_leg_pct = row.get('rally_leg_pct', 50.0)
     rally_stage = row.get('rally_stage', 'UNKNOWN')
-    # FRESH/EARLY = green (good entry), RUNNING = orange (riding), MATURE/LATE = red (extended)
     _stage_colors = {'FRESH': '#00E676', 'EARLY': '#3fb950', 'RUNNING': '#FF9800', 'MATURE': '#FF5722', 'LATE': '#FF1744', 'UNKNOWN': '#484f58'}
     _stage_c = _stage_colors.get(rally_stage, '#8b949e')
     wf_colors = {'WAVE_STRONG': '#00E676', 'WAVE_CONFIRMED': '#3fb950', 'WAVE_NEUTRAL': '#484f58',
@@ -5483,7 +5555,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         </div>
         """, unsafe_allow_html=True)
     with wf3:
-        _tens_c = '#FF1744' if wf_tension > 0.7 else '#FF9800' if wf_tension > 0.4 else '#3fb950'
+        _rally_gain_sign = f"+{rally_gain:.1f}" if rally_gain >= 0 else f"{rally_gain:.1f}"
         st.markdown(f"""
         <div style="background:#161b22; border-radius:10px; padding:14px; border:1px solid #30363d;">
             <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:8px;">📈 Rally Leg Status</div>
@@ -5493,11 +5565,11 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
                 <span style="color:#8b949e; font-size:0.8rem;">Gain this leg</span>
-                <span style="color:{_stage_c}; font-weight:700;">+{rally_gain:.1f}%</span>
+                <span style="color:{_stage_c}; font-weight:700;">{_rally_gain_sign}%</span>
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
-                <span style="color:#8b949e; font-size:0.8rem;">Age of move</span>
-                <span style="color:#8b949e; font-weight:600;">{rally_weeks} wk{'s' if rally_weeks != 1 else ''} ago</span>
+                <span style="color:#8b949e; font-size:0.8rem;">Rally duration</span>
+                <span style="color:#8b949e; font-weight:600;">{rally_weeks} wk{'s' if rally_weeks != 1 else ''}</span>
             </div>
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                 <span style="color:#8b949e; font-size:0.8rem;">Gap to 52w high</span>
@@ -5520,16 +5592,15 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     # ── Week-by-Week History ──
     with st.expander("📅 Week-by-Week History", expanded=False):
         week_data = {
-            'Date': h['dates'],
-            'Rank': [int(r) for r in h['ranks']],
-            'Pctl': [round(p, 1) for p in pcts],
+            'Date': h.get('dates', []),
+            'Rank': [int(r) for r in ranks_list],
+            'Pctl': [round(p, 1) for p in pcts] if pcts else [],
             'Price ₹': [round(p, 1) for p in h['prices']],
-            'M.Score': [round(s, 1) for s in h['scores']],
-            'Stocks': h['total_per_week'],
+            'M.Score': [round(s, 1) for s in h.get('scores', [])],
+            'Stocks': totals_list,
         }
-        wk_changes = [0] + [int(h['ranks'][i - 1] - h['ranks'][i]) for i in range(1, len(h['ranks']))]
+        wk_changes = [0] + [int(ranks_list[i - 1] - ranks_list[i]) for i in range(1, len(ranks_list))]
         week_data['Δ Rank'] = wk_changes
-        # Price changes
         price_changes = [0] + [round(h['prices'][i] - h['prices'][i-1], 1) for i in range(1, len(h['prices']))]
         week_data['Δ Price'] = price_changes
 
@@ -5542,7 +5613,7 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
 
         wk_df = pd.DataFrame(week_data).iloc[::-1]  # Latest first
         wk_col_config = {
-            'Δ Rank': st.column_config.NumberColumn(format="%+d"),
+            'Δ Rank': st.column_config.NumberColumn(format="%+d", help="Positive = rank improved (moved up)"),
             'Pctl': st.column_config.ProgressColumn('Pctl', min_value=0, max_value=100, format="%.1f"),
             'Price ₹': st.column_config.NumberColumn(format="₹%.1f"),
             'Δ Price': st.column_config.NumberColumn(format="%+.1f"),
@@ -5556,19 +5627,27 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     # ── Compare ──
     with st.expander("⚖️ Compare Stocks", expanded=False):
         compare_labels = [l for l in labels if l != selected_label]
-        compare_selections = st.multiselect("Select up to 4 stocks",
-                                             compare_labels, max_selections=4,
-                                             key='compare_select')
-        if compare_selections:
-            compare_tickers = [label_map[l] for l in compare_selections]
-            _render_comparison_chart(ticker, compare_tickers, histories, traj_df)
+        if not compare_labels:
+            st.info("No other stocks available for comparison with current filters")
+        else:
+            st.caption("Select up to 4 stocks to compare rank percentile trajectories and key metrics side by side")
+            compare_selections = st.multiselect("Compare with",
+                                                 compare_labels, max_selections=4,
+                                                 key='compare_select',
+                                                 label_visibility='collapsed')
+            if compare_selections:
+                compare_tickers = [label_map[l] for l in compare_selections]
+                _render_comparison_chart(ticker, compare_tickers, histories, traj_df)
 
 
 def _render_rank_chart(h: dict, ticker: str):
     """Rank + Master Score dual-axis trajectory chart"""
-    dates = h['dates']
-    ranks = h['ranks']
-    scores = h['scores']
+    dates = h.get('dates', [])
+    ranks = h.get('ranks', [])
+    scores = h.get('scores', [])
+    if not dates or not ranks:
+        st.info("Insufficient data for rank chart")
+        return
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -5596,14 +5675,15 @@ def _render_rank_chart(h: dict, ticker: str):
     ), secondary_y=True)
 
     # Best rank annotation
-    best_idx = int(np.argmin(ranks))
-    fig.add_annotation(
-        x=dates[best_idx], y=ranks[best_idx],
-        text=f"Best: #{int(ranks[best_idx])}",
-        showarrow=True, arrowhead=2,
-        font=dict(color='#FFD700', size=10),
-        bgcolor='rgba(0,0,0,0.7)', bordercolor='#FFD700'
-    )
+    if len(ranks) > 0:
+        best_idx = int(np.argmin(ranks))
+        fig.add_annotation(
+            x=dates[best_idx], y=ranks[best_idx],
+            text=f"Best: #{int(ranks[best_idx])}",
+            showarrow=True, arrowhead=2,
+            font=dict(color='#FFD700', size=10),
+            bgcolor='rgba(0,0,0,0.7)', bordercolor='#FFD700'
+        )
 
     fig.update_layout(
         height=340,
@@ -5625,8 +5705,11 @@ def _render_rank_chart(h: dict, ticker: str):
 
 def _render_price_chart(h: dict, ticker: str):
     """Price trajectory chart with min/max annotations"""
-    dates = h['dates']
-    prices = h['prices']
+    dates = h.get('dates', [])
+    prices = h.get('prices', [])
+    if not dates or not prices:
+        st.info("Insufficient data for price chart")
+        return
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -5641,23 +5724,24 @@ def _render_price_chart(h: dict, ticker: str):
     ))
 
     # High / Low annotations
-    hi_idx = int(np.argmax(prices))
-    lo_idx = int(np.argmin(prices))
-    fig.add_annotation(
-        x=dates[hi_idx], y=prices[hi_idx],
-        text=f"High: ₹{prices[hi_idx]:,.1f}",
-        showarrow=True, arrowhead=2,
-        font=dict(color='#00E676', size=10),
-        bgcolor='rgba(0,0,0,0.7)', bordercolor='#00E676'
-    )
-    if hi_idx != lo_idx:
+    if len(prices) > 0:
+        hi_idx = int(np.argmax(prices))
+        lo_idx = int(np.argmin(prices))
         fig.add_annotation(
-            x=dates[lo_idx], y=prices[lo_idx],
-            text=f"Low: ₹{prices[lo_idx]:,.1f}",
-            showarrow=True, arrowhead=2, ay=30,
-            font=dict(color='#FF5252', size=10),
-            bgcolor='rgba(0,0,0,0.7)', bordercolor='#FF5252'
+            x=dates[hi_idx], y=prices[hi_idx],
+            text=f"High: ₹{prices[hi_idx]:,.1f}",
+            showarrow=True, arrowhead=2,
+            font=dict(color='#00E676', size=10),
+            bgcolor='rgba(0,0,0,0.7)', bordercolor='#00E676'
         )
+        if hi_idx != lo_idx:
+            fig.add_annotation(
+                x=dates[lo_idx], y=prices[lo_idx],
+                text=f"Low: ₹{prices[lo_idx]:,.1f}",
+                showarrow=True, arrowhead=2, ay=30,
+                font=dict(color='#FF5252', size=10),
+                bgcolor='rgba(0,0,0,0.7)', bordercolor='#FF5252'
+            )
 
     fig.update_layout(
         height=280,
@@ -5674,10 +5758,10 @@ def _render_price_chart(h: dict, ticker: str):
 
 
 def _render_radar_chart(row):
-    """Render radar/spider chart for component scores (7 components, v6.0)"""
-    categories = ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience', 'RetQuality']
-    values = [row['positional'], row['trend'], row['velocity'], row['acceleration'],
-              row['consistency'], row['resilience'], row.get('return_quality', 50)]
+    """Render radar/spider chart for component scores (8 components, v4.0)"""
+    categories = ['Positional', 'Trend', 'Velocity', 'Acceleration', 'Consistency', 'Resilience', 'RetQuality', 'Breakout']
+    values = [row.get('positional', 50), row.get('trend', 50), row.get('velocity', 50), row.get('acceleration', 50),
+              row.get('consistency', 50), row.get('resilience', 50), row.get('return_quality', 50), row.get('breakout_quality', 50)]
     values_closed = values + [values[0]]  # Close the polygon
     cats_closed = categories + [categories[0]]
 
@@ -5766,15 +5850,16 @@ def _render_comparison_chart(main_ticker: str, compare_tickers: list,
         r = r.iloc[0]
         comp_rows.append({
             'Ticker': ticker,
-            'Company': r['company_name'][:25],
-            'T-Score': r['trajectory_score'],
-            'Grade': f"{r['grade_emoji']} {r['grade']}",
-            'Pattern': r['pattern'],
-            'TMI': r['tmi'],
-            'Rank Now': r['current_rank'],
-            'Best': r['best_rank'],
-            'Δ Rank': r['rank_change'],
-            'Streak': r['streak']
+            'Company': str(r.get('company_name', ''))[:25],
+            'T-Score': r.get('trajectory_score', 0),
+            'Alpha': r.get('alpha_score', 0),
+            'Grade': f"{r.get('grade_emoji', '')} {r.get('grade', 'F')}",
+            'Pattern': r.get('pattern', ''),
+            'TMI': r.get('tmi', 50),
+            'Rank Now': r.get('current_rank', 0),
+            'Best': r.get('best_rank', 0),
+            'Δ Rank': r.get('rank_change', 0),
+            'Streak': r.get('streak', 0),
         })
     if comp_rows:
         st.dataframe(pd.DataFrame(comp_rows), hide_index=True, use_container_width=True)
