@@ -4416,6 +4416,620 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
 
 
 # ============================================
+# UI: MARKET PULSE TAB — v1.0
+# ============================================
+
+def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
+                            histories: dict, metadata: dict):
+    """📡 Market Pulse — bird's-eye market intelligence dashboard.
+
+    Sections:
+      1. Pulse Hero       – regime badge, market strength, 6 breadth KPIs
+      2. Breadth Over Time – % improving / % strong / advance-decline over weeks
+      3. Sector Heatmap    – sector × week avg score-change grid
+      4. Week-over-Week Δ  – upgrade/downgrade/rocket/crash counts + top movers
+      5. Grade Migration   – grade flow matrix (prev week → this week)
+      6. Pattern Trend     – stacked area of pattern distribution over time
+
+    Uses ONLY pre-computed data from histories/traj_df — zero new API calls.
+    """
+    import html as _html
+
+    n_stocks = len(filtered_df)
+    if n_stocks == 0:
+        st.info("No stocks match the current filters. Adjust sidebar filters to see Market Pulse.")
+        return
+
+    # ── Helper: build weekly snapshots from histories ────────────
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _build_weekly_snapshots(_hist_keys, _hist_data_tuple):
+        """Reconstruct per-week aggregates from histories dict.
+
+        We receive histories data as a tuple-of-tuples for hashability.
+        Returns list of dicts, one per week, sorted chronologically.
+        """
+        hist = {k: v for k, v in zip(_hist_keys, _hist_data_tuple)}
+        # Discover all dates across tickers
+        date_set: dict = {}  # date_str -> week_index
+        for ticker, h in hist.items():
+            for i, d in enumerate(h.get('dates', [])):
+                ds = str(d)[:10]
+                if ds not in date_set:
+                    date_set[ds] = ds
+        sorted_dates = sorted(date_set.keys())
+        if not sorted_dates:
+            return []
+
+        weeks = []
+        for wi, ds in enumerate(sorted_dates):
+            snap = {
+                'date': ds, 'tickers': [], 'scores': [], 'ranks': [],
+                'prev_ranks': [], 'grades': [], 'patterns': [],
+                'sectors': [], 'decay_scores': [], 'trend_qualities': [],
+                'market_strengths': [],
+            }
+            for ticker, h in hist.items():
+                dates_list = [str(d)[:10] for d in h.get('dates', [])]
+                if ds not in dates_list:
+                    continue
+                idx = dates_list.index(ds)
+                snap['tickers'].append(ticker)
+                scores = h.get('scores', [])
+                snap['scores'].append(scores[idx] if idx < len(scores) else 0)
+                ranks = h.get('ranks', [])
+                snap['ranks'].append(ranks[idx] if idx < len(ranks) else 0)
+                prev_r = ranks[idx - 1] if idx > 0 and idx - 1 < len(ranks) else (ranks[idx] if idx < len(ranks) else 0)
+                snap['prev_ranks'].append(prev_r)
+                # Grade from score
+                sc = scores[idx] if idx < len(scores) else 0
+                gr = 'F'
+                for thr, lbl, _ in GRADE_DEFS:
+                    if sc >= thr:
+                        gr = lbl
+                        break
+                snap['grades'].append(gr)
+                pats = h.get('pattern_history', [])
+                snap['patterns'].append(pats[idx] if idx < len(pats) else 'neutral')
+                snap['sectors'].append(h.get('sector', ''))
+                tq = h.get('trend_qualities', [])
+                snap['trend_qualities'].append(tq[idx] if idx < len(tq) else 50)
+                ms = h.get('overall_market_strength', [])
+                snap['market_strengths'].append(ms[idx] if idx < len(ms) else 50)
+            weeks.append(snap)
+        return weeks
+
+    # Build hashable args for caching
+    _h_keys = tuple(histories.keys())
+    _h_data = tuple(
+        {k: (tuple(v) if isinstance(v, list) else v) for k, v in histories[t].items()}
+        for t in _h_keys
+    )
+    weekly_snaps = _build_weekly_snapshots(_h_keys, _h_data)
+
+    if len(weekly_snaps) < 1:
+        st.info("Not enough data for Market Pulse. Load at least 1 weekly snapshot.")
+        return
+
+    latest = weekly_snaps[-1]
+    prev = weekly_snaps[-2] if len(weekly_snaps) >= 2 else None
+    n_weeks = len(weekly_snaps)
+
+    # ── Current metrics ──────────────────────────────────────────
+    regime = filtered_df['market_regime'].iloc[0] if 'market_regime' in filtered_df.columns else 'SIDEWAYS'
+    trend_med = float(filtered_df['market_trend_median'].iloc[0]) if 'market_trend_median' in filtered_df.columns else 50.0
+    avg_score = float(filtered_df['trajectory_score'].mean()) if 'trajectory_score' in filtered_df.columns else 0
+    avg_alpha = float(filtered_df['alpha_score'].mean()) if 'alpha_score' in filtered_df.columns else 0
+
+    # Breadth from latest snapshot
+    lat_scores = np.array(latest['scores'], dtype=float)
+    lat_ranks = np.array(latest['ranks'], dtype=float)
+    lat_prev = np.array(latest['prev_ranks'], dtype=float)
+    improving = int(np.sum(lat_ranks < lat_prev))
+    declining = int(np.sum(lat_ranks > lat_prev))
+    unchanged = int(np.sum(lat_ranks == lat_prev))
+    pct_strong = int(100 * np.sum(lat_scores >= 55) / max(len(lat_scores), 1))
+    pct_improving = int(100 * improving / max(len(lat_ranks), 1))
+    ad_ratio = round(improving / max(declining, 1), 2)
+
+    # Regime styling
+    regime_cfg = {
+        'BULL':     ('#3fb950', '🟢', 'linear-gradient(135deg, rgba(63,185,80,0.12), rgba(63,185,80,0.04))'),
+        'BEAR':     ('#f85149', '🔴', 'linear-gradient(135deg, rgba(248,81,73,0.12), rgba(248,81,73,0.04))'),
+        'SIDEWAYS': ('#d29922', '🟡', 'linear-gradient(135deg, rgba(210,153,34,0.12), rgba(210,153,34,0.04))'),
+    }
+    r_color, r_icon, r_bg = regime_cfg.get(regime, regime_cfg['SIDEWAYS'])
+
+    # Strength bar width + color
+    strength_pct = max(0, min(100, trend_med))
+    s_color = '#3fb950' if strength_pct >= 58 else ('#f85149' if strength_pct < 42 else '#d29922')
+
+    # ────────────────────────────────────────────────────────────
+    # SECTION 1: PULSE HERO CARD
+    # ────────────────────────────────────────────────────────────
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#0d1117 0%,#161b22 100%);border-radius:16px;
+        padding:22px 28px;margin-bottom:18px;border:1px solid #30363d;
+        box-shadow:0 4px 24px rgba(0,0,0,0.3);">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;">
+        <div>
+          <div style="font-size:1.5rem;font-weight:800;color:#e6edf3;letter-spacing:-0.3px;">
+            📡 Market Pulse</div>
+          <div style="color:#8b949e;font-size:0.85rem;margin-top:2px;">
+            {metadata.get('date_range','')} &nbsp;·&nbsp; {n_weeks} weeks
+            &nbsp;·&nbsp; {n_stocks} stocks</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="{r_bg};border:1px solid {r_color}33;border-radius:12px;padding:10px 18px;
+              text-align:center;">
+            <div style="font-size:1.6rem;">{r_icon}</div>
+            <div style="font-size:0.92rem;font-weight:800;color:{r_color};letter-spacing:0.5px;">
+              {regime}</div>
+          </div>
+          <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:10px 18px;
+              text-align:center;min-width:100px;">
+            <div style="font-size:0.65rem;color:#8b949e;text-transform:uppercase;letter-spacing:1px;">
+              Mkt Strength</div>
+            <div style="font-size:1.3rem;font-weight:800;color:{s_color};">{strength_pct:.0f}</div>
+            <div style="background:#21262d;border-radius:3px;height:4px;margin-top:4px;overflow:hidden;">
+              <div style="width:{strength_pct}%;height:100%;background:{s_color};border-radius:3px;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 6 KPI chips -->
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:16px;">
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#3fb950;font-weight:700;font-size:1.15rem;">{pct_improving}%</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Improving</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#58a6ff;font-weight:700;font-size:1.15rem;">{pct_strong}%</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Strong (B+)</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#e6edf3;font-weight:700;font-size:1.15rem;">{ad_ratio}</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">A/D Ratio</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#d2a8ff;font-weight:700;font-size:1.15rem;">{avg_score:.0f}</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Avg T-Score</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#FF6B35;font-weight:700;font-size:1.15rem;">{avg_alpha:.0f}</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Avg Alpha</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:{'#3fb950' if improving > declining else '#f85149'};font-weight:700;font-size:1.15rem;">
+            {improving}↑ {declining}↓</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Adv / Dec</div></div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    # ────────────────────────────────────────────────────────────
+    # SECTION 2 + 3:  Breadth Over Time  |  Sector Heatmap
+    # ────────────────────────────────────────────────────────────
+    pulse_tab1, pulse_tab2, pulse_tab3, pulse_tab4 = st.tabs([
+        "📈 Breadth Over Time", "🗺️ Sector Heatmap",
+        "🔄 Week-over-Week Δ", "📊 Grade & Pattern Flow"
+    ])
+
+    # ── 2. Breadth Over Time ─────────────────────────────────────
+    with pulse_tab1:
+        dates_list = []
+        pct_improving_list = []
+        pct_strong_list = []
+        ad_ratio_list = []
+        avg_score_list = []
+        for snap in weekly_snaps:
+            sc_arr = np.array(snap['scores'], dtype=float)
+            rk_arr = np.array(snap['ranks'], dtype=float)
+            pr_arr = np.array(snap['prev_ranks'], dtype=float)
+            n_s = max(len(sc_arr), 1)
+            imp = int(np.sum(rk_arr < pr_arr))
+            dec = int(np.sum(rk_arr > pr_arr))
+            dates_list.append(snap['date'])
+            pct_improving_list.append(round(100 * imp / n_s, 1))
+            pct_strong_list.append(round(100 * np.sum(sc_arr >= 55) / n_s, 1))
+            ad_ratio_list.append(round(imp / max(dec, 1), 2))
+            avg_score_list.append(round(float(np.mean(sc_arr)), 1))
+
+        fig_breadth = go.Figure()
+        fig_breadth.add_trace(go.Scatter(
+            x=dates_list, y=pct_improving_list, name='% Improving',
+            mode='lines+markers', line=dict(color='#3fb950', width=2.5),
+            marker=dict(size=5), hovertemplate='%{x}<br>Improving: %{y}%<extra></extra>',
+        ))
+        fig_breadth.add_trace(go.Scatter(
+            x=dates_list, y=pct_strong_list, name='% Strong (B+)',
+            mode='lines+markers', line=dict(color='#58a6ff', width=2.5),
+            marker=dict(size=5), hovertemplate='%{x}<br>Strong: %{y}%<extra></extra>',
+        ))
+        fig_breadth.add_trace(go.Scatter(
+            x=dates_list, y=avg_score_list, name='Avg T-Score',
+            mode='lines+markers', line=dict(color='#d2a8ff', width=2, dash='dot'),
+            marker=dict(size=4), yaxis='y2',
+            hovertemplate='%{x}<br>Avg Score: %{y}<extra></extra>',
+        ))
+        fig_breadth.add_trace(go.Scatter(
+            x=dates_list, y=ad_ratio_list, name='A/D Ratio',
+            mode='lines+markers', line=dict(color='#d29922', width=2, dash='dash'),
+            marker=dict(size=4), yaxis='y2',
+            hovertemplate='%{x}<br>A/D: %{y}<extra></extra>',
+        ))
+        fig_breadth.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=380, margin=dict(l=50, r=50, t=40, b=40),
+            title=dict(text='Market Breadth Over Time', font=dict(size=14, color='#e6edf3')),
+            legend=dict(orientation='h', y=-0.15, font=dict(size=11)),
+            yaxis=dict(title='% of Stocks', gridcolor='#21262d', zeroline=False,
+                       titlefont=dict(size=11)),
+            yaxis2=dict(title='Score / Ratio', overlaying='y', side='right',
+                        gridcolor='#21262d22', zeroline=False, titlefont=dict(size=11)),
+            xaxis=dict(gridcolor='#21262d'),
+            hovermode='x unified',
+        )
+        st.plotly_chart(fig_breadth, use_container_width=True, key='mp_breadth_chart')
+
+        # Breadth sparkline summary
+        if len(pct_improving_list) >= 2:
+            delta_imp = pct_improving_list[-1] - pct_improving_list[-2]
+            delta_str = pct_strong_list[-1] - pct_strong_list[-2]
+            d_i_c = '#3fb950' if delta_imp >= 0 else '#f85149'
+            d_s_c = '#3fb950' if delta_str >= 0 else '#f85149'
+            d_i_sign = '+' if delta_imp >= 0 else ''
+            d_s_sign = '+' if delta_str >= 0 else ''
+            st.markdown(f"""
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;">
+              <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
+                  font-size:0.82rem;color:#c9d1d9;">
+                <span style="color:{d_i_c};font-weight:700;">{d_i_sign}{delta_imp:.1f}%</span>
+                improving vs prev week</div>
+              <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
+                  font-size:0.82rem;color:#c9d1d9;">
+                <span style="color:{d_s_c};font-weight:700;">{d_s_sign}{delta_str:.1f}%</span>
+                strong (B+) vs prev week</div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── 3. Sector Heatmap ────────────────────────────────────────
+    with pulse_tab2:
+        # Build sector × week matrix of avg score
+        sector_set = sorted(set(s for s in filtered_df['sector'].dropna().unique() if s))
+        if not sector_set:
+            st.info("No sector data available.")
+        else:
+            # Use last min(12, n_weeks) weeks for readability
+            display_weeks = weekly_snaps[-min(12, n_weeks):]
+            heat_dates = [w['date'][-5:] for w in display_weeks]  # MM-DD
+            heat_z = []
+            for sec in sector_set:
+                row = []
+                for snap in display_weeks:
+                    sec_scores = [
+                        snap['scores'][i]
+                        for i, s in enumerate(snap['sectors'])
+                        if s == sec
+                    ]
+                    row.append(round(float(np.mean(sec_scores)), 1) if sec_scores else None)
+                heat_z.append(row)
+
+            # Truncate long sector names
+            sec_labels = [s[:18] for s in sector_set]
+
+            fig_heat = go.Figure(data=go.Heatmap(
+                z=heat_z, x=heat_dates, y=sec_labels,
+                colorscale=[
+                    [0, '#f85149'], [0.25, '#da3633'], [0.4, '#d29922'],
+                    [0.5, '#21262d'], [0.65, '#238636'], [0.8, '#3fb950'],
+                    [1, '#2ea043']
+                ],
+                zmid=50, hoverongaps=False,
+                hovertemplate='%{y}<br>%{x}<br>Avg Score: %{z:.1f}<extra></extra>',
+                colorbar=dict(title='Avg Score', titlefont=dict(size=10),
+                              tickfont=dict(size=9), thickness=12, len=0.9),
+            ))
+            fig_heat.update_layout(
+                template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+                height=max(300, len(sector_set) * 28 + 80),
+                margin=dict(l=140, r=60, t=40, b=40),
+                title=dict(text='Sector Score Heatmap (Weekly)', font=dict(size=14, color='#e6edf3')),
+                xaxis=dict(side='top', tickfont=dict(size=10)),
+                yaxis=dict(tickfont=dict(size=10), autorange='reversed'),
+            )
+            st.plotly_chart(fig_heat, use_container_width=True, key='mp_sector_heat')
+
+            # Sector leader board — current week
+            sec_now = {}
+            for i, s in enumerate(latest['sectors']):
+                if s:
+                    sec_now.setdefault(s, []).append(latest['scores'][i])
+            sec_sorted = sorted(
+                [(s, float(np.mean(v)), len(v)) for s, v in sec_now.items()],
+                key=lambda x: -x[1]
+            )
+            if sec_sorted:
+                top3 = sec_sorted[:3]
+                bot3 = sec_sorted[-3:] if len(sec_sorted) > 3 else []
+                chips = ''
+                for s, avg, cnt in top3:
+                    chips += (f'<span style="background:rgba(63,185,80,0.1);border:1px solid #3fb95044;'
+                              f'color:#3fb950;padding:4px 10px;border-radius:8px;font-size:0.78rem;'
+                              f'font-weight:600;">{_html.escape(s[:16])} {avg:.0f} ({cnt})</span>')
+                for s, avg, cnt in bot3:
+                    chips += (f'<span style="background:rgba(248,81,73,0.1);border:1px solid #f8514944;'
+                              f'color:#f85149;padding:4px 10px;border-radius:8px;font-size:0.78rem;'
+                              f'font-weight:600;">{_html.escape(s[:16])} {avg:.0f} ({cnt})</span>')
+                st.markdown(f"""
+                <div style="margin-top:8px;">
+                  <span style="color:#8b949e;font-size:0.72rem;text-transform:uppercase;letter-spacing:1px;
+                      margin-right:8px;">Leaders → Laggards:</span>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">{chips}</div>
+                </div>""", unsafe_allow_html=True)
+
+    # ── 4. Week-over-Week Delta ──────────────────────────────────
+    with pulse_tab3:
+        if prev is None:
+            st.info("Need at least 2 weekly snapshots for week-over-week comparison.")
+        else:
+            # Build ticker-keyed lookup for prev week
+            prev_map = {}
+            for i, t in enumerate(prev['tickers']):
+                prev_map[t] = {
+                    'rank': prev['ranks'][i], 'score': prev['scores'][i],
+                    'grade': prev['grades'][i], 'pattern': prev['patterns'][i],
+                }
+            lat_map = {}
+            for i, t in enumerate(latest['tickers']):
+                lat_map[t] = {
+                    'rank': latest['ranks'][i], 'score': latest['scores'][i],
+                    'grade': latest['grades'][i], 'pattern': latest['patterns'][i],
+                    'sector': latest['sectors'][i],
+                }
+
+            # Compute deltas
+            grade_order = {'S': 5, 'A': 4, 'B': 3, 'C': 2, 'D': 1, 'F': 0}
+            upgraded = []
+            downgraded = []
+            new_rockets = []
+            new_crashes = []
+            big_climbers = []
+            big_fallers = []
+
+            for t, cur in lat_map.items():
+                p = prev_map.get(t)
+                if not p:
+                    continue
+                rank_delta = p['rank'] - cur['rank']  # positive = improved
+                grade_delta = grade_order.get(cur['grade'], 0) - grade_order.get(p['grade'], 0)
+                if grade_delta > 0:
+                    upgraded.append((t, p['grade'], cur['grade'], rank_delta))
+                elif grade_delta < 0:
+                    downgraded.append((t, p['grade'], cur['grade'], rank_delta))
+                if cur['pattern'] == 'rocket' and p['pattern'] != 'rocket':
+                    new_rockets.append(t)
+                if cur['pattern'] == 'crash' and p['pattern'] != 'crash':
+                    new_crashes.append(t)
+                if rank_delta >= 20:
+                    big_climbers.append((t, rank_delta, cur.get('sector', '')))
+                elif rank_delta <= -20:
+                    big_fallers.append((t, rank_delta, cur.get('sector', '')))
+
+            upgraded.sort(key=lambda x: -grade_order.get(x[2], 0))
+            downgraded.sort(key=lambda x: grade_order.get(x[2], 0))
+            big_climbers.sort(key=lambda x: -x[1])
+            big_fallers.sort(key=lambda x: x[1])
+
+            new_entries = [t for t in lat_map if t not in prev_map]
+            exited = [t for t in prev_map if t not in lat_map]
+
+            # Delta hero cards
+            st.markdown(f"""
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;
+                margin-bottom:16px;">
+              <div style="background:#161b22;border-radius:10px;padding:12px;text-align:center;
+                  border:1px solid #30363d;">
+                <div style="color:#3fb950;font-size:1.3rem;font-weight:800;">{len(upgraded)}</div>
+                <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Grade Up</div></div>
+              <div style="background:#161b22;border-radius:10px;padding:12px;text-align:center;
+                  border:1px solid #30363d;">
+                <div style="color:#f85149;font-size:1.3rem;font-weight:800;">{len(downgraded)}</div>
+                <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Grade Down</div></div>
+              <div style="background:#161b22;border-radius:10px;padding:12px;text-align:center;
+                  border:1px solid #30363d;">
+                <div style="color:#FF4500;font-size:1.3rem;font-weight:800;">{len(new_rockets)}</div>
+                <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">New 🚀</div></div>
+              <div style="background:#161b22;border-radius:10px;padding:12px;text-align:center;
+                  border:1px solid #30363d;">
+                <div style="color:#DC143C;font-size:1.3rem;font-weight:800;">{len(new_crashes)}</div>
+                <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">New 💥</div></div>
+              <div style="background:#161b22;border-radius:10px;padding:12px;text-align:center;
+                  border:1px solid #30363d;">
+                <div style="color:#58a6ff;font-size:1.3rem;font-weight:800;">{len(new_entries)}</div>
+                <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">New Entries</div></div>
+              <div style="background:#161b22;border-radius:10px;padding:12px;text-align:center;
+                  border:1px solid #30363d;">
+                <div style="color:#8b949e;font-size:1.3rem;font-weight:800;">{len(exited)}</div>
+                <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Exited</div></div>
+            </div>""", unsafe_allow_html=True)
+
+            # Detail columns
+            wow_c1, wow_c2 = st.columns(2)
+
+            with wow_c1:
+                # Grade Upgrades
+                if upgraded:
+                    rows = ''.join(
+                        f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
+                        f'border-bottom:1px solid #21262d;font-size:0.82rem;">'
+                        f'<span style="color:#e6edf3;font-weight:600;">{_html.escape(t)}</span>'
+                        f'<span><span style="color:{GRADE_COLORS.get(pg,"#8b949e")}">{pg}</span>'
+                        f' → <span style="color:{GRADE_COLORS.get(cg,"#3fb950")};font-weight:700;">{cg}</span>'
+                        f'</span></div>'
+                        for t, pg, cg, _ in upgraded[:15]
+                    )
+                    st.markdown(f"""
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                        padding:12px 16px;margin-bottom:10px;">
+                      <div style="color:#3fb950;font-weight:700;font-size:0.85rem;margin-bottom:8px;">
+                        ⬆️ Grade Upgrades ({len(upgraded)})</div>{rows}
+                    </div>""", unsafe_allow_html=True)
+
+                # Big Climbers (rank +20 or more)
+                if big_climbers:
+                    rows = ''.join(
+                        f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
+                        f'border-bottom:1px solid #21262d;font-size:0.82rem;">'
+                        f'<span style="color:#e6edf3;font-weight:600;">{_html.escape(t)}</span>'
+                        f'<span style="color:#3fb950;font-weight:700;">+{d}</span></div>'
+                        for t, d, _ in big_climbers[:10]
+                    )
+                    st.markdown(f"""
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                        padding:12px 16px;margin-bottom:10px;">
+                      <div style="color:#3fb950;font-weight:700;font-size:0.85rem;margin-bottom:8px;">
+                        🚀 Big Climbers +20 ({len(big_climbers)})</div>{rows}
+                    </div>""", unsafe_allow_html=True)
+
+            with wow_c2:
+                # Grade Downgrades
+                if downgraded:
+                    rows = ''.join(
+                        f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
+                        f'border-bottom:1px solid #21262d;font-size:0.82rem;">'
+                        f'<span style="color:#e6edf3;font-weight:600;">{_html.escape(t)}</span>'
+                        f'<span><span style="color:{GRADE_COLORS.get(pg,"#8b949e")}">{pg}</span>'
+                        f' → <span style="color:{GRADE_COLORS.get(cg,"#f85149")};font-weight:700;">{cg}</span>'
+                        f'</span></div>'
+                        for t, pg, cg, _ in downgraded[:15]
+                    )
+                    st.markdown(f"""
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                        padding:12px 16px;margin-bottom:10px;">
+                      <div style="color:#f85149;font-weight:700;font-size:0.85rem;margin-bottom:8px;">
+                        ⬇️ Grade Downgrades ({len(downgraded)})</div>{rows}
+                    </div>""", unsafe_allow_html=True)
+
+                # Big Fallers (rank -20 or worse)
+                if big_fallers:
+                    rows = ''.join(
+                        f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
+                        f'border-bottom:1px solid #21262d;font-size:0.82rem;">'
+                        f'<span style="color:#e6edf3;font-weight:600;">{_html.escape(t)}</span>'
+                        f'<span style="color:#f85149;font-weight:700;">{d}</span></div>'
+                        for t, d, _ in big_fallers[:10]
+                    )
+                    st.markdown(f"""
+                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
+                        padding:12px 16px;margin-bottom:10px;">
+                      <div style="color:#f85149;font-weight:700;font-size:0.85rem;margin-bottom:8px;">
+                        💥 Big Fallers −20 ({len(big_fallers)})</div>{rows}
+                    </div>""", unsafe_allow_html=True)
+
+    # ── 5. Grade Migration + Pattern Flow ────────────────────────
+    with pulse_tab4:
+        if prev is None:
+            st.info("Need at least 2 weekly snapshots for grade migration analysis.")
+        else:
+            grade_labels = ['S', 'A', 'B', 'C', 'D', 'F']
+
+            # Build migration matrix
+            migration = {fg: {tg: 0 for tg in grade_labels} for fg in grade_labels}
+            for t in lat_map:
+                if t not in prev_map:
+                    continue
+                fg = prev_map[t]['grade']
+                tg = lat_map[t]['grade']
+                if fg in migration and tg in migration[fg]:
+                    migration[fg][tg] += 1
+
+            # Heatmap
+            z_mig = [[migration[fg][tg] for tg in grade_labels] for fg in grade_labels]
+            # Annotation text
+            annot = [[str(v) if v > 0 else '' for v in row] for row in z_mig]
+
+            fig_mig = go.Figure(data=go.Heatmap(
+                z=z_mig, x=[f'→ {g}' for g in grade_labels],
+                y=[f'{g} →' for g in grade_labels],
+                text=annot, texttemplate='%{text}',
+                colorscale=[[0, '#0d1117'], [0.01, '#161b22'], [0.15, '#1f4529'],
+                            [0.4, '#238636'], [0.7, '#3fb950'], [1, '#7ee787']],
+                hoverongaps=False,
+                hovertemplate='From %{y} To %{x}<br>Count: %{z}<extra></extra>',
+                showscale=False,
+            ))
+            fig_mig.update_layout(
+                template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+                height=340, margin=dict(l=60, r=30, t=50, b=40),
+                title=dict(text='Grade Migration (Prev Week → This Week)',
+                           font=dict(size=14, color='#e6edf3')),
+                xaxis=dict(tickfont=dict(size=11, color='#e6edf3'), side='top'),
+                yaxis=dict(tickfont=dict(size=11, color='#e6edf3'), autorange='reversed'),
+            )
+            st.plotly_chart(fig_mig, use_container_width=True, key='mp_grade_mig')
+
+            # Retention & churn stats
+            retained = sum(migration[g][g] for g in grade_labels)
+            total_migrated = sum(sum(r) for r in z_mig)
+            retention_pct = round(100 * retained / max(total_migrated, 1), 1)
+            up_mig = sum(migration[fg][tg]
+                         for fi, fg in enumerate(grade_labels)
+                         for ti, tg in enumerate(grade_labels) if ti < fi)
+            down_mig = sum(migration[fg][tg]
+                           for fi, fg in enumerate(grade_labels)
+                           for ti, tg in enumerate(grade_labels) if ti > fi)
+            st.markdown(f"""
+            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;">
+              <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
+                  font-size:0.82rem;color:#c9d1d9;">
+                Grade Retention: <span style="color:#58a6ff;font-weight:700;">{retention_pct}%</span>
+                ({retained} of {total_migrated})</div>
+              <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
+                  font-size:0.82rem;color:#c9d1d9;">
+                Upgraded: <span style="color:#3fb950;font-weight:700;">{up_mig}</span> &nbsp;|&nbsp;
+                Downgraded: <span style="color:#f85149;font-weight:700;">{down_mig}</span></div>
+            </div>""", unsafe_allow_html=True)
+
+            st.markdown("")  # spacer
+
+            # ── Pattern Distribution Trend (stacked area) ────────
+            st.markdown(f"""<div style="color:#e6edf3;font-weight:700;font-size:0.95rem;
+                margin:16px 0 8px;">🔮 Pattern Distribution Over Time</div>""",
+                unsafe_allow_html=True)
+
+            # Count patterns per week
+            pat_keys = list(PATTERN_DEFS.keys())
+            display_snaps = weekly_snaps[-min(16, n_weeks):]
+            pat_dates = [s['date'][-5:] for s in display_snaps]
+            pat_counts = {pk: [] for pk in pat_keys}
+            for snap in display_snaps:
+                cnt = {pk: 0 for pk in pat_keys}
+                for p in snap['patterns']:
+                    if p in cnt:
+                        cnt[p] += 1
+                total = max(sum(cnt.values()), 1)
+                for pk in pat_keys:
+                    pat_counts[pk].append(round(100 * cnt[pk] / total, 1))
+
+            fig_pat = go.Figure()
+            for pk in pat_keys:
+                emoji, label, _ = PATTERN_DEFS[pk]
+                color = PATTERN_COLORS.get(pk, '#8b949e')
+                vals = pat_counts[pk]
+                if max(vals) < 1:  # skip patterns that never appear
+                    continue
+                fig_pat.add_trace(go.Scatter(
+                    x=pat_dates, y=vals, name=f'{emoji} {label}',
+                    mode='lines', stackgroup='one',
+                    line=dict(width=0.5, color=color),
+                    fillcolor=color + '88',
+                    hovertemplate=f'{emoji} {label}: ' + '%{y:.1f}%<extra></extra>',
+                ))
+            fig_pat.update_layout(
+                template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+                height=380, margin=dict(l=50, r=30, t=10, b=40),
+                yaxis=dict(title='% of Universe', gridcolor='#21262d', range=[0, 100]),
+                xaxis=dict(gridcolor='#21262d'),
+                legend=dict(orientation='h', y=-0.2, font=dict(size=10)),
+                hovermode='x unified',
+            )
+            st.plotly_chart(fig_pat, use_container_width=True, key='mp_pattern_flow')
+
+
+# ============================================
 # UI: RANKINGS TAB — ALL TIME BEST (v3.0)
 # ============================================
 
@@ -7465,10 +8079,13 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_ranking, tab_search, tab_backtest, tab_movers, tab_export, tab_about = st.tabs([
-        "🏆 Rankings", "🔍 Search & Analyze",
+    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_movers, tab_export, tab_about = st.tabs([
+        "📡 Market Pulse", "🏆 Rankings", "🔍 Search & Analyze",
         "📊 Backtest", "🔥 Top Movers", "📤 Export", "ℹ️ About"
     ])
+
+    with tab_pulse:
+        render_market_pulse_tab(filtered_df, traj_df, histories, metadata)
 
     with tab_ranking:
         render_rankings_tab(filtered_df, traj_df, histories, metadata)
