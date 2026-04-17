@@ -5672,7 +5672,7 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
     g_cnt, g_avg, g_med, g_best = _stats(gainers)
     d_cnt, d_avg, d_med, d_worst = _stats(decliners)
     st.markdown(f"""
-    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:14px;">
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
         <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">{g_cnt}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Climbers</div></div>
@@ -5717,17 +5717,15 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
         enriched = df_mv.merge(enrich_df, on='ticker', how='left')
 
         col_hdr = (
-            '<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
-            'background:#161b22;border-bottom:1px solid #30363d;font-size:0.72rem;color:#6e7681;'
+            '<div style="display:flex;align-items:center;padding:5px 10px;gap:6px;'
+            'background:#161b22;border-bottom:1px solid #30363d;font-size:0.70rem;color:#6e7681;'
             'text-transform:uppercase;letter-spacing:0.5px;">'
-            '<span style="min-width:28px;text-align:center;color:#6e7681;font-size:0.68rem;">#</span>'
-            '<span style="min-width:44px;text-align:right;">Chg</span>'
+            '<span style="min-width:24px;text-align:center;">#</span>'
+            '<span style="min-width:38px;text-align:right;">Chg</span>'
             '<span style="flex:1;">Stock</span>'
-            '<span style="min-width:72px;text-align:left;">Sector</span>'
-            '<span style="min-width:56px;text-align:right;">Price</span>'
-            '<span style="min-width:80px;text-align:center;">Prev → Now</span>'
-            '<span style="min-width:32px;text-align:center;">Grd</span>'
-            '<span style="min-width:36px;text-align:right;">Score</span></div>')
+            '<span style="min-width:48px;text-align:right;">Price</span>'
+            '<span style="min-width:28px;text-align:center;">Grd</span>'
+            '<span style="min-width:32px;text-align:right;">Score</span></div>')
 
         rows_html = [col_hdr]
         for i, (_, m) in enumerate(enriched.iterrows()):
@@ -5735,8 +5733,6 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             ts = float(m.get('trajectory_score', 0) if pd.notna(m.get('trajectory_score')) else 0)
             gr = str(m.get('grade', '—') if pd.notna(m.get('grade')) else '—')
             gc = GRADE_COLORS.get(gr, '#8b949e')
-            sector_raw = str(m.get('sector', '') if pd.notna(m.get('sector')) else '')
-            sector_short = _safe(sector_raw[:14]) if sector_raw else '—'
             stripe = 'rgba(22,27,34,0.5)' if i % 2 else 'transparent'
             chg_c = '#3fb950' if rc > 0 else ('#f85149' if rc < 0 else '#8b949e')
             chg_sign = '+' if rc > 0 else ''
@@ -5749,30 +5745,24 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             else:
                 price_str = '—'
 
-            prev_r = int(m.get('prev_rank', 0) if pd.notna(m.get('prev_rank')) else 0)
-            curr_r = int(m.get('current_rank', 0) if pd.notna(m.get('current_rank')) else 0)
             ticker_esc = _safe(str(m.get('ticker', '')))
-            comp_esc = _safe(str(m.get('company_name', '') if pd.notna(m.get('company_name')) else '')[:22])
+            comp_esc = _safe(str(m.get('company_name', '') if pd.notna(m.get('company_name')) else '')[:18])
 
             rows_html.append(
-                f'<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
+                f'<div style="display:flex;align-items:center;padding:5px 10px;gap:6px;'
                 f'background:{stripe};border-bottom:1px solid #21262d;">'
-                f'<span style="min-width:28px;text-align:center;color:#6e7681;font-size:0.72rem;'
+                f'<span style="min-width:24px;text-align:center;color:#6e7681;font-size:0.70rem;'
                 f'font-variant-numeric:tabular-nums;">{i+1}</span>'
-                f'<span style="color:{chg_c};font-weight:800;font-size:0.88rem;min-width:44px;'
+                f'<span style="color:{chg_c};font-weight:800;font-size:0.85rem;min-width:38px;'
                 f'text-align:right;font-variant-numeric:tabular-nums;">{chg_sign}{rc}</span>'
-                f'<div style="flex:1;overflow:hidden;white-space:nowrap;">'
-                f'<span style="color:#e6edf3;font-weight:600;font-size:0.85rem;">{ticker_esc}</span>'
-                f'<span style="color:#8b949e;font-size:0.73rem;margin-left:6px;">{comp_esc}</span></div>'
-                f'<span style="color:#8b949e;font-size:0.75rem;min-width:72px;overflow:hidden;'
-                f'white-space:nowrap;text-overflow:ellipsis;">{sector_short}</span>'
-                f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:56px;'
+                f'<div style="flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'
+                f'<span style="color:#e6edf3;font-weight:600;font-size:0.82rem;">{ticker_esc}</span>'
+                f'<span style="color:#8b949e;font-size:0.70rem;margin-left:4px;">{comp_esc}</span></div>'
+                f'<span style="color:#d2a8ff;font-weight:600;font-size:0.80rem;min-width:48px;'
                 f'text-align:right;font-variant-numeric:tabular-nums;">{price_str}</span>'
-                f'<span style="color:#8b949e;font-size:0.8rem;min-width:80px;text-align:center;'
-                f'font-variant-numeric:tabular-nums;">{prev_r} → {curr_r}</span>'
-                f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:32px;'
+                f'<span style="color:{gc};font-weight:700;font-size:0.80rem;min-width:28px;'
                 f'text-align:center;">{_safe(gr)}</span>'
-                f'<span style="color:#FF6B35;font-weight:600;font-size:0.82rem;min-width:36px;'
+                f'<span style="color:#FF6B35;font-weight:600;font-size:0.80rem;min-width:32px;'
                 f'text-align:right;font-variant-numeric:tabular-nums;">{ts:.0f}</span></div>')
 
         body = (f'<div style="background:#0d1117;border-radius:0 0 10px 10px;border:1px solid #30363d;'
