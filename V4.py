@@ -4087,6 +4087,25 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
     """
     with st.sidebar:
         # ═══════════════════════════════════════════════
+        # 🎯 QUICK ACTIONS — refresh + cache (like Wave Detection)
+        # ═══════════════════════════════════════════════
+        st.markdown('<div class="sb-section-head">🎯 QUICK ACTIONS</div>', unsafe_allow_html=True)
+        qa_col1, qa_col2 = st.columns(2)
+        with qa_col1:
+            if st.button("🔄 Refresh", key='sb_refresh', use_container_width=True, type='primary'):
+                st.session_state.pop('_traj_key', None)
+                st.session_state.pop('_traj_result', None)
+                st.rerun()
+        with qa_col2:
+            if st.button("🧹 Clear Cache", key='sb_clear_cache', use_container_width=True):
+                st.cache_data.clear()
+                st.session_state.pop('_traj_key', None)
+                st.session_state.pop('_traj_result', None)
+                st.rerun()
+
+        st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+
+        # ═══════════════════════════════════════════════
         # DATA STATUS — live pulse card
         # ═══════════════════════════════════════════════
         st.markdown(f"""
@@ -4111,8 +4130,10 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         """, unsafe_allow_html=True)
 
         # ═══════════════════════════════════════════════
-        # 🧹 CLEAR ALL FILTERS
+        # 🔍 SMART FILTERS — active count + clear all
         # ═══════════════════════════════════════════════
+        st.markdown('<div class="sb-section-head">🔍 SMART FILTERS</div>', unsafe_allow_html=True)
+
         _sb_keys = [
             'sb_quick', 'sb_score_range', 'sb_alpha_range', 'sb_conviction_range',
             'sb_grade', 'sb_weeks', 'sb_pa', 'sb_md', 'sb_exit_risk',
@@ -4123,12 +4144,36 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             'sb_fundamental', 'sb_rank_chg', 'sb_persist', 'sb_rankvol',
             'sb_cat', 'sb_sector', 'sb_industry', 'sb_market_state',
         ]
-        if st.button("🧹 Clear All Filters", key='sb_clear_all', use_container_width=True,
-                     type='secondary'):
+
+        # Count active filters
+        _active = 0
+        _defaults = {
+            'sb_quick': 'None', 'sb_score_range': (0, 100), 'sb_alpha_range': (0, 100),
+            'sb_conviction_range': (0, 100), 'sb_grade': [], 'sb_pa': 'All',
+            'sb_md': 'All', 'sb_exit_risk': 'All', 'sb_hot_streak': False,
+            'sb_streak': (-10, 10), 'sb_tmi': (0, 100), 'sb_hurst': 'All',
+            'sb_rally': [], 'sb_gain_preset': 'All', 'sb_age_preset': 'All',
+            'sb_gap_preset': 'All', 'sb_wf_label': 'All', 'sb_confluence': (0, 100),
+            'sb_inst_flow': (0, 100), 'sb_harmony': (0, 100), 'sb_fundamental': (0, 100),
+            'sb_rank_chg': 'All', 'sb_persist': (0, 20), 'sb_rankvol': 'All',
+            'sb_cat': [], 'sb_sector': [], 'sb_industry': [], 'sb_market_state': [],
+        }
+        for _k in _sb_keys:
+            _val = st.session_state.get(_k)
+            if _val is not None and _k in _defaults and _val != _defaults[_k]:
+                _active += 1
+
+        if _active > 0:
+            st.info(f"🔍 **{_active} filter{'s' if _active > 1 else ''} active**")
+
+        if st.button("🗑️ Clear All Filters", key='sb_clear_all', use_container_width=True,
+                     type='primary' if _active > 0 else 'secondary'):
             for _k in _sb_keys:
                 if _k in st.session_state:
                     del st.session_state[_k]
             st.rerun()
+
+        st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
 
         # ═══════════════════════════════════════════════
         # § 1  QUICK FILTERS — one-click presets (TOP for fast access)
