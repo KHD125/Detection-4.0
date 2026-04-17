@@ -716,6 +716,10 @@ st.markdown("""
         text-transform: uppercase; letter-spacing: 0.8px;
         margin: 14px 0 6px 0; display: flex; align-items: center; gap: 5px;
     }
+    .sb-divider {
+        height: 1px; background: linear-gradient(90deg, transparent, #30363d, transparent);
+        margin: 12px 0;
+    }
 </style>
 
 """, unsafe_allow_html=True)
@@ -4024,9 +4028,15 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
 # ============================================
 
 def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
-    """Render sidebar with premium data info card and collapsible global filters"""
+    """Render sidebar with premium data info card and collapsible global filters.
+    
+    v10.1 — Redesigned sidebar: 7 logical sections, 30+ filters,
+    smart defaults, grouped by decision workflow.
+    """
     with st.sidebar:
-        # ── Glassmorphism Data Status Card ──
+        # ═══════════════════════════════════════════════
+        # DATA STATUS — live pulse card
+        # ═══════════════════════════════════════════════
         st.markdown(f"""
         <div class="sb-status-card">
             <div class="sb-status-row">
@@ -4048,7 +4058,228 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Sector / Category Filters (collapsible) ──
+        # ═══════════════════════════════════════════════
+        # § 1  QUICK FILTERS — one-click presets (TOP for fast access)
+        # ═══════════════════════════════════════════════
+        st.markdown('<div class="sb-section-head">⚡ QUICK FILTERS</div>', unsafe_allow_html=True)
+        quick_filter = st.radio(
+            "Preset",
+            ['None',
+             '🏆 Max Alpha (Top 15)',
+             '🧪 EARLY_RIDE_PROVEN (Top 10)',
+             'Conviction ≥ 65',
+             '🚀 Rockets Only',
+             '🎯 Elite Only',
+             '📈 Climbers',
+             '⚡ Breakouts',
+             '🏔️ At Peak',
+             '🔥 Momentum',
+             '💥 Crashes',
+             '⛰️ Topping',
+             '⏳ Consolidating',
+             'Positional > 80'],
+            index=0, key='sb_quick', label_visibility='collapsed')
+
+        st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+
+        # ═══════════════════════════════════════════════
+        # § 2  SCORING & QUALITY — the money filters
+        # ═══════════════════════════════════════════════
+        with st.expander("🎯 Scoring & Quality", expanded=False):
+            st.caption("Core metrics that drive stock selection")
+
+            # T-Score range
+            score_range = st.slider(
+                "T-Score Range", 0, 100, (0, 100), key='sb_score_range',
+                help="Trajectory Score — the master 8-component composite")
+
+            # Alpha Score range
+            alpha_range = st.slider(
+                "Alpha Score Range", 0, 100, (0, 100), key='sb_alpha_range',
+                help="Forward-return predictor (near-high, breakout, persistence, position)")
+
+            # Conviction range
+            conviction_range = st.slider(
+                "Conviction Range", 0, 100, (0, 100), key='sb_conviction_range',
+                help="12-signal confidence score")
+
+            # Grade filter
+            grade_options = ['All', 'S — Elite', 'A — Strong', 'B — Above Avg', 'C — Average', 'D — Below Avg', 'F — Weak']
+            grade_map = {'S — Elite': 'S', 'A — Strong': 'A', 'B — Above Avg': 'B',
+                         'C — Average': 'C', 'D — Below Avg': 'D', 'F — Weak': 'F'}
+            selected_grades = st.multiselect(
+                "Grade", grade_options[1:], default=[], placeholder="All grades",
+                key='sb_grade', help="Letter grade from T-Score")
+
+            # Min Weeks of Data
+            min_weeks = st.slider(
+                "Min Weeks of Data", 2, metadata['total_weeks'],
+                MIN_WEEKS_DEFAULT, key='sb_weeks',
+                help="Stocks with fewer weeks are excluded")
+
+        # ═══════════════════════════════════════════════
+        # § 3  SIGNALS & MOMENTUM — trend health
+        # ═══════════════════════════════════════════════
+        with st.expander("📡 Signals & Momentum", expanded=False):
+            st.caption("Momentum health and warning signals")
+
+            # Price Alignment
+            pa_options = ['All', '💰 Confirmed', '⚠️ Divergent', '➖ Neutral']
+            selected_pa = st.selectbox("Price Alignment", pa_options, index=0, key='sb_pa')
+
+            # Momentum Decay
+            md_options = ['All', '✅ No Decay', '🔻 High Decay', '⚡ Moderate Decay', '~ Mild Decay']
+            selected_md = st.selectbox("Momentum Decay", md_options, index=0, key='sb_md')
+
+            st.markdown("---")
+
+            # Exit Risk
+            exit_options = ['All', '🟢 Safe (0-25)', '🟡 Watch (25-50)', '🟠 Caution (50-75)', '🔴 Danger (75-100)']
+            selected_exit = st.selectbox("Exit Risk Level", exit_options, index=0, key='sb_exit_risk')
+
+            # Hot Streak (consecutive improvements)
+            hot_streak_only = st.checkbox("🔥 Hot Streak Only", value=False, key='sb_hot_streak',
+                                         help="Show only stocks on a hot streak (3+ improving weeks)")
+
+            # Streak filter
+            streak_range = st.slider(
+                "Rank Streak (weeks)", -10, 10, (-10, 10), key='sb_streak',
+                help="Positive = consecutive rank improvements, Negative = declines")
+
+            st.markdown("---")
+
+            # TMI range
+            tmi_range = st.slider(
+                "TMI Range", 0, 100, (0, 100), key='sb_tmi',
+                help="Trajectory Momentum Index — velocity + trend combined")
+
+            # Hurst Exponent
+            hurst_options = ['All', '📈 Trending (> 0.6)', '〰️ Random Walk (0.4–0.6)', '📉 Mean-Reverting (< 0.4)']
+            selected_hurst = st.selectbox("Hurst Exponent", hurst_options, index=0, key='sb_hurst',
+                                          help="Persistence of rank trajectory")
+
+        # ═══════════════════════════════════════════════
+        # § 4  RALLY LEG STATUS — timing filters
+        # ═══════════════════════════════════════════════
+        with st.expander("📈 Rally Leg Status", expanded=False):
+            st.caption("Where is the stock in its current rally?")
+
+            # Stage multi-select
+            rally_stage_options = ['🌱 Fresh (<5%)', '🚀 Early (5-15%)', '🏃 Running (15-30%)',
+                                   '🧱 Mature (30-50%)', '⏳ Late (>50%)']
+            rally_stage_map = {
+                '🌱 Fresh (<5%)': 'FRESH', '🚀 Early (5-15%)': 'EARLY',
+                '🏃 Running (15-30%)': 'RUNNING', '🧱 Mature (30-50%)': 'MATURE', '⏳ Late (>50%)': 'LATE'
+            }
+            selected_rally = st.multiselect(
+                "Stage", rally_stage_options, default=[], placeholder="All stages", key='sb_rally')
+
+            st.markdown("---")
+
+            # Gain this leg
+            gain_presets = ['All', '🟢 Fresh Start (<5%)', '🔵 Early Momentum (5-15%)',
+                           '🟠 Strong Run (15-30%)', '🔴 Extended (>30%)', '🎯 Custom Range']
+            gain_choice = st.selectbox("Gain This Leg", gain_presets, index=0, key='sb_gain_preset')
+            gain_range = (0.0, 999.0)
+            if gain_choice == '🟢 Fresh Start (<5%)':
+                gain_range = (0.0, 5.0)
+            elif gain_choice == '🔵 Early Momentum (5-15%)':
+                gain_range = (5.0, 15.0)
+            elif gain_choice == '🟠 Strong Run (15-30%)':
+                gain_range = (15.0, 30.0)
+            elif gain_choice == '🔴 Extended (>30%)':
+                gain_range = (30.0, 999.0)
+            elif gain_choice == '🎯 Custom Range':
+                gain_range = st.slider("Gain % range", 0.0, 100.0, (0.0, 100.0), step=1.0, key='sb_gain_slider')
+
+            st.markdown("---")
+
+            # Age of move
+            age_presets = ['All', '⚡ Just Started (0-2w)', '🕐 Recent (2-5w)',
+                          '📅 Established (5-10w)', '🏛️ Mature (10w+)', '🎯 Custom Range']
+            age_choice = st.selectbox("Age of Move", age_presets, index=0, key='sb_age_preset')
+            age_range = (0, 99)
+            if age_choice == '⚡ Just Started (0-2w)':
+                age_range = (0, 2)
+            elif age_choice == '🕐 Recent (2-5w)':
+                age_range = (2, 5)
+            elif age_choice == '📅 Established (5-10w)':
+                age_range = (5, 10)
+            elif age_choice == '🏛️ Mature (10w+)':
+                age_range = (10, 99)
+            elif age_choice == '🎯 Custom Range':
+                age_range = st.slider("Age (weeks)", 0, 20, (0, 20), key='sb_age_slider')
+
+            st.markdown("---")
+
+            # Gap to 52w high
+            gap_presets = ['All', '🔥 Near High (<5%)', '✅ Close (5-15%)',
+                          '📏 Moderate Gap (15-30%)', '📉 Far from High (>30%)', '🎯 Custom Range']
+            gap_choice = st.selectbox("Gap to 52w High", gap_presets, index=0, key='sb_gap_preset')
+            gap_range = (0.0, 999.0)
+            if gap_choice == '🔥 Near High (<5%)':
+                gap_range = (0.0, 5.0)
+            elif gap_choice == '✅ Close (5-15%)':
+                gap_range = (5.0, 15.0)
+            elif gap_choice == '📏 Moderate Gap (15-30%)':
+                gap_range = (15.0, 30.0)
+            elif gap_choice == '📉 Far from High (>30%)':
+                gap_range = (30.0, 999.0)
+            elif gap_choice == '🎯 Custom Range':
+                gap_range = st.slider("Gap % range", 0.0, 80.0, (0.0, 80.0), step=1.0, key='sb_gap_slider')
+
+        # ═══════════════════════════════════════════════
+        # § 5  WAVE FUSION — cross-system validation
+        # ═══════════════════════════════════════════════
+        with st.expander("🌊 Wave Fusion Signals", expanded=False):
+            st.caption("Cross-system agreement between WAVE + Trajectory")
+
+            # Wave Fusion Label
+            wf_label_options = ['All', '🌊 Strong', '✅ Confirmed', '➖ Neutral', '⚠️ Weak', '🔇 Conflict']
+            wf_label_map = {
+                '🌊 Strong': 'WAVE_STRONG', '✅ Confirmed': 'WAVE_CONFIRMED',
+                '➖ Neutral': 'WAVE_NEUTRAL', '⚠️ Weak': 'WAVE_WEAK', '🔇 Conflict': 'WAVE_CONFLICT'
+            }
+            selected_wf_label = st.selectbox("Wave Fusion", wf_label_options, index=0, key='sb_wf_label')
+
+            st.markdown("---")
+
+            # Sub-scores
+            confluence_range = st.slider("Confluence", 0, 100, (0, 100), key='sb_confluence',
+                                         help="WAVE ↔ Trajectory agreement")
+            inst_flow_range = st.slider("Inst. Flow", 0, 100, (0, 100), key='sb_inst_flow',
+                                        help="Money flow + VMI + RVOL")
+            harmony_range = st.slider("Harmony", 0, 100, (0, 100), key='sb_harmony',
+                                      help="WAVE 5-check consistency")
+            fundamental_range = st.slider("Fundamental", 0, 100, (0, 100), key='sb_fundamental',
+                                          help="EPS growth + PE quality")
+
+        # ═══════════════════════════════════════════════
+        # § 6  RANK DYNAMICS — rank movement filters
+        # ═══════════════════════════════════════════════
+        with st.expander("📊 Rank Dynamics", expanded=False):
+            st.caption("How the rank is moving week-over-week")
+
+            # Rank change (last week)
+            rank_chg_options = ['All', '⬆️ Improved (dropped rank #)', '⬇️ Worsened (rose rank #)', '➡️ Unchanged']
+            selected_rank_chg = st.selectbox(
+                "Last Week Direction", rank_chg_options, index=0, key='sb_rank_chg',
+                help="Rank # decrease = improvement, increase = worse")
+
+            # Persistence weeks
+            persist_range = st.slider(
+                "Persistence (weeks in top)", 0, 20, (0, 20), key='sb_persist',
+                help="Consecutive weeks the stock has been in top ranks")
+
+            # Rank volatility
+            rankvol_options = ['All', '🎯 Stable (< 10)', '📏 Normal (10-20)', '🎢 Volatile (> 20)']
+            selected_rankvol = st.selectbox(
+                "Rank Volatility", rankvol_options, index=0, key='sb_rankvol',
+                help="How much the rank fluctuates week-to-week")
+
+        # ═══════════════════════════════════════════════
+        # § 7  SECTOR & CATEGORY — universe slicing
+        # ═══════════════════════════════════════════════
         with st.expander("🏢 Sector & Category", expanded=False):
             categories = sorted(traj_df['category'].dropna().unique().tolist())
             selected_cats = st.multiselect("Category", categories, default=[], placeholder="All", key='sb_cat')
@@ -4066,120 +4297,27 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             industries = sorted(industry_pool['industry'].dropna().loc[lambda s: s.str.strip() != ''].unique().tolist())
             selected_industries = st.multiselect("Industry", industries, default=[], placeholder="All", key='sb_industry')
 
-        # ── Signal Filters (collapsible) ──
-        with st.expander("📡 Signal Filters", expanded=False):
-            pa_options = ['All', '💰 Confirmed', '⚠️ Divergent', '➖ Neutral']
-            selected_pa = st.selectbox("Price Alignment", pa_options, index=0, key='sb_pa')
-
-            md_options = ['All', '✅ No Decay', '🔻 High Decay', '⚡ Moderate Decay', '~ Mild Decay']
-            selected_md = st.selectbox("Momentum Decay", md_options, index=0, key='sb_md')
-
-        # ── Rally Leg Status Filters (collapsible) ──
-        with st.expander("📈 Rally Leg Status", expanded=False):
-            # 1) Stage multi-select
-            rally_stage_options = ['🌱 Fresh (<5%)', '🚀 Early (5-15%)', '🏃 Running (15-30%)', '🧱 Mature (30-50%)', '⏳ Late (>50%)']
-            rally_stage_map = {
-                '🌱 Fresh (<5%)': 'FRESH', '🚀 Early (5-15%)': 'EARLY',
-                '🏃 Running (15-30%)': 'RUNNING', '🧱 Mature (30-50%)': 'MATURE', '⏳ Late (>50%)': 'LATE'
-            }
-            selected_rally = st.multiselect("Stage", rally_stage_options, default=[], placeholder="All stages", key='sb_rally')
-
             st.markdown("---")
 
-            # 2) Gain this leg
-            gain_presets = ['All', '🟢 Fresh Start (<5%)', '🔵 Early Momentum (5-15%)',
-                           '🟠 Strong Run (15-30%)', '🔴 Extended (>30%)', '🎯 Custom Range']
-            gain_choice = st.selectbox("Gain This Leg", gain_presets, index=0, key='sb_gain_preset')
-            gain_range = (0.0, 999.0)  # default: all
-            if gain_choice == '🟢 Fresh Start (<5%)':
-                gain_range = (0.0, 5.0)
-            elif gain_choice == '🔵 Early Momentum (5-15%)':
-                gain_range = (5.0, 15.0)
-            elif gain_choice == '🟠 Strong Run (15-30%)':
-                gain_range = (15.0, 30.0)
-            elif gain_choice == '🔴 Extended (>30%)':
-                gain_range = (30.0, 999.0)
-            elif gain_choice == '🎯 Custom Range':
-                gain_range = st.slider("Gain % range", 0.0, 100.0, (0.0, 100.0), step=1.0, key='sb_gain_slider')
+            # Market State (from source CSV)
+            if 'market_state' in traj_df.columns:
+                ms_vals = sorted(traj_df['market_state'].dropna().unique().tolist())
+                if ms_vals:
+                    selected_market_states = st.multiselect(
+                        "Market State", ms_vals, default=[], placeholder="All states",
+                        key='sb_market_state', help="Source-level market state tag")
+                else:
+                    selected_market_states = []
+            else:
+                selected_market_states = []
 
-            st.markdown("---")
+        # ═══════════════════════════════════════════════
+        # FOOTER
+        # ═══════════════════════════════════════════════
+        st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+        st.caption("v10.1 · Data-Driven · Max Alpha")
 
-            # 3) Age of move (weeks since trough)
-            age_presets = ['All', '⚡ Just Started (0-2w)', '🕐 Recent (2-5w)',
-                          '📅 Established (5-10w)', '🏛️ Mature (10w+)', '🎯 Custom Range']
-            age_choice = st.selectbox("Age of Move", age_presets, index=0, key='sb_age_preset')
-            age_range = (0, 99)  # default: all
-            if age_choice == '⚡ Just Started (0-2w)':
-                age_range = (0, 2)
-            elif age_choice == '🕐 Recent (2-5w)':
-                age_range = (2, 5)
-            elif age_choice == '📅 Established (5-10w)':
-                age_range = (5, 10)
-            elif age_choice == '🏛️ Mature (10w+)':
-                age_range = (10, 99)
-            elif age_choice == '🎯 Custom Range':
-                age_range = st.slider("Age (weeks)", 0, 20, (0, 20), key='sb_age_slider')
-
-            st.markdown("---")
-
-            # 4) Gap to 52w high
-            gap_presets = ['All', '🔥 Near High (<5%)', '✅ Close (5-15%)',
-                          '📏 Moderate Gap (15-30%)', '📉 Far from High (>30%)', '🎯 Custom Range']
-            gap_choice = st.selectbox("Gap to 52w High", gap_presets, index=0, key='sb_gap_preset')
-            gap_range = (0.0, 999.0)  # default: all
-            if gap_choice == '🔥 Near High (<5%)':
-                gap_range = (0.0, 5.0)
-            elif gap_choice == '✅ Close (5-15%)':
-                gap_range = (5.0, 15.0)
-            elif gap_choice == '📏 Moderate Gap (15-30%)':
-                gap_range = (15.0, 30.0)
-            elif gap_choice == '📉 Far from High (>30%)':
-                gap_range = (30.0, 999.0)
-            elif gap_choice == '🎯 Custom Range':
-                gap_range = st.slider("Gap % range", 0.0, 80.0, (0.0, 80.0), step=1.0, key='sb_gap_slider')
-
-        # ── Fusion Signals Filter (collapsible) ──
-        with st.expander("📡 Fusion Signals Filter", expanded=False):
-            # Wave Fusion Label quick filter
-            wf_label_options = ['All', '🌊 Strong', '✅ Confirmed', '➖ Neutral', '⚠️ Weak', '🔇 Conflict']
-            wf_label_map = {
-                '🌊 Strong': 'WAVE_STRONG', '✅ Confirmed': 'WAVE_CONFIRMED',
-                '➖ Neutral': 'WAVE_NEUTRAL', '⚠️ Weak': 'WAVE_WEAK', '🔇 Conflict': 'WAVE_CONFLICT'
-            }
-            selected_wf_label = st.selectbox("Wave Fusion", wf_label_options, index=0, key='sb_wf_label')
-
-            st.markdown("---")
-
-            # Confluence (0-100) — agreement between WAVE and Trajectory scoring
-            confluence_range = st.slider("Confluence", 0, 100, (0, 100), key='sb_confluence')
-
-            # Institutional Flow (0-100) — money flow + VMI + RVOL strength
-            inst_flow_range = st.slider("Inst. Flow", 0, 100, (0, 100), key='sb_inst_flow')
-
-            # Momentum Harmony (0-100) — WAVE's 5-check harmony score
-            harmony_range = st.slider("Harmony", 0, 100, (0, 100), key='sb_harmony')
-
-            # Fundamental Quality (0-100) — EPS growth + PE reasonableness
-            fundamental_range = st.slider("Fundamental", 0, 100, (0, 100), key='sb_fundamental')
-
-        # ── Thresholds (collapsible) ──
-        with st.expander("🎚️ Thresholds", expanded=False):
-            min_weeks = st.slider("Min Weeks of Data", 2, metadata['total_weeks'], MIN_WEEKS_DEFAULT, key='sb_weeks')
-            min_score = st.slider("Min Trajectory Score", 0, 100, 0, key='sb_score')
-
-        # ── Quick Filters ──
-        st.markdown('<div class="sb-section-head">⚡ QUICK FILTERS</div>', unsafe_allow_html=True)
-        quick_filter = st.radio("Preset", ['None', '🚀 Rockets Only', '🎯 Elite Only',
-                                           '📈 Climbers', '⚡ Breakouts', '🏔️ At Peak',
-                                           '🔥 Momentum', '💥 Crashes', '⛰️ Topping',
-                                           '⏳ Consolidating', 'Conviction ≥ 65', 'Positional > 80',
-                                           '🧪 EARLY_RIDE_PROVEN (Top 10 Conviction)',
-                                           '🏆 Max Alpha (Top 15)'],
-                                index=0, key='sb_quick', label_visibility='collapsed')
-
-        st.markdown("---")
-        st.caption("v9.0 · Data-Driven · Sector-Relative")
-
+    # ── Return filter dict ──
     return {
         'categories': selected_cats,
         'sectors': selected_sectors,
@@ -4187,7 +4325,11 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'price_alignment': selected_pa,
         'momentum_decay': selected_md,
         'min_weeks': min_weeks,
-        'min_score': min_score,
+        'min_score': score_range[0],
+        'max_score': score_range[1],
+        'alpha_range': alpha_range,
+        'conviction_range': conviction_range,
+        'grades': [grade_map[g] for g in selected_grades],
         'quick_filter': quick_filter,
         'rally_stage': [rally_stage_map[r] for r in selected_rally],
         'gain_range': gain_range,
@@ -4198,25 +4340,59 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'inst_flow_range': inst_flow_range,
         'harmony_range': harmony_range,
         'fundamental_range': fundamental_range,
+        'exit_risk': selected_exit,
+        'hot_streak_only': hot_streak_only,
+        'streak_range': streak_range,
+        'tmi_range': tmi_range,
+        'hurst': selected_hurst,
+        'rank_change_dir': selected_rank_chg,
+        'persist_range': persist_range,
+        'rankvol': selected_rankvol,
+        'market_states': selected_market_states,
     }
 
 
 def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
-    """Apply sidebar filters to trajectory DataFrame"""
+    """Apply sidebar filters to trajectory DataFrame.
+
+    v10.1 — Handles all 30+ filter keys from the redesigned sidebar.
+    """
     df = traj_df.copy()
 
-    # Category
+    # ── § 7: Sector & Category ──
     if filters['categories']:
         df = df[df['category'].isin(filters['categories'])]
-
-    # Sector
     if filters['sectors']:
         df = df[df['sector'].isin(filters['sectors'])]
-
-    # Industry
     if filters.get('industries'):
         df = df[df['industry'].isin(filters['industries'])]
+    if filters.get('market_states') and 'market_state' in df.columns:
+        df = df[df['market_state'].isin(filters['market_states'])]
 
+    # ── § 2: Scoring & Quality ──
+    # T-Score range
+    s_lo, s_hi = filters.get('min_score', 0), filters.get('max_score', 100)
+    df = df[(df['trajectory_score'] >= s_lo) & (df['trajectory_score'] <= s_hi)]
+
+    # Alpha Score range
+    a_lo, a_hi = filters.get('alpha_range', (0, 100))
+    if 'alpha_score' in df.columns and (a_lo > 0 or a_hi < 100):
+        df = df[(df['alpha_score'] >= a_lo) & (df['alpha_score'] <= a_hi)]
+
+    # Conviction range
+    c_lo, c_hi = filters.get('conviction_range', (0, 100))
+    if 'conviction' in df.columns and (c_lo > 0 or c_hi < 100):
+        df = df[(df['conviction'] >= c_lo) & (df['conviction'] <= c_hi)]
+
+    # Grade filter
+    grades = filters.get('grades', [])
+    if grades and 'grade' in df.columns:
+        df = df[df['grade'].isin(grades)]
+
+    # Min weeks
+    df = df[df['weeks'] >= filters['min_weeks']]
+
+    # ── § 3: Signals & Momentum ──
     # Price Alignment
     pa = filters.get('price_alignment', 'All')
     if pa == '💰 Confirmed':
@@ -4237,60 +4413,105 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     elif md == '✅ No Decay':
         df = df[~df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE', 'DECAY_MILD'])]
 
-    # Rally Stage
-    rally_stages = filters.get('rally_stage', [])
-    if rally_stages:
-        if 'rally_stage' in df.columns:
-            df = df[df['rally_stage'].isin(rally_stages)]
+    # Exit Risk
+    exit_f = filters.get('exit_risk', 'All')
+    if exit_f != 'All' and 'exit_risk' in df.columns:
+        if exit_f == '🟢 Safe (0-25)':
+            df = df[df['exit_risk'] <= 25]
+        elif exit_f == '🟡 Watch (25-50)':
+            df = df[(df['exit_risk'] > 25) & (df['exit_risk'] <= 50)]
+        elif exit_f == '🟠 Caution (50-75)':
+            df = df[(df['exit_risk'] > 50) & (df['exit_risk'] <= 75)]
+        elif exit_f == '🔴 Danger (75-100)':
+            df = df[df['exit_risk'] > 75]
 
-    # Gain this leg
+    # Hot Streak
+    if filters.get('hot_streak_only') and 'hot_streak' in df.columns:
+        df = df[df['hot_streak'] == True]
+
+    # Streak range
+    s_lo_s, s_hi_s = filters.get('streak_range', (-10, 10))
+    if 'streak' in df.columns and (s_lo_s > -10 or s_hi_s < 10):
+        df = df[(df['streak'] >= s_lo_s) & (df['streak'] <= s_hi_s)]
+
+    # TMI range
+    tmi_lo, tmi_hi = filters.get('tmi_range', (0, 100))
+    if 'tmi' in df.columns and (tmi_lo > 0 or tmi_hi < 100):
+        df = df[(df['tmi'] >= tmi_lo) & (df['tmi'] <= tmi_hi)]
+
+    # Hurst Exponent
+    hurst_f = filters.get('hurst', 'All')
+    if hurst_f != 'All' and 'hurst' in df.columns:
+        if hurst_f == '📈 Trending (> 0.6)':
+            df = df[df['hurst'] > 0.6]
+        elif hurst_f == '〰️ Random Walk (0.4–0.6)':
+            df = df[(df['hurst'] >= 0.4) & (df['hurst'] <= 0.6)]
+        elif hurst_f == '📉 Mean-Reverting (< 0.4)':
+            df = df[df['hurst'] < 0.4]
+
+    # ── § 4: Rally Leg Status ──
+    rally_stages = filters.get('rally_stage', [])
+    if rally_stages and 'rally_stage' in df.columns:
+        df = df[df['rally_stage'].isin(rally_stages)]
+
     g_lo, g_hi = filters.get('gain_range', (0.0, 999.0))
     if 'rally_gain' in df.columns and (g_lo > 0 or g_hi < 999):
         df = df[(df['rally_gain'] >= g_lo) & (df['rally_gain'] <= g_hi)]
 
-    # Age of Move (rally weeks since trough)
     age_lo, age_hi = filters.get('age_range', (0, 99))
     if 'rally_weeks' in df.columns and (age_lo > 0 or age_hi < 99):
         df = df[(df['rally_weeks'] >= age_lo) & (df['rally_weeks'] <= age_hi)]
 
-    # Gap to 52w high (wave_from_high is negative; convert to positive gap)
     gap_lo, gap_hi = filters.get('gap_range', (0.0, 999.0))
     if 'wave_from_high' in df.columns and (gap_lo > 0 or gap_hi < 999):
         gap_abs = df['wave_from_high'].fillna(-999).abs()
         df = df[(gap_abs >= gap_lo) & (gap_abs <= gap_hi)]
 
-    # Wave Fusion Label
+    # ── § 5: Wave Fusion Signals ──
     wf_label = filters.get('wf_label')
     if wf_label and 'wave_fusion_label' in df.columns:
         df = df[df['wave_fusion_label'] == wf_label]
 
-    # Confluence range
-    c_lo, c_hi = filters.get('confluence_range', (0, 100))
-    if 'wave_confluence' in df.columns and (c_lo > 0 or c_hi < 100):
-        df = df[(df['wave_confluence'] >= c_lo) & (df['wave_confluence'] <= c_hi)]
+    cf_lo, cf_hi = filters.get('confluence_range', (0, 100))
+    if 'wave_confluence' in df.columns and (cf_lo > 0 or cf_hi < 100):
+        df = df[(df['wave_confluence'] >= cf_lo) & (df['wave_confluence'] <= cf_hi)]
 
-    # Institutional Flow range
     if_lo, if_hi = filters.get('inst_flow_range', (0, 100))
     if 'wave_inst_flow' in df.columns and (if_lo > 0 or if_hi < 100):
         df = df[(df['wave_inst_flow'] >= if_lo) & (df['wave_inst_flow'] <= if_hi)]
 
-    # Harmony range
     h_lo, h_hi = filters.get('harmony_range', (0, 100))
     if 'wave_harmony' in df.columns and (h_lo > 0 or h_hi < 100):
         df = df[(df['wave_harmony'] >= h_lo) & (df['wave_harmony'] <= h_hi)]
 
-    # Fundamental range
     f_lo, f_hi = filters.get('fundamental_range', (0, 100))
     if 'wave_fundamental' in df.columns and (f_lo > 0 or f_hi < 100):
         df = df[(df['wave_fundamental'] >= f_lo) & (df['wave_fundamental'] <= f_hi)]
 
-    # Min weeks
-    df = df[df['weeks'] >= filters['min_weeks']]
+    # ── § 6: Rank Dynamics ──
+    rank_chg = filters.get('rank_change_dir', 'All')
+    if rank_chg != 'All' and 'last_week_change' in df.columns:
+        if rank_chg == '⬆️ Improved (dropped rank #)':
+            df = df[df['last_week_change'] < 0]
+        elif rank_chg == '⬇️ Worsened (rose rank #)':
+            df = df[df['last_week_change'] > 0]
+        elif rank_chg == '➡️ Unchanged':
+            df = df[df['last_week_change'] == 0]
 
-    # Min score
-    df = df[df['trajectory_score'] >= filters['min_score']]
+    p_lo, p_hi = filters.get('persist_range', (0, 20))
+    if 'persistence_weeks' in df.columns and (p_lo > 0 or p_hi < 20):
+        df = df[(df['persistence_weeks'] >= p_lo) & (df['persistence_weeks'] <= p_hi)]
 
-    # Quick filters
+    rv_f = filters.get('rankvol', 'All')
+    if rv_f != 'All' and 'rank_volatility' in df.columns:
+        if rv_f == '🎯 Stable (< 10)':
+            df = df[df['rank_volatility'] < 10]
+        elif rv_f == '📏 Normal (10-20)':
+            df = df[(df['rank_volatility'] >= 10) & (df['rank_volatility'] <= 20)]
+        elif rv_f == '🎢 Volatile (> 20)':
+            df = df[df['rank_volatility'] > 20]
+
+    # ── § 1: Quick Filters (applied last — override-style) ──
     qf = filters['quick_filter']
     if qf == '🚀 Rockets Only':
         df = df[df['pattern_key'] == 'rocket']
@@ -4314,25 +4535,16 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         df = df[df['conviction'] >= 65] if 'conviction' in df.columns else df
     elif qf == 'Positional > 80':
         df = df[df['positional'] > 80]
-    elif qf == '🧪 EARLY_RIDE_PROVEN (Top 10 Conviction)':
-        # Walk-forward validated recipe:
-        # 1) Keep only early/running rally candidates
-        # 2) Rank by conviction and keep top 10 tradable picks
+    elif qf == '🧪 EARLY_RIDE_PROVEN (Top 10)':
         if 'rally_stage' in df.columns and 'conviction' in df.columns:
             early = df[df['rally_stage'].isin(['FRESH', 'EARLY', 'RUNNING'])]
             df = early.sort_values('conviction', ascending=False).head(10)
         else:
             df = df.head(0)
     elif qf == '🏆 Max Alpha (Top 15)':
-        # Pure forward-return optimization: picks stocks with highest alpha_score.
-        # Alpha Score uses ONLY statistically proven forward predictors:
-        #   near-high proximity, breakout quality, persistence, position strength,
-        #   market state, no-decay, wave fusion, early rally stage.
-        # Sector-capped at 2/sector to prevent concentration blow-ups.
         if 'alpha_score' in df.columns:
             candidates = df[df['alpha_score'] >= 40].copy()
             candidates = candidates.sort_values('alpha_score', ascending=False)
-            # Sector cap: max 2 per sector
             sector_counts = {}
             keep_idx = []
             for idx, row in candidates.iterrows():
@@ -4346,7 +4558,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         else:
             df = df.head(0)
 
-    # Re-rank after filtering (no display_n limit — applied per-tab where needed)
+    # Re-rank after filtering
     df = df.reset_index(drop=True)
     df['t_rank'] = range(1, len(df) + 1)
 
@@ -7896,7 +8108,7 @@ def main():
         st.markdown("""
         <div class="sb-brand">
             <div class="sb-brand-title">📊 RANK TRAJECTORY</div>
-            <div class="sb-brand-ver">ENGINE v9.0</div>
+            <div class="sb-brand-ver">ENGINE v10.1</div>
         </div>
         """, unsafe_allow_html=True)
 
