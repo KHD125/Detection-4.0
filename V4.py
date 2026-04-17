@@ -4035,6 +4035,30 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             elif gap_choice == '🎯 Custom Range':
                 gap_range = st.slider("Gap % range", 0.0, 80.0, (0.0, 80.0), step=1.0, key='sb_gap_slider')
 
+        # ── Fusion Signals Filter (collapsible) ──
+        with st.expander("📡 Fusion Signals Filter", expanded=False):
+            # Wave Fusion Label quick filter
+            wf_label_options = ['All', '🌊 Strong', '✅ Confirmed', '➖ Neutral', '⚠️ Weak', '🔇 Conflict']
+            wf_label_map = {
+                '🌊 Strong': 'WAVE_STRONG', '✅ Confirmed': 'WAVE_CONFIRMED',
+                '➖ Neutral': 'WAVE_NEUTRAL', '⚠️ Weak': 'WAVE_WEAK', '🔇 Conflict': 'WAVE_CONFLICT'
+            }
+            selected_wf_label = st.selectbox("Wave Fusion", wf_label_options, index=0, key='sb_wf_label')
+
+            st.markdown("---")
+
+            # Confluence (0-100) — agreement between WAVE and Trajectory scoring
+            confluence_range = st.slider("Confluence", 0, 100, (0, 100), key='sb_confluence')
+
+            # Institutional Flow (0-100) — money flow + VMI + RVOL strength
+            inst_flow_range = st.slider("Inst. Flow", 0, 100, (0, 100), key='sb_inst_flow')
+
+            # Momentum Harmony (0-100) — WAVE's 5-check harmony score
+            harmony_range = st.slider("Harmony", 0, 100, (0, 100), key='sb_harmony')
+
+            # Fundamental Quality (0-100) — EPS growth + PE reasonableness
+            fundamental_range = st.slider("Fundamental", 0, 100, (0, 100), key='sb_fundamental')
+
         # ── Thresholds (collapsible) ──
         with st.expander("🎚️ Thresholds", expanded=False):
             min_weeks = st.slider("Min Weeks of Data", 2, metadata['total_weeks'], MIN_WEEKS_DEFAULT, key='sb_weeks')
@@ -4065,6 +4089,11 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'gain_range': gain_range,
         'age_range': age_range,
         'gap_range': gap_range,
+        'wf_label': wf_label_map.get(selected_wf_label, None),
+        'confluence_range': confluence_range,
+        'inst_flow_range': inst_flow_range,
+        'harmony_range': harmony_range,
+        'fundamental_range': fundamental_range,
     }
 
 
@@ -4125,6 +4154,31 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     if 'wave_from_high' in df.columns and (gap_lo > 0 or gap_hi < 999):
         gap_abs = df['wave_from_high'].fillna(-999).abs()
         df = df[(gap_abs >= gap_lo) & (gap_abs <= gap_hi)]
+
+    # Wave Fusion Label
+    wf_label = filters.get('wf_label')
+    if wf_label and 'wave_fusion_label' in df.columns:
+        df = df[df['wave_fusion_label'] == wf_label]
+
+    # Confluence range
+    c_lo, c_hi = filters.get('confluence_range', (0, 100))
+    if 'wave_confluence' in df.columns and (c_lo > 0 or c_hi < 100):
+        df = df[(df['wave_confluence'] >= c_lo) & (df['wave_confluence'] <= c_hi)]
+
+    # Institutional Flow range
+    if_lo, if_hi = filters.get('inst_flow_range', (0, 100))
+    if 'wave_inst_flow' in df.columns and (if_lo > 0 or if_hi < 100):
+        df = df[(df['wave_inst_flow'] >= if_lo) & (df['wave_inst_flow'] <= if_hi)]
+
+    # Harmony range
+    h_lo, h_hi = filters.get('harmony_range', (0, 100))
+    if 'wave_harmony' in df.columns and (h_lo > 0 or h_hi < 100):
+        df = df[(df['wave_harmony'] >= h_lo) & (df['wave_harmony'] <= h_hi)]
+
+    # Fundamental range
+    f_lo, f_hi = filters.get('fundamental_range', (0, 100))
+    if 'wave_fundamental' in df.columns and (f_lo > 0 or f_hi < 100):
+        df = df[(df['wave_fundamental'] >= f_lo) & (df['wave_fundamental'] <= f_hi)]
 
     # Min weeks
     df = df[df['weeks'] >= filters['min_weeks']]
