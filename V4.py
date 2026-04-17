@@ -525,6 +525,35 @@ PATTERN_COLORS = {
 # ============================================
 st.markdown("""
 <style>
+    /* ── Responsive Layout: keep content inside viewport when sidebar is open ── */
+    section[data-testid="stMain"] > div.block-container {
+        max-width: 100%;
+        overflow-x: hidden;
+        box-sizing: border-box;
+    }
+    section[data-testid="stMain"] {
+        overflow-x: hidden;
+    }
+    /* Prevent any inner element from forcing horizontal scroll */
+    div[data-testid="stVerticalBlockBorderWrapper"],
+    div[data-testid="stHorizontalBlock"],
+    div[data-testid="stMarkdownContainer"],
+    div[data-testid="column"] {
+        max-width: 100%;
+        overflow-x: auto;
+        box-sizing: border-box;
+    }
+    /* Wide tables / HTML cards: shrink to fit */
+    div[data-testid="stMarkdownContainer"] > div,
+    div[data-testid="stMarkdownContainer"] table {
+        max-width: 100%;
+        overflow-x: auto;
+    }
+    /* Plotly charts should also respect container */
+    div.js-plotly-plot, div.plotly {
+        max-width: 100% !important;
+    }
+
     /* ── Hero Banner ── */
     .hero-banner {
         text-align: center; padding: 1.6rem 1.2rem 1.3rem;
