@@ -4601,11 +4601,10 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     </div>""", unsafe_allow_html=True)
 
     # ────────────────────────────────────────────────────────────
-    # SECTION 2 + 3:  Breadth Over Time  |  Sector Heatmap
+    # SECTION 2 + 3:  Breadth Over Time  |  Week-over-Week Δ
     # ────────────────────────────────────────────────────────────
-    pulse_tab1, pulse_tab2, pulse_tab3, pulse_tab4 = st.tabs([
-        "📈 Breadth Over Time", "🗺️ Sector Heatmap",
-        "🔄 Week-over-Week Δ", "📊 Grade & Pattern Flow"
+    pulse_tab1, pulse_tab3 = st.tabs([
+        "📈 Breadth Over Time", "🔄 Week-over-Week Δ"
     ])
 
     # ── 2. Breadth Over Time ─────────────────────────────────────
@@ -4686,87 +4685,12 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                 strong (B+) vs prev week</div>
             </div>""", unsafe_allow_html=True)
 
-    # ── 3. Sector Heatmap ────────────────────────────────────────
-    with pulse_tab2:
-        # Build sector × week matrix of avg score
-        sector_set = sorted(set(s for s in filtered_df['sector'].dropna().unique() if s))
-        if not sector_set:
-            st.info("No sector data available.")
-        else:
-            # Use last min(12, n_weeks) weeks for readability
-            display_weeks = weekly_snaps[-min(12, n_weeks):]
-            heat_dates = [w['date'][-5:] for w in display_weeks]  # MM-DD
-            heat_z = []
-            for sec in sector_set:
-                row = []
-                for snap in display_weeks:
-                    sec_scores = [
-                        snap['scores'][i]
-                        for i, s in enumerate(snap['sectors'])
-                        if s == sec
-                    ]
-                    row.append(round(float(np.mean(sec_scores)), 1) if sec_scores else None)
-                heat_z.append(row)
-
-            # Truncate long sector names
-            sec_labels = [s[:18] for s in sector_set]
-
-            fig_heat = go.Figure(data=go.Heatmap(
-                z=heat_z, x=heat_dates, y=sec_labels,
-                colorscale=[
-                    [0, '#f85149'], [0.25, '#da3633'], [0.4, '#d29922'],
-                    [0.5, '#21262d'], [0.65, '#238636'], [0.8, '#3fb950'],
-                    [1, '#2ea043']
-                ],
-                zmid=50, hoverongaps=False,
-                hovertemplate='%{y}<br>%{x}<br>Avg Score: %{z:.1f}<extra></extra>',
-                colorbar=dict(title=dict(text='Avg Score', font=dict(size=10)),
-                              tickfont=dict(size=9), thickness=12, len=0.9),
-            ))
-            fig_heat.update_layout(
-                template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
-                height=max(300, len(sector_set) * 28 + 80),
-                margin=dict(l=140, r=60, t=40, b=40),
-                title=dict(text='Sector Score Heatmap (Weekly)', font=dict(size=14, color='#e6edf3')),
-                xaxis=dict(side='top', tickfont=dict(size=10)),
-                yaxis=dict(tickfont=dict(size=10), autorange='reversed'),
-            )
-            st.plotly_chart(fig_heat, use_container_width=True, key='mp_sector_heat')
-
-            # Sector leader board — current week
-            sec_now = {}
-            for i, s in enumerate(latest['sectors']):
-                if s:
-                    sec_now.setdefault(s, []).append(latest['scores'][i])
-            sec_sorted = sorted(
-                [(s, float(np.mean(v)), len(v)) for s, v in sec_now.items()],
-                key=lambda x: -x[1]
-            )
-            if sec_sorted:
-                top3 = sec_sorted[:3]
-                bot3 = sec_sorted[-3:] if len(sec_sorted) > 3 else []
-                chips = ''
-                for s, avg, cnt in top3:
-                    chips += (f'<span style="background:rgba(63,185,80,0.1);border:1px solid #3fb95044;'
-                              f'color:#3fb950;padding:4px 10px;border-radius:8px;font-size:0.78rem;'
-                              f'font-weight:600;">{_html.escape(s[:16])} {avg:.0f} ({cnt})</span>')
-                for s, avg, cnt in bot3:
-                    chips += (f'<span style="background:rgba(248,81,73,0.1);border:1px solid #f8514944;'
-                              f'color:#f85149;padding:4px 10px;border-radius:8px;font-size:0.78rem;'
-                              f'font-weight:600;">{_html.escape(s[:16])} {avg:.0f} ({cnt})</span>')
-                st.markdown(f"""
-                <div style="margin-top:8px;">
-                  <span style="color:#8b949e;font-size:0.72rem;text-transform:uppercase;letter-spacing:1px;
-                      margin-right:8px;">Leaders → Laggards:</span>
-                  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">{chips}</div>
-                </div>""", unsafe_allow_html=True)
-
-    # ── 4. Week-over-Week Delta ──────────────────────────────────
+    # ── 3. Week-over-Week Delta ──────────────────────────────────
     with pulse_tab3:
         if prev is None:
             st.info("Need at least 2 weekly snapshots for week-over-week comparison.")
         else:
-            # Build ticker-keyed lookup for prev week
+            # Build ticker-keyed lookup for prev & latest week
             prev_map = {}
             for i, t in enumerate(prev['tickers']):
                 prev_map[t] = {
@@ -4781,41 +4705,52 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                     'sector': latest['sectors'][i],
                 }
 
-            # Compute deltas
+            # Enrich with company_name + price from filtered_df
+            _enrich_map = {}
+            for _, row in all_df.iterrows():
+                tk = row.get('ticker', '')
+                if tk:
+                    _enrich_map[tk] = {
+                        'company_name': str(row.get('company_name', '') if pd.notna(row.get('company_name')) else ''),
+                        'price': float(row.get('price', 0) if pd.notna(row.get('price')) else 0) if 'price' in all_df.columns else 0,
+                    }
+
+            # Compute grade deltas
             grade_order = {'S': 5, 'A': 4, 'B': 3, 'C': 2, 'D': 1, 'F': 0}
             upgraded = []
             downgraded = []
             new_rockets = []
             new_crashes = []
-            big_climbers = []
-            big_fallers = []
 
             for t, cur in lat_map.items():
                 p = prev_map.get(t)
                 if not p:
                     continue
-                rank_delta = p['rank'] - cur['rank']  # positive = improved
                 grade_delta = grade_order.get(cur['grade'], 0) - grade_order.get(p['grade'], 0)
+                rank_delta = p['rank'] - cur['rank']
+                enr = _enrich_map.get(t, {})
+                comp = enr.get('company_name', '')
+                price = enr.get('price', 0)
                 if grade_delta > 0:
-                    upgraded.append((t, p['grade'], cur['grade'], rank_delta))
+                    upgraded.append((t, comp, price, p['grade'], cur['grade'], rank_delta))
                 elif grade_delta < 0:
-                    downgraded.append((t, p['grade'], cur['grade'], rank_delta))
+                    downgraded.append((t, comp, price, p['grade'], cur['grade'], rank_delta))
                 if cur['pattern'] == 'rocket' and p['pattern'] != 'rocket':
                     new_rockets.append(t)
                 if cur['pattern'] == 'crash' and p['pattern'] != 'crash':
                     new_crashes.append(t)
-                if rank_delta >= 20:
-                    big_climbers.append((t, rank_delta, cur.get('sector', '')))
-                elif rank_delta <= -20:
-                    big_fallers.append((t, rank_delta, cur.get('sector', '')))
 
-            upgraded.sort(key=lambda x: -grade_order.get(x[2], 0))
-            downgraded.sort(key=lambda x: grade_order.get(x[2], 0))
-            big_climbers.sort(key=lambda x: -x[1])
-            big_fallers.sort(key=lambda x: x[1])
+            upgraded.sort(key=lambda x: -grade_order.get(x[4], 0))
+            downgraded.sort(key=lambda x: grade_order.get(x[4], 0))
 
             new_entries = [t for t in lat_map if t not in prev_map]
             exited = [t for t in prev_map if t not in lat_map]
+
+            # Stocks per side selector
+            wow_show = st.selectbox(
+                'Stocks Per Side', options=[50, 100, 150],
+                index=0, key='mp_wow_count',
+            )
 
             # Delta hero cards
             st.markdown(f"""
@@ -4847,187 +4782,83 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                 <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Exited</div></div>
             </div>""", unsafe_allow_html=True)
 
-            # Detail columns
-            wow_c1, wow_c2 = st.columns(2)
+            # ── Helper: build scrollable grade-change table ──────
+            def _grade_table_html(items, accent, icon, label):
+                """Build HTML table for grade upgrades/downgrades.
+                items: list of (ticker, company, price, prev_grade, cur_grade, rank_delta)
+                """
+                count = len(items)
+                show_items = items[:wow_show]
+                scroll_h = {50: 580, 100: 1050, 150: 1500}.get(wow_show, 580)
 
-            with wow_c1:
-                # Grade Upgrades
-                if upgraded:
-                    rows = ''.join(
-                        f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
-                        f'border-bottom:1px solid #21262d;font-size:0.82rem;">'
-                        f'<span style="color:#e6edf3;font-weight:600;">{_html.escape(t)}</span>'
-                        f'<span><span style="color:{GRADE_COLORS.get(pg,"#8b949e")}">{pg}</span>'
-                        f' → <span style="color:{GRADE_COLORS.get(cg,"#3fb950")};font-weight:700;">{cg}</span>'
-                        f'</span></div>'
-                        for t, pg, cg, _ in upgraded[:15]
-                    )
-                    st.markdown(f"""
-                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
-                        padding:12px 16px;margin-bottom:10px;">
-                      <div style="color:#3fb950;font-weight:700;font-size:0.85rem;margin-bottom:8px;">
-                        ⬆️ Grade Upgrades ({len(upgraded)})</div>{rows}
-                    </div>""", unsafe_allow_html=True)
+                hdr = (f'<div style="background:#161b22;border-radius:10px 10px 0 0;padding:12px 16px;'
+                       f'border:1px solid #30363d;border-bottom:2px solid {accent};display:flex;'
+                       f'justify-content:space-between;align-items:center;">'
+                       f'<span style="font-size:0.88rem;font-weight:700;color:{accent};">'
+                       f'{icon} {label}</span>'
+                       f'<span style="color:#6e7681;font-size:0.78rem;">'
+                       f'{min(wow_show, count)} of {count}</span></div>')
 
-                # Big Climbers (rank +20 or more)
-                if big_climbers:
-                    rows = ''.join(
-                        f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
-                        f'border-bottom:1px solid #21262d;font-size:0.82rem;">'
-                        f'<span style="color:#e6edf3;font-weight:600;">{_html.escape(t)}</span>'
-                        f'<span style="color:#3fb950;font-weight:700;">+{d}</span></div>'
-                        for t, d, _ in big_climbers[:10]
-                    )
-                    st.markdown(f"""
-                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
-                        padding:12px 16px;margin-bottom:10px;">
-                      <div style="color:#3fb950;font-weight:700;font-size:0.85rem;margin-bottom:8px;">
-                        🚀 Big Climbers +20 ({len(big_climbers)})</div>{rows}
-                    </div>""", unsafe_allow_html=True)
+                if not items:
+                    return (hdr + '<div style="background:#0d1117;border-radius:0 0 10px 10px;'
+                            'padding:28px;border:1px solid #30363d;border-top:0;text-align:center;'
+                            'color:#6e7681;font-size:0.88rem;">No grade changes</div>')
 
-            with wow_c2:
-                # Grade Downgrades
-                if downgraded:
-                    rows = ''.join(
-                        f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
-                        f'border-bottom:1px solid #21262d;font-size:0.82rem;">'
-                        f'<span style="color:#e6edf3;font-weight:600;">{_html.escape(t)}</span>'
-                        f'<span><span style="color:{GRADE_COLORS.get(pg,"#8b949e")}">{pg}</span>'
-                        f' → <span style="color:{GRADE_COLORS.get(cg,"#f85149")};font-weight:700;">{cg}</span>'
-                        f'</span></div>'
-                        for t, pg, cg, _ in downgraded[:15]
-                    )
-                    st.markdown(f"""
-                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
-                        padding:12px 16px;margin-bottom:10px;">
-                      <div style="color:#f85149;font-weight:700;font-size:0.85rem;margin-bottom:8px;">
-                        ⬇️ Grade Downgrades ({len(downgraded)})</div>{rows}
-                    </div>""", unsafe_allow_html=True)
+                # Column header
+                col_hdr = (
+                    '<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
+                    'background:#161b22;border-bottom:1px solid #30363d;font-size:0.72rem;color:#6e7681;'
+                    'text-transform:uppercase;letter-spacing:0.5px;">'
+                    '<span style="min-width:24px;text-align:center;">#</span>'
+                    '<span style="flex:1;">Stock</span>'
+                    '<span style="min-width:64px;text-align:right;">Price</span>'
+                    '<span style="min-width:80px;text-align:center;">Grade</span>'
+                    '<span style="min-width:50px;text-align:right;">Rank Δ</span></div>')
 
-                # Big Fallers (rank -20 or worse)
-                if big_fallers:
-                    rows = ''.join(
-                        f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
-                        f'border-bottom:1px solid #21262d;font-size:0.82rem;">'
-                        f'<span style="color:#e6edf3;font-weight:600;">{_html.escape(t)}</span>'
-                        f'<span style="color:#f85149;font-weight:700;">{d}</span></div>'
-                        for t, d, _ in big_fallers[:10]
-                    )
-                    st.markdown(f"""
-                    <div style="background:#0d1117;border:1px solid #30363d;border-radius:10px;
-                        padding:12px 16px;margin-bottom:10px;">
-                      <div style="color:#f85149;font-weight:700;font-size:0.85rem;margin-bottom:8px;">
-                        💥 Big Fallers −20 ({len(big_fallers)})</div>{rows}
-                    </div>""", unsafe_allow_html=True)
+                rows_html = [col_hdr]
+                for i, (tk, comp, price, pg, cg, rd) in enumerate(show_items):
+                    stripe = 'rgba(22,27,34,0.5)' if i % 2 else 'transparent'
+                    tk_esc = _html.escape(tk)
+                    comp_esc = _html.escape(comp[:20]) if comp else ''
+                    if price >= 100:
+                        p_str = f'₹{price:,.0f}'
+                    elif price > 0:
+                        p_str = f'₹{price:,.2f}'
+                    else:
+                        p_str = '—'
+                    rd_c = '#3fb950' if rd > 0 else ('#f85149' if rd < 0 else '#8b949e')
+                    rd_sign = '+' if rd > 0 else ''
+                    pg_c = GRADE_COLORS.get(pg, '#8b949e')
+                    cg_c = GRADE_COLORS.get(cg, '#8b949e')
 
-    # ── 5. Grade Migration + Pattern Flow ────────────────────────
-    with pulse_tab4:
-        if prev is None:
-            st.info("Need at least 2 weekly snapshots for grade migration analysis.")
-        else:
-            grade_labels = ['S', 'A', 'B', 'C', 'D', 'F']
+                    rows_html.append(
+                        f'<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;'
+                        f'gap:8px;background:{stripe};border-bottom:1px solid #21262d;">'
+                        f'<span style="min-width:24px;text-align:center;color:#6e7681;font-size:0.72rem;'
+                        f'font-variant-numeric:tabular-nums;">{i+1}</span>'
+                        f'<div style="flex:1;overflow:hidden;white-space:nowrap;">'
+                        f'<span style="color:#e6edf3;font-weight:600;font-size:0.85rem;">{tk_esc}</span>'
+                        f'<span style="color:#8b949e;font-size:0.73rem;margin-left:6px;">{comp_esc}</span></div>'
+                        f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:64px;'
+                        f'text-align:right;font-variant-numeric:tabular-nums;">{p_str}</span>'
+                        f'<span style="min-width:80px;text-align:center;font-size:0.84rem;">'
+                        f'<span style="color:{pg_c};font-weight:600;">{pg}</span>'
+                        f' → <span style="color:{cg_c};font-weight:700;">{cg}</span></span>'
+                        f'<span style="color:{rd_c};font-weight:700;font-size:0.82rem;min-width:50px;'
+                        f'text-align:right;font-variant-numeric:tabular-nums;">{rd_sign}{rd}</span></div>')
 
-            # Build migration matrix
-            migration = {fg: {tg: 0 for tg in grade_labels} for fg in grade_labels}
-            for t in lat_map:
-                if t not in prev_map:
-                    continue
-                fg = prev_map[t]['grade']
-                tg = lat_map[t]['grade']
-                if fg in migration and tg in migration[fg]:
-                    migration[fg][tg] += 1
+                body = (f'<div style="background:#0d1117;border-radius:0 0 10px 10px;'
+                        f'border:1px solid #30363d;border-top:0;overflow:hidden;'
+                        f'max-height:{scroll_h}px;overflow-y:auto;">'
+                        f'{"".join(rows_html)}</div>')
+                return hdr + body
 
-            # Heatmap
-            z_mig = [[migration[fg][tg] for tg in grade_labels] for fg in grade_labels]
-            # Annotation text
-            annot = [[str(v) if v > 0 else '' for v in row] for row in z_mig]
-
-            fig_mig = go.Figure(data=go.Heatmap(
-                z=z_mig, x=[f'→ {g}' for g in grade_labels],
-                y=[f'{g} →' for g in grade_labels],
-                text=annot, texttemplate='%{text}',
-                colorscale=[[0, '#0d1117'], [0.01, '#161b22'], [0.15, '#1f4529'],
-                            [0.4, '#238636'], [0.7, '#3fb950'], [1, '#7ee787']],
-                hoverongaps=False,
-                hovertemplate='From %{y} To %{x}<br>Count: %{z}<extra></extra>',
-                showscale=False,
-            ))
-            fig_mig.update_layout(
-                template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
-                height=340, margin=dict(l=60, r=30, t=50, b=40),
-                title=dict(text='Grade Migration (Prev Week → This Week)',
-                           font=dict(size=14, color='#e6edf3')),
-                xaxis=dict(tickfont=dict(size=11, color='#e6edf3'), side='top'),
-                yaxis=dict(tickfont=dict(size=11, color='#e6edf3'), autorange='reversed'),
-            )
-            st.plotly_chart(fig_mig, use_container_width=True, key='mp_grade_mig')
-
-            # Retention & churn stats
-            retained = sum(migration[g][g] for g in grade_labels)
-            total_migrated = sum(sum(r) for r in z_mig)
-            retention_pct = round(100 * retained / max(total_migrated, 1), 1)
-            up_mig = sum(migration[fg][tg]
-                         for fi, fg in enumerate(grade_labels)
-                         for ti, tg in enumerate(grade_labels) if ti < fi)
-            down_mig = sum(migration[fg][tg]
-                           for fi, fg in enumerate(grade_labels)
-                           for ti, tg in enumerate(grade_labels) if ti > fi)
-            st.markdown(f"""
-            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;">
-              <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
-                  font-size:0.82rem;color:#c9d1d9;">
-                Grade Retention: <span style="color:#58a6ff;font-weight:700;">{retention_pct}%</span>
-                ({retained} of {total_migrated})</div>
-              <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
-                  font-size:0.82rem;color:#c9d1d9;">
-                Upgraded: <span style="color:#3fb950;font-weight:700;">{up_mig}</span> &nbsp;|&nbsp;
-                Downgraded: <span style="color:#f85149;font-weight:700;">{down_mig}</span></div>
-            </div>""", unsafe_allow_html=True)
-
-            st.markdown("")  # spacer
-
-            # ── Pattern Distribution Trend (stacked area) ────────
-            st.markdown(f"""<div style="color:#e6edf3;font-weight:700;font-size:0.95rem;
-                margin:16px 0 8px;">🔮 Pattern Distribution Over Time</div>""",
-                unsafe_allow_html=True)
-
-            # Count patterns per week
-            pat_keys = list(PATTERN_DEFS.keys())
-            display_snaps = weekly_snaps[-min(16, n_weeks):]
-            pat_dates = [s['date'][-5:] for s in display_snaps]
-            pat_counts = {pk: [] for pk in pat_keys}
-            for snap in display_snaps:
-                cnt = {pk: 0 for pk in pat_keys}
-                for p in snap['patterns']:
-                    if p in cnt:
-                        cnt[p] += 1
-                total = max(sum(cnt.values()), 1)
-                for pk in pat_keys:
-                    pat_counts[pk].append(round(100 * cnt[pk] / total, 1))
-
-            fig_pat = go.Figure()
-            for pk in pat_keys:
-                emoji, label, _ = PATTERN_DEFS[pk]
-                color = PATTERN_COLORS.get(pk, '#8b949e')
-                vals = pat_counts[pk]
-                if max(vals) < 1:  # skip patterns that never appear
-                    continue
-                fig_pat.add_trace(go.Scatter(
-                    x=pat_dates, y=vals, name=f'{emoji} {label}',
-                    mode='lines', stackgroup='one',
-                    line=dict(width=0.5, color=color),
-                    fillcolor=color + '88',
-                    hovertemplate=f'{emoji} {label}: ' + '%{y:.1f}%<extra></extra>',
-                ))
-            fig_pat.update_layout(
-                template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
-                height=380, margin=dict(l=50, r=30, t=10, b=40),
-                yaxis=dict(title='% of Universe', gridcolor='#21262d', range=[0, 100]),
-                xaxis=dict(gridcolor='#21262d'),
-                legend=dict(orientation='h', y=-0.2, font=dict(size=10)),
-                hovermode='x unified',
-            )
-            st.plotly_chart(fig_pat, use_container_width=True, key='mp_pattern_flow')
+            # Render side-by-side
+            up_html = _grade_table_html(upgraded, '#3fb950', '⬆️', 'Grade Upgrades')
+            dn_html = _grade_table_html(downgraded, '#f85149', '⬇️', 'Grade Downgrades')
+            st.markdown(
+                f'<div class="mv-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
+                f'<div>{up_html}</div><div>{dn_html}</div></div>', unsafe_allow_html=True)
 
 
 # ============================================
