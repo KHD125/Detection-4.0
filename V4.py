@@ -3729,9 +3729,8 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
     if stage1.empty:
         return stage1, pd.DataFrame(), pd.DataFrame()
     
-    # ── STAGE 2: VALIDATION (5 Wave Engine Rules) ──
+    # ── STAGE 2: VALIDATION (5 Trajectory Engine Rules) ──
     s2_tq_min = config.get('stage2_tq', 60)
-    s2_ms_min = config.get('stage2_master_score', 50)
     s2_min_rules = config.get('stage2_min_rules', 4)
     
     stage2_rows = []
@@ -3743,29 +3742,31 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
         rules_passed = 0
         rules_detail = []
         
-        # Rule 1: Trend Quality ≥ threshold (from latest CSV)
-        latest_tq = h['trend_qualities'][-1] if h.get('trend_qualities') else 0
-        if latest_tq >= s2_tq_min:
+        # Rule 1: Trend component ≥ threshold (from trajectory scoring, not raw CSV TQ)
+        trend_comp = row.get('trend', 0) if 'trend' in row.index else 0
+        tq_proxy = float(trend_comp) if pd.notna(trend_comp) else 0
+        # Scale: trend component is 0-100, threshold same as before
+        if tq_proxy >= s2_tq_min:
             rules_passed += 1
-            rules_detail.append(f'✅ TQ={latest_tq:.0f}')
+            rules_detail.append(f'✅ Trend={tq_proxy:.0f}')
         else:
-            rules_detail.append(f'❌ TQ={latest_tq:.0f}')
+            rules_detail.append(f'❌ Trend={tq_proxy:.0f}')
         
-        # Rule 2: Market State NOT DOWNTREND/STRONG_DOWNTREND
-        latest_ms = h['market_states'][-1] if h.get('market_states') else ''
-        if latest_ms not in ['DOWNTREND', 'STRONG_DOWNTREND']:
+        # Rule 2: No DECAY_HIGH or DECAY_MODERATE (trajectory engine's own trap detection)
+        decay_label = row.get('decay_label', '') if 'decay_label' in row.index else ''
+        if decay_label not in ('DECAY_HIGH', 'DECAY_MODERATE'):
             rules_passed += 1
-            rules_detail.append(f'✅ {latest_ms or "N/A"}')
+            rules_detail.append(f'✅ {decay_label or "NO_DECAY"}')
         else:
-            rules_detail.append(f'❌ {latest_ms}')
+            rules_detail.append(f'❌ {decay_label}')
         
-        # Rule 3: Master Score ≥ threshold
-        latest_score = h['scores'][-1] if h.get('scores') else 0
-        if latest_score >= s2_ms_min:
+        # Rule 3: T-Score ≥ 50 (trajectory engine's composite score as validation floor)
+        t_score = float(row.get('trajectory_score', 0))
+        if t_score >= 50:
             rules_passed += 1
-            rules_detail.append(f'✅ MS={latest_score:.0f}')
+            rules_detail.append(f'✅ TS={t_score:.0f}')
         else:
-            rules_detail.append(f'❌ MS={latest_score:.0f}')
+            rules_detail.append(f'❌ TS={t_score:.0f}')
         
         # Rule 4: Recent rank not crashing (last week Δ ≥ -20)
         if len(h['ranks']) >= 2:
@@ -3779,9 +3780,6 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
             rules_detail.append('⚠️ No Δ data')
         
         # Rule 5: Near-High Check (from_high_pct) — v9.0 data-driven
-        # from_high_pct is #1 forward predictor (+0.55%/wk alpha).
-        # Replaces volume pattern keywords (had zero predictive evidence).
-        latest_pats = h['pattern_history'][-1] if h.get('pattern_history') else ''
         fh_list = h.get('from_high_pct', [])
         latest_fh = fh_list[-1] if fh_list else -50
         if not isinstance(latest_fh, (int, float)) or np.isnan(latest_fh):
@@ -3796,8 +3794,8 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
         row_dict['rules_passed'] = rules_passed
         row_dict['rules_detail'] = ' | '.join(rules_detail)
         row_dict['s2_pass'] = rules_passed >= s2_min_rules
-        row_dict['latest_tq'] = latest_tq
-        row_dict['latest_ms'] = latest_ms
+        row_dict['latest_tq'] = tq_proxy
+        latest_pats = h['pattern_history'][-1] if h.get('pattern_history') else ''
         row_dict['latest_pats'] = latest_pats
         stage2_rows.append(row_dict)
     
@@ -3811,7 +3809,7 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
     if stage2_passed.empty:
         return stage1, stage2, pd.DataFrame()
     
-    # ── STAGE 3: FINAL FILTER ──
+    # ── STAGE 3: FINAL FILTER (Trajectory Engine signals) ──
     s3_tq_min = config.get('stage3_tq', 70)
     s3_require_leader = config.get('stage3_require_leader', True)
     s3_dt_weeks = config.get('stage3_no_downtrend_weeks', 4)
@@ -3825,16 +3823,23 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
         latest_tq = row.get('latest_tq', 0)
         latest_pats = row.get('latest_pats', '')
         
-        # Check 1: TQ ≥ strict threshold
+        # Check 1: Trend component ≥ strict threshold
         tq_pass = latest_tq >= s3_tq_min
         
-        # Check 2: Has CAT LEADER or MARKET LEADER
-        has_leader = 'CAT LEADER' in latest_pats or 'MARKET LEADER' in latest_pats
+        # Check 2: Conviction ≥ 60 OR Sector Alpha Leader tag
+        # (replaces fragile "CAT LEADER" string check that fails in bear markets)
+        conviction = row.get('conviction', 0) if 'conviction' in row.index else 0
+        sector_tag = str(row.get('sector_alpha_tag', '')) if 'sector_alpha_tag' in row.index else ''
+        has_leader = (conviction >= 60 or
+                      'LEADER' in sector_tag.upper() or
+                      'CAT LEADER' in latest_pats or 'MARKET LEADER' in latest_pats)
         leader_pass = has_leader if s3_require_leader else True
         
-        # Check 3: No DOWNTREND in last N weeks of market_state history
+        # Check 3: No DECAY_HIGH in recent trajectory (replaces market_state string check)
+        decay_label = str(row.get('decay_label', '')) if 'decay_label' in row.index else ''
         recent_states = h['market_states'][-s3_dt_weeks:] if h.get('market_states') else []
-        no_downtrend = not any('DOWNTREND' in s for s in recent_states)
+        no_downtrend = (decay_label not in ('DECAY_HIGH',) and
+                        not any('STRONG_DOWNTREND' in s for s in recent_states))
         
         # All 3 must pass
         final_pass = tq_pass and leader_pass and no_downtrend
@@ -3847,9 +3852,9 @@ def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd
         
         # Build Stage 3 detail
         s3_details = []
-        s3_details.append(f"{'✅' if tq_pass else '❌'} TQ≥{s3_tq_min} ({latest_tq:.0f})")
-        s3_details.append(f"{'✅' if leader_pass else '❌'} Leader Pattern")
-        s3_details.append(f"{'✅' if no_downtrend else '❌'} No Downtrend ({s3_dt_weeks}w)")
+        s3_details.append(f"{'✅' if tq_pass else '❌'} Trend≥{s3_tq_min} ({latest_tq:.0f})")
+        s3_details.append(f"{'✅' if leader_pass else '❌'} Leader/Conv≥60 ({conviction:.0f})")
+        s3_details.append(f"{'✅' if no_downtrend else '❌'} No Decay/DT ({decay_label or 'OK'})")
         row_dict['s3_detail'] = ' | '.join(s3_details)
         
         stage3_rows.append(row_dict)
@@ -5246,14 +5251,14 @@ def render_funnel_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             )
         with fc2:
             st.markdown('<div style="color:#d29922; font-weight:700; font-size:0.85rem; margin-bottom:4px;">Stage 2 — Validation</div>', unsafe_allow_html=True)
-            s2_tq = st.number_input("Min Trend Quality", 30, 100, FUNNEL_DEFAULTS['stage2_tq'], key='f_s2_tq')
-            s2_ms = st.number_input("Min Master Score", 20, 100, FUNNEL_DEFAULTS['stage2_master_score'], key='f_s2_ms')
+            s2_tq = st.number_input("Min Trend Score", 30, 100, FUNNEL_DEFAULTS['stage2_tq'], key='f_s2_tq')
+            s2_ms = st.number_input("(Legacy — unused)", 20, 100, FUNNEL_DEFAULTS['stage2_master_score'], key='f_s2_ms', disabled=True)
             s2_rules = st.number_input("Min Rules (of 5)", 2, 5, FUNNEL_DEFAULTS['stage2_min_rules'], key='f_s2_r')
         with fc3:
             st.markdown('<div style="color:#3fb950; font-weight:700; font-size:0.85rem; margin-bottom:4px;">Stage 3 — Final</div>', unsafe_allow_html=True)
-            s3_tq = st.number_input("Min TQ (strict)", 50, 100, FUNNEL_DEFAULTS['stage3_tq'], key='f_s3_tq')
-            s3_leader = st.checkbox("Require Leader Pattern", FUNNEL_DEFAULTS['stage3_require_leader'], key='f_s3_l')
-            s3_dt = st.number_input("No DOWNTREND (weeks)", 1, 10, FUNNEL_DEFAULTS['stage3_no_downtrend_weeks'], key='f_s3_dt')
+            s3_tq = st.number_input("Min Trend (strict)", 50, 100, FUNNEL_DEFAULTS['stage3_tq'], key='f_s3_tq')
+            s3_leader = st.checkbox("Require Leader/Conv≥60", FUNNEL_DEFAULTS['stage3_require_leader'], key='f_s3_l')
+            s3_dt = st.number_input("No Decay/DT (weeks)", 1, 10, FUNNEL_DEFAULTS['stage3_no_downtrend_weeks'], key='f_s3_dt')
 
     funnel_config = {
         'stage1_score': s1_score, 'stage1_patterns': s1_patterns,
@@ -5758,13 +5763,50 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
 
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    # ════════════════════════════════════════════════════════════════════
-    # § 4  TOP MOVERS — 50 per side, multi-week filter
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🔥 Top Movers</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Biggest rank changes — filter by time window</div>', unsafe_allow_html=True)
 
-    # -- Determine max available weeks from histories --
+# ============================================
+# UI: TOP MOVERS TAB
+# ============================================
+
+def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
+    """🔥 Top Movers Tab — 50 per side, multi-week filter."""
+
+    # ── Ensure columns ──
+    _DEFAULTS = [
+        ('grade', 'F'), ('grade_emoji', '📉'),
+        ('company_name', ''), ('sector', ''), ('weeks', 0),
+        ('trajectory_score', 0),
+    ]
+    for col, default in _DEFAULTS:
+        if col not in filtered_df.columns:
+            filtered_df[col] = default
+
+    _filtered_tickers = set(filtered_df['ticker'].tolist())
+
+    # ── Header Card ─────────────────────────────────────────────
+    gainers_1w, decliners_1w = get_top_movers(histories, n=1, weeks=1, tickers=_filtered_tickers)
+    top_gainer_delta = int(gainers_1w.iloc[0]['rank_change']) if not gainers_1w.empty else 0
+    top_decliner_delta = int(decliners_1w.iloc[0]['rank_change']) if not decliners_1w.empty else 0
+    top_gainer_name = gainers_1w.iloc[0]['ticker'] if not gainers_1w.empty else '—'
+    top_decliner_name = decliners_1w.iloc[0]['ticker'] if not decliners_1w.empty else '—'
+
+    st.markdown(f"""
+    <div style="background:#0d1117;border-radius:14px;padding:18px 24px;margin-bottom:16px;border:1px solid #30363d;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <div>
+          <span style="font-size:1.4rem;font-weight:800;color:#fff;">🔥 Top Movers</span>
+          <div style="color:#8b949e;font-size:0.88rem;margin-top:2px;">Biggest rank changes — filter by time window</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span style="background:#3fb95018;color:#3fb950;padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">
+            ⬆️ {top_gainer_name} +{top_gainer_delta}</span>
+          <span style="background:#f8514918;color:#f85149;padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">
+            ⬇️ {top_decliner_name} {top_decliner_delta}</span>
+        </div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    # ── Time Window Selector ─────────────────────────────────────
     max_hist_len = max((len(h['ranks']) for h in histories.values()), default=2) - 1
     week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len]
     if not week_options:
@@ -5778,7 +5820,7 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
             options=week_options,
             format_func=lambda x: week_labels.get(x, f'{x} Weeks'),
             index=0,
-            key='alert_mover_weeks',
+            key='movers_tab_weeks',
         )
     with info_col:
         st.markdown(f"""
@@ -5790,8 +5832,8 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
 
     gainers, decliners = get_top_movers(histories, n=50, weeks=mv_weeks, tickers=_filtered_tickers)
 
-    def _mover_table_html(df_mv: pd.DataFrame, accent: str, icon: str, label: str) -> str:
-        """Build one mover panel as a single HTML string — fully styled."""
+    def _mover_table_html(df_mv, accent, icon, label):
+        """Build one mover panel as a single HTML string."""
         count = len(df_mv)
         hdr = (f'<div style="background:#161b22;border-radius:10px 10px 0 0;padding:12px 16px;'
                f'border:1px solid #30363d;border-bottom:2px solid {accent};display:flex;'
@@ -5808,7 +5850,6 @@ def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
             filtered_df[['ticker', 'trajectory_score', 'grade']].drop_duplicates('ticker'),
             on='ticker', how='left')
 
-        # Column header row
         col_hdr = (
             '<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
             'background:#161b22;border-bottom:1px solid #30363d;font-size:0.72rem;color:#6e7681;'
@@ -6345,13 +6386,17 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
 
     strategy_names = [
         'S1: Universe Avg',
-        'S2: Top 10 Rank',
-        'S3: Top 20 Rank',
+        'S2: Top 10 WAVE Rank',
+        'S3: Top 20 WAVE Rank',
         'S4: Persistent Top 50',
+        'S2b: Top 10 T-Score',
+        'S3b: Top 20 T-Score',
         'S5: T-Score ≥ 70',
         'S6: T-Score ≥ 70 + No Decay',
         'S7: Conviction ≥ 65',
         'S8: Full Signal',
+        'S9: Conviction-Weighted',
+        'S10: Regime-Adaptive',
     ]
     all_results = {name: [] for name in strategy_names}
 
@@ -6471,7 +6516,7 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         # S1: Universe average — all stocks with valid forward returns
         s1_tickers = list(forward_rets.keys())
 
-        # S2: Top 10 by WAVE rank
+        # S2: Top 10 by WAVE rank (raw CSV rank — baseline for comparison)
         s2_tickers = df.nsmallest(10, 'rank')['ticker'].astype(str).str.strip().tolist()
 
         # S3: Top 20 by rank (broader basket — tests concentration vs diversification)
@@ -6525,16 +6570,63 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
                       and r.get('decay_label', '') not in ('DECAY_HIGH', 'DECAY_MODERATE')
                       and r.get('wave_fusion_label', 'WAVE_NEUTRAL') in ('WAVE_CONFIRMED', 'WAVE_STRONG')]
 
+        # ── S2b: Top 10 by T-Score (tests Trajectory Engine's ranking vs raw WAVE rank) ──
+        traj_sorted = sorted(traj.items(), key=lambda x: x[1]['trajectory_score'], reverse=True)
+        s2b_tickers = [t for t, _ in traj_sorted[:10]]
+
+        # ── S3b: Top 20 by T-Score (broader T-Score basket) ──
+        s3b_tickers = [t for t, _ in traj_sorted[:20]]
+
+        # ── S9: Conviction-Weighted (stocks with T-Score≥60, weighted by conviction) ──
+        # Returns are computed as conviction-weighted average instead of equal-weight
+        s9_candidates = {t: r for t, r in traj.items()
+                         if r['trajectory_score'] >= 60 and r.get('conviction', 0) >= 40}
+
+        # ── S10: Regime-Adaptive Strategy ──
+        # Detect current market regime from median trajectory scores
+        all_tscores = [r['trajectory_score'] for r in traj.values()]
+        median_tscore = float(np.median(all_tscores)) if all_tscores else 50
+        bear_mode = median_tscore < 45  # Market stress indicator
+
+        if bear_mode:
+            # Bear: defensive — only high-conviction, no-decay, persistent stocks
+            s10_tickers = [t for t, r in traj.items()
+                           if r.get('conviction', 0) >= 65
+                           and r.get('decay_label', '') not in ('DECAY_HIGH', 'DECAY_MODERATE')
+                           and r.get('persistence_weeks', 0) >= 3]
+        else:
+            # Bull: aggressive — top T-Score with momentum confirmation
+            s10_tickers = [t for t, r in traj_sorted[:15]
+                           if r.get('decay_label', '') not in ('DECAY_HIGH', 'DECAY_MODERATE')][:10]
+
+        # ── Sector-capped versions of top picks (max 2 per sector) ──
+        def _sector_cap(ticker_list, max_per_sector=2):
+            """Apply sector diversification cap: max N stocks per sector."""
+            sector_counts = {}
+            capped = []
+            for t in ticker_list:
+                sec = histories.get(t, {}).get('sector', 'Unknown') or 'Unknown'
+                if sector_counts.get(sec, 0) < max_per_sector:
+                    capped.append(t)
+                    sector_counts[sec] = sector_counts.get(sec, 0) + 1
+            return capped
+
+        s2b_capped = _sector_cap(s2b_tickers, 2)
+        s3b_capped = _sector_cap(s3b_tickers, 3)
+
         # ── Measure forward returns for each strategy ──
         strategy_picks = {
             'S1: Universe Avg': s1_tickers,
-            'S2: Top 10 Rank': s2_tickers,
-            'S3: Top 20 Rank': s3_tickers,
+            'S2: Top 10 WAVE Rank': s2_tickers,
+            'S3: Top 20 WAVE Rank': s3_tickers,
             'S4: Persistent Top 50': s4_tickers,
+            'S2b: Top 10 T-Score': s2b_capped,
+            'S3b: Top 20 T-Score': s3b_capped,
             'S5: T-Score ≥ 70': s5_tickers,
             'S6: T-Score ≥ 70 + No Decay': s6_tickers,
             'S7: Conviction ≥ 65': s7_tickers,
             'S8: Full Signal': s8_tickers,
+            'S10: Regime-Adaptive': s10_tickers,
         }
 
         week_label = date.strftime('%Y-%m-%d')
@@ -6553,6 +6645,29 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
                 'best': max(valid_rets) if valid_rets else 0,
                 'worst': min(valid_rets) if valid_rets else 0,
             })
+
+        # ── S9: Conviction-Weighted (special — weighted average return) ──
+        s9_valid = [(forward_rets[t], s9_candidates[t].get('conviction', 50))
+                     for t in s9_candidates if t in forward_rets]
+        if s9_valid:
+            s9_rets, s9_wts = zip(*s9_valid)
+            total_wt = sum(s9_wts)
+            s9_avg = sum(r * w for r, w in zip(s9_rets, s9_wts)) / max(total_wt, 1)
+            s9_med = float(np.median(s9_rets))
+            s9_n = len(s9_valid)
+        else:
+            s9_avg, s9_med, s9_n = 0.0, 0.0, 0
+            s9_rets = []
+        all_results['S9: Conviction-Weighted'].append({
+            'week': week_label,
+            'forward_week': forward_date.strftime('%Y-%m-%d'),
+            'avg_return': s9_avg,
+            'median_return': s9_med,
+            'n_stocks': s9_n,
+            'n_positive': sum(1 for r in s9_rets if r > 0),
+            'best': max(s9_rets) if s9_rets else 0,
+            'worst': min(s9_rets) if s9_rets else 0,
+        })
 
     if progress_callback:
         progress_callback(1.0, "Backtest complete!")
@@ -6592,7 +6707,7 @@ def render_backtest_tab(uploaded_files):
         run_btn = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
     with col_info:
         if bt_results is None:
-            st.caption("Click Run to test 8 strategies against actual forward returns")
+            st.caption("Click Run to test 12 strategies against actual forward returns")
         else:
             st.caption("✅ Backtest results loaded. Click Run to refresh.")
 
@@ -6635,6 +6750,19 @@ def render_backtest_tab(uploaded_files):
         worst_week = min(returns)
         best_week = max(returns)
 
+        # Max Drawdown — peak-to-trough of cumulative equity curve
+        equity = [100.0]
+        for r in returns:
+            equity.append(equity[-1] * (1 + r / 100))
+        peak = equity[0]
+        max_dd = 0.0
+        for v in equity[1:]:
+            if v > peak:
+                peak = v
+            dd = (v - peak) / peak * 100
+            if dd < max_dd:
+                max_dd = dd
+
         summary_rows.append({
             'Strategy': sname,
             'Weeks Tested': n_weeks_tested,
@@ -6643,6 +6771,7 @@ def render_backtest_tab(uploaded_files):
             'Cumulative %': round(cumulative, 2),
             'Win Rate %': round(win_rate, 1),
             'Sharpe (Ann.)': round(sharpe, 2),
+            'Max DD %': round(max_dd, 2),
             'Best Wk %': round(best_week, 2),
             'Worst Wk %': round(worst_week, 2),
         })
@@ -6701,12 +6830,13 @@ def render_backtest_tab(uploaded_files):
 
     styled_df = summary_df.style.applymap(
         _highlight_returns,
-        subset=['Avg Wk Return %', 'Cumulative %', 'Best Wk %', 'Worst Wk %']
+        subset=['Avg Wk Return %', 'Cumulative %', 'Max DD %', 'Best Wk %', 'Worst Wk %']
     ).format({
         'Avg Wk Return %': '{:+.2f}',
         'Cumulative %': '{:+.2f}',
         'Win Rate %': '{:.0f}',
         'Sharpe (Ann.)': '{:.2f}',
+        'Max DD %': '{:.2f}',
         'Best Wk %': '{:+.2f}',
         'Worst Wk %': '{:+.2f}',
         'Avg Stocks/Wk': '{:.0f}',
@@ -6719,13 +6849,17 @@ def render_backtest_tab(uploaded_files):
     fig = go.Figure()
     strat_colors = {
         'S1: Universe Avg': '#484f58',
-        'S2: Top 10 Rank': '#8b949e',
-        'S3: Top 20 Rank': '#79c0ff',
+        'S2: Top 10 WAVE Rank': '#8b949e',
+        'S3: Top 20 WAVE Rank': '#79c0ff',
         'S4: Persistent Top 50': '#d2a8ff',
+        'S2b: Top 10 T-Score': '#58a6ff',
+        'S3b: Top 20 T-Score': '#388bfd',
         'S5: T-Score ≥ 70': '#ffa657',
         'S6: T-Score ≥ 70 + No Decay': '#f0883e',
         'S7: Conviction ≥ 65': '#3fb950',
         'S8: Full Signal': '#FFD700',
+        'S9: Conviction-Weighted': '#f778ba',
+        'S10: Regime-Adaptive': '#bc8cff',
     }
 
     for sname, weeks in bt_results.items():
@@ -6827,17 +6961,27 @@ def render_backtest_tab(uploaded_files):
         | Strategy | Selection Rule | Tests |
         |----------|---------------|-------|
         | **S1: Universe Avg** | Buy all stocks equally | Baseline — market average |
-        | **S2: Top 10 Rank** | 10 lowest WAVE rank numbers | Does raw ranking predict? |
-        | **S3: Top 20 Rank** | 20 lowest WAVE rank numbers | Does broader selection reduce risk? |
+        | **S2: Top 10 WAVE Rank** | 10 lowest WAVE rank numbers | Does raw ranking predict? |
+        | **S3: Top 20 WAVE Rank** | 20 lowest WAVE rank numbers | Does broader selection reduce risk? |
         | **S4: Persistent Top 50** | Top ~2.5% for 4+ consecutive weeks | Does persistence add value? |
-        | **S5: T-Score ≥ 70** | Full Trajectory Engine score ≥ 70 | Does the 7-component system work? |
+        | **S2b: Top 10 T-Score** | Top 10 by Trajectory Score (sector-capped ≤2/sector) | Does T-Score beat raw rank? |
+        | **S3b: Top 20 T-Score** | Top 20 by Trajectory Score (sector-capped ≤3/sector) | Broader T-Score basket with diversification |
+        | **S5: T-Score ≥ 70** | Full Trajectory Engine score ≥ 70 | Does the 8-component system work? |
         | **S6: T-Score ≥ 70 + No Decay** | S5 + no momentum decay trap | Does trap detection help? |
         | **S7: Conviction ≥ 65** | Multi-signal conviction score ≥ 65 | Does conviction predict returns? |
         | **S8: Full Signal** | T-Score ≥ 70 + Conviction ≥ 65 + No Decay + WAVE Confirmed/Strong | Does max filtering produce best results? |
+        | **S9: Conviction-Weighted** | T-Score ≥ 60, conviction ≥ 40, weighted by conviction score | Does weighting by conviction add alpha? |
+        | **S10: Regime-Adaptive** | Bull: Top T-Score + no decay; Bear: Conviction ≥ 65 + persistent + no decay | Does regime adaptation help? |
 
         **Forward Return:** Actual price change from current week to next week. Computed from price data, not ret_7d.
 
         **Walk-Forward:** At each test point, only data available UP TO that week is used. No future information leaks into the scoring.
+        
+        **Sector Cap (S2b/S3b):** Max 2-3 stocks per sector prevents concentration risk from destroying returns in sector-specific crashes.
+        
+        **Conviction-Weighted (S9):** Instead of equal-weight, each stock's return is weighted by its conviction score. High-conviction picks get more capital.
+        
+        **Regime-Adaptive (S10):** Automatically switches between aggressive (momentum-focused) in bull markets and defensive (conviction+persistence) in bear markets based on median T-Score.
         """)
 
 
@@ -7387,9 +7531,9 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_ranking, tab_search, tab_funnel, tab_discovery, tab_backtest, tab_alerts, tab_export, tab_about = st.tabs([
+    tab_ranking, tab_search, tab_funnel, tab_discovery, tab_backtest, tab_movers, tab_alerts, tab_export, tab_about = st.tabs([
         "🏆 Rankings", "🔍 Search & Analyze", "🎯 Funnel", "🔮 Early Discovery",
-        "📊 Backtest", "🚨 Alerts", "📤 Export", "ℹ️ About"
+        "📊 Backtest", "🔥 Top Movers", "🚨 Alerts", "📤 Export", "ℹ️ About"
     ])
 
     with tab_ranking:
@@ -7406,6 +7550,9 @@ def main():
 
     with tab_backtest:
         render_backtest_tab(uploaded_files)
+
+    with tab_movers:
+        render_top_movers_tab(filtered_df, histories)
 
     with tab_alerts:
         render_alerts_tab(filtered_df, histories)
