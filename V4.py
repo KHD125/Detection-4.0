@@ -91,8 +91,8 @@ os.environ['STREAMLIT_SERVER_FILE_WATCHER_TYPE'] = 'none'
 
 import streamlit as st
 st.set_page_config(
-    page_title="Rank Trajectory Engine",
-    page_icon="📊",
+    page_title="Alpha Trajectory — Stock Intelligence Engine",
+    page_icon="◉",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -659,27 +659,49 @@ st.markdown("""
 
     /* ── Sidebar Premium Styling ── */
     .sb-brand {
-        background: linear-gradient(135deg, rgba(255,107,53,0.12) 0%, rgba(88,166,255,0.10) 100%);
-        border: 1px solid rgba(255,107,53,0.25); border-radius: 14px;
-        padding: 18px 14px 14px; text-align: center; margin-bottom: 16px;
+        background: linear-gradient(135deg, rgba(56,182,255,0.08) 0%, rgba(228,179,65,0.10) 50%, rgba(63,185,80,0.08) 100%);
+        border: 1px solid rgba(228,179,65,0.3); border-radius: 16px;
+        padding: 20px 14px 14px; text-align: center; margin-bottom: 16px;
         position: relative; overflow: hidden;
     }
     .sb-brand::before {
         content: ''; position: absolute; top: -40%; left: -40%;
         width: 180%; height: 180%;
-        background: radial-gradient(circle, rgba(255,107,53,0.06) 0%, transparent 70%);
+        background: radial-gradient(circle, rgba(228,179,65,0.08) 0%, transparent 70%);
         animation: sb-pulse 6s ease-in-out infinite;
     }
     @keyframes sb-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+    .sb-brand-icon {
+        font-size: 2.2rem; position: relative; line-height: 1;
+        filter: drop-shadow(0 0 8px rgba(228,179,65,0.4));
+        margin-bottom: 4px;
+    }
     .sb-brand-title {
-        font-size: 1.15rem; font-weight: 800; position: relative;
-        background: linear-gradient(120deg, #FF6B35 30%, #58a6ff 100%);
+        font-size: 1.2rem; font-weight: 800; position: relative;
+        background: linear-gradient(120deg, #e3b341 0%, #58a6ff 50%, #3fb950 100%);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        letter-spacing: 0.5px;
+    }
+    .sb-brand-sub {
+        font-size: 0.68rem; font-weight: 600; color: #8b949e;
+        letter-spacing: 2.5px; text-transform: uppercase;
+        position: relative; margin-top: 2px;
     }
     .sb-brand-ver {
-        display: inline-block; font-size: 0.6rem; font-weight: 700; color: #FF6B35;
-        background: rgba(255,107,53,0.12); border: 1px solid rgba(255,107,53,0.3);
-        padding: 1px 7px; border-radius: 8px; margin-top: 4px; position: relative;
+        display: inline-block; font-size: 0.58rem; font-weight: 700; color: #e3b341;
+        background: rgba(228,179,65,0.10); border: 1px solid rgba(228,179,65,0.3);
+        padding: 2px 10px; border-radius: 10px; margin-top: 6px; position: relative;
+        letter-spacing: 0.5px;
+    }
+    .sb-clear-btn {
+        display: flex; align-items: center; justify-content: center; gap: 6px;
+        width: 100%; padding: 6px 0; margin: 8px 0 4px;
+        font-size: 0.72rem; font-weight: 600; color: #f85149;
+        background: rgba(248,81,73,0.06); border: 1px solid rgba(248,81,73,0.2);
+        border-radius: 8px; cursor: pointer; transition: all 0.2s;
+    }
+    .sb-clear-btn:hover {
+        background: rgba(248,81,73,0.12); border-color: rgba(248,81,73,0.4);
     }
     .sb-status-card {
         background: rgba(22,27,34,0.85); backdrop-filter: blur(8px);
@@ -4059,6 +4081,26 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         """, unsafe_allow_html=True)
 
         # ═══════════════════════════════════════════════
+        # 🧹 CLEAR ALL FILTERS
+        # ═══════════════════════════════════════════════
+        _sb_keys = [
+            'sb_quick', 'sb_score_range', 'sb_alpha_range', 'sb_conviction_range',
+            'sb_grade', 'sb_weeks', 'sb_pa', 'sb_md', 'sb_exit_risk',
+            'sb_hot_streak', 'sb_streak', 'sb_tmi', 'sb_hurst',
+            'sb_rally', 'sb_gain_preset', 'sb_gain_slider', 'sb_age_preset',
+            'sb_age_slider', 'sb_gap_preset', 'sb_gap_slider',
+            'sb_wf_label', 'sb_confluence', 'sb_inst_flow', 'sb_harmony',
+            'sb_fundamental', 'sb_rank_chg', 'sb_persist', 'sb_rankvol',
+            'sb_cat', 'sb_sector', 'sb_industry', 'sb_market_state',
+        ]
+        if st.button("🧹 Clear All Filters", key='sb_clear_all', use_container_width=True,
+                     type='secondary'):
+            for _k in _sb_keys:
+                if _k in st.session_state:
+                    del st.session_state[_k]
+            st.rerun()
+
+        # ═══════════════════════════════════════════════
         # § 1  QUICK FILTERS — one-click presets (TOP for fast access)
         # ═══════════════════════════════════════════════
         st.markdown('<div class="sb-section-head">⚡ QUICK FILTERS</div>', unsafe_allow_html=True)
@@ -4315,7 +4357,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         # FOOTER
         # ═══════════════════════════════════════════════
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
-        st.caption("v10.1 · Data-Driven · Max Alpha")
+        st.caption("v10.1 · Alpha Engine · Data-Driven")
 
     # ── Return filter dict ──
     return {
@@ -8107,8 +8149,10 @@ def main():
         # Branded header card
         st.markdown("""
         <div class="sb-brand">
-            <div class="sb-brand-title">📊 RANK TRAJECTORY</div>
-            <div class="sb-brand-ver">ENGINE v10.1</div>
+            <div class="sb-brand-icon">◉</div>
+            <div class="sb-brand-title">ALPHA TRAJECTORY</div>
+            <div class="sb-brand-sub">Stock Intelligence Engine</div>
+            <div class="sb-brand-ver">v10.1 · Max Alpha</div>
         </div>
         """, unsafe_allow_html=True)
 
