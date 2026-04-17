@@ -4087,25 +4087,6 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
     """
     with st.sidebar:
         # ═══════════════════════════════════════════════
-        # 🎯 QUICK ACTIONS — refresh + cache (like Wave Detection)
-        # ═══════════════════════════════════════════════
-        st.markdown('<div class="sb-section-head">🎯 QUICK ACTIONS</div>', unsafe_allow_html=True)
-        qa_col1, qa_col2 = st.columns(2)
-        with qa_col1:
-            if st.button("🔄 Refresh", key='sb_refresh', use_container_width=True, type='primary'):
-                st.session_state.pop('_traj_key', None)
-                st.session_state.pop('_traj_result', None)
-                st.rerun()
-        with qa_col2:
-            if st.button("🧹 Clear Cache", key='sb_clear_cache', use_container_width=True):
-                st.cache_data.clear()
-                st.session_state.pop('_traj_key', None)
-                st.session_state.pop('_traj_result', None)
-                st.rerun()
-
-        st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
-
-        # ═══════════════════════════════════════════════
         # DATA STATUS — live pulse card
         # ═══════════════════════════════════════════════
         st.markdown(f"""
@@ -4176,11 +4157,11 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
 
         # ═══════════════════════════════════════════════
-        # § 1  QUICK FILTERS — one-click presets (TOP for fast access)
+        # § 1  QUICK FILTERS — dropdown preset selector
         # ═══════════════════════════════════════════════
         st.markdown('<div class="sb-section-head">⚡ QUICK FILTERS</div>', unsafe_allow_html=True)
-        quick_filter = st.radio(
-            "Preset",
+        quick_filter = st.selectbox(
+            "Quick Filter Preset",
             ['None',
              '🏆 Max Alpha (Top 15)',
              '🧪 EARLY_RIDE_PROVEN (Top 10)',
@@ -8221,23 +8202,53 @@ def main():
 
     # ── Sidebar: Data Source ──
     with st.sidebar:
-        st.markdown('<div class="sb-section-head">📥 DATA SOURCE</div>', unsafe_allow_html=True)
-        data_source_mode = st.radio(
-            "Data Source",
-            ["📂 Upload CSV Files", "☁️ Google Drive"],
-            index=0,
-            key='data_source_mode',
-            label_visibility='collapsed',
-            horizontal=True
-        )
+        # ═══════════════════════════════════════════════
+        # 🎯 QUICK ACTIONS
+        # ═══════════════════════════════════════════════
+        st.markdown('<div class="sb-section-head">🎯 QUICK ACTIONS</div>', unsafe_allow_html=True)
+        qa1, qa2 = st.columns(2)
+        with qa1:
+            if st.button("🔄 Refresh", key='sb_refresh_main', use_container_width=True, type='primary'):
+                st.session_state.pop('_traj_key', None)
+                st.session_state.pop('_traj_result', None)
+                st.session_state.pop('_drive_key_loaded', None)
+                st.rerun()
+        with qa2:
+            if st.button("🧹 Clear Cache", key='sb_clear_cache_main', use_container_width=True):
+                st.cache_data.clear()
+                st.session_state.pop('_traj_key', None)
+                st.session_state.pop('_traj_result', None)
+                st.rerun()
+
+        st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+
+        # ═══════════════════════════════════════════════
+        # 📂 DATA SOURCE — toggle buttons like Wave Detection
+        # ═══════════════════════════════════════════════
+        st.markdown('<div class="sb-section-head">📂 DATA SOURCE</div>', unsafe_allow_html=True)
+
+        ds1, ds2 = st.columns(2)
+        with ds1:
+            if st.button("📂 Upload CSV",
+                         type="primary" if st.session_state.get('data_source_mode', 'upload') == 'upload' else "secondary",
+                         key='ds_btn_upload', use_container_width=True):
+                st.session_state['data_source_mode'] = 'upload'
+                st.rerun()
+        with ds2:
+            if st.button("☁️ Google Drive",
+                         type="primary" if st.session_state.get('data_source_mode', 'upload') == 'drive' else "secondary",
+                         key='ds_btn_drive', use_container_width=True):
+                st.session_state['data_source_mode'] = 'drive'
+                st.rerun()
 
         uploaded_files = []
         drive_folder_key = ""
+        data_source_mode = st.session_state.get('data_source_mode', 'upload')
 
         # ═══════════════════════════════════════════
         # MODE 1: Upload CSV Files
         # ═══════════════════════════════════════════
-        if data_source_mode == "📂 Upload CSV Files":
+        if data_source_mode == "upload":
             uploaded_files = st.file_uploader(
                 "Upload Weekly CSV Snapshots",
                 type=['csv'],
@@ -8284,22 +8295,6 @@ def main():
                         st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s)")
                     progress_bar.empty()
 
-                if st.button("🔄 Refresh", key='refresh_drive_fetch', use_container_width=True):
-                    progress_bar = st.progress(0, text="Re-fetching from Drive...")
-                    progress_bar.progress(20, text="Downloading...")
-                    drive_uploads, drive_err = _load_csv_uploads_from_drive(drive_folder_key)
-                    progress_bar.progress(100, text="Complete!")
-                    if drive_err:
-                        st.error(f"❌ {drive_err}")
-                        st.session_state.pop('_drive_uploads', None)
-                        st.session_state.pop('_drive_key_loaded', None)
-                    else:
-                        st.session_state['_drive_uploads'] = drive_uploads
-                        st.session_state['_drive_key_loaded'] = drive_folder_key
-                        st.session_state['_drive_load_time'] = datetime.now()
-                        st.success(f"✅ Loaded {len(drive_uploads)} CSV file(s)")
-                    progress_bar.empty()
-
                 # Reuse previously fetched files
                 if st.session_state.get('_drive_key_loaded') == drive_folder_key:
                     uploaded_files = st.session_state.get('_drive_uploads', [])
@@ -8313,6 +8308,65 @@ def main():
                             unsafe_allow_html=True
                         )
 
+        st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
+
+        # ═══════════════════════════════════════════════
+        # 🗓️ FILE RANGE — date range selection
+        # ═══════════════════════════════════════════════
+        if uploaded_files:
+            _dated_files, _undated = _extract_dated_files(uploaded_files)
+            _total_uploaded = len(uploaded_files)
+
+            if _dated_files:
+                _min_dt = _dated_files[0][0].date()
+                _max_dt = _dated_files[-1][0].date()
+
+                st.markdown('<div class="sb-section-head">🗓️ FILE RANGE</div>', unsafe_allow_html=True)
+                range_mode = st.radio(
+                    "File Range",
+                    ["All Time", "Custom"],
+                    index=0,
+                    key='file_range_mode',
+                    horizontal=True,
+                    label_visibility='collapsed'
+                )
+
+                if range_mode == "Custom":
+                    col_from, col_to = st.columns(2)
+                    with col_from:
+                        range_start = st.date_input(
+                            "From", value=_min_dt,
+                            min_value=_min_dt, max_value=_max_dt,
+                            key='file_range_start'
+                        )
+                    with col_to:
+                        range_end = st.date_input(
+                            "To", value=_max_dt,
+                            min_value=_min_dt, max_value=_max_dt,
+                            key='file_range_end'
+                        )
+                else:
+                    range_start = _min_dt
+                    range_end = _max_dt
+
+                if range_start > range_end:
+                    st.warning("Start date is after end date. Using full range.")
+                    range_start = _min_dt
+                    range_end = _max_dt
+
+                selected = [f for dt, f in _dated_files if range_start <= dt.date() <= range_end]
+                st.caption(f"{range_start.strftime('%Y-%m-%d')} → {range_end.strftime('%Y-%m-%d')} · {len(selected)}/{len(_dated_files)} files")
+
+                # Store for use outside sidebar
+                st.session_state['_sb_selected_files'] = selected
+                st.session_state['_sb_total_uploaded'] = _total_uploaded
+                st.session_state['_sb_undated'] = _undated
+            else:
+                st.info("No parseable dates in filenames; using all files.")
+                st.session_state['_sb_selected_files'] = uploaded_files
+                st.session_state['_sb_total_uploaded'] = _total_uploaded
+                st.session_state['_sb_undated'] = 0
+
     # Header
     st.markdown("""
     <div class="hero-banner">
@@ -8324,7 +8378,7 @@ def main():
     """, unsafe_allow_html=True)
 
     if not uploaded_files:
-        if data_source_mode == "☁️ Google Drive":
+        if data_source_mode == "drive":
             st.info("👈 Paste your Google Drive folder key in the sidebar. App will fetch CSVs automatically.")
             st.markdown("""
             **Google Drive mode:**
@@ -8344,59 +8398,10 @@ def main():
             """)
         return
 
-    dated_files, undated_count = _extract_dated_files(uploaded_files)
-    total_uploaded = len(uploaded_files)
-
-    if dated_files:
-        min_dt = dated_files[0][0].date()
-        max_dt = dated_files[-1][0].date()
-
-        with st.sidebar:
-            st.markdown('<div class="sb-section-head">🗓️ FILE RANGE</div>', unsafe_allow_html=True)
-            range_mode = st.radio(
-                "File Range",
-                ["All Time", "Custom"],
-                index=0,
-                key='file_range_mode',
-                horizontal=True,
-                label_visibility='collapsed'
-            )
-
-            if range_mode == "Custom":
-                col_from, col_to = st.columns(2)
-                with col_from:
-                    range_start = st.date_input(
-                        "From",
-                        value=min_dt,
-                        min_value=min_dt,
-                        max_value=max_dt,
-                        key='file_range_start'
-                    )
-                with col_to:
-                    range_end = st.date_input(
-                        "To",
-                        value=max_dt,
-                        min_value=min_dt,
-                        max_value=max_dt,
-                        key='file_range_end'
-                    )
-            else:
-                range_start = min_dt
-                range_end = max_dt
-
-            if range_start > range_end:
-                st.warning("Start date is after end date. Using full file range.")
-                range_start = min_dt
-                range_end = max_dt
-
-            selected = [f for dt, f in dated_files if range_start <= dt.date() <= range_end]
-            st.caption(f"Range: {range_start.strftime('%Y-%m-%d')} → {range_end.strftime('%Y-%m-%d')}")
-            st.caption(f"📊 {len(selected)} of {len(dated_files)} dated files selected")
-
-        uploaded_files = selected
-    else:
-        with st.sidebar:
-            st.info("No parseable dates in filenames; using all uploaded files.")
+    # Use file-range-filtered files from sidebar
+    uploaded_files = st.session_state.get('_sb_selected_files', uploaded_files)
+    total_uploaded = st.session_state.get('_sb_total_uploaded', len(uploaded_files))
+    undated_count = st.session_state.get('_sb_undated', 0)
 
     st.caption(f"📁 {len(uploaded_files)} file{'s' if len(uploaded_files) != 1 else ''} selected from {total_uploaded}")
     if undated_count > 0:
