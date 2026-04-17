@@ -4964,7 +4964,8 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
 
     st.dataframe(
         table_df, column_config=col_config,
-        hide_index=True, use_container_width=True, height=tbl_height
+        hide_index=True, use_container_width=True, height=tbl_height,
+        toolbar_mode="always"
     )
 
     # ── Signal Legend (collapsible) ──
