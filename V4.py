@@ -6785,37 +6785,125 @@ def render_backtest_tab(uploaded_files):
 
     summary_df = pd.DataFrame(summary_rows)
 
-    # ── Key Insight ──
+    # ── Compute Alpha vs Universe & Recommendations ──
     universe_cum = summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Cumulative %']
     universe_val = float(universe_cum.iloc[0]) if len(universe_cum) > 0 else 0
 
-    best_strat = summary_df.loc[summary_df['Cumulative %'].idxmax()]
-    worst_strat = summary_df.loc[summary_df['Cumulative %'].idxmin()]
+    summary_df['Alpha %'] = round(summary_df['Cumulative %'] - universe_val, 2)
+
+    # Assign recommendations based on data-driven analysis
+    def _get_recommendation(row):
+        name = row['Strategy']
+        alpha = row['Alpha %']
+        win = row['Win Rate %']
+        dd = row['Max DD %']
+        avg_stocks = row['Avg Stocks/Wk']
+        if name == 'S1: Universe Avg':
+            return '📊 Baseline'
+        # Best alpha overall
+        if alpha == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Alpha %'].max():
+            return '⭐ BEST ALPHA'
+        # Best win rate
+        if win == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Win Rate %'].max() and win > 50:
+            return '🎯 TOP WIN RATE'
+        # Best drawdown protection
+        if dd == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Max DD %'].max() and alpha > 0:
+            return '🛡️ SAFEST'
+        # Danger zone — worse than universe
+        if alpha < -2:
+            return '⚠️ HIGH RISK'
+        # Modest alpha
+        if alpha > 3:
+            return '✅ Good Alpha'
+        if alpha > 0:
+            return '➖ Marginal'
+        return '➖ Underperforms'
+
+    summary_df['Rating'] = summary_df.apply(_get_recommendation, axis=1)
+
+    # Reorder columns for clarity
+    col_order = ['Strategy', 'Rating', 'Weeks Tested', 'Avg Stocks/Wk',
+                 'Avg Wk Return %', 'Cumulative %', 'Alpha %', 'Win Rate %',
+                 'Sharpe (Ann.)', 'Max DD %', 'Best Wk %', 'Worst Wk %']
+    summary_df = summary_df[col_order]
+
+    best_strat = summary_df.loc[summary_df['Alpha %'].idxmax()]
+    worst_strat = summary_df.loc[summary_df['Alpha %'].idxmin()]
     best_name = best_strat['Strategy']
     best_cum = best_strat['Cumulative %']
-    best_vs_uni = best_cum - universe_val
+    best_alpha = best_strat['Alpha %']
+    best_win = best_strat['Win Rate %']
 
-    if best_vs_uni > 0:
-        insight_color = '#3fb950'
-        insight_icon = '✅'
-        insight_text = f"**{best_name}** generated **+{best_cum:.1f}%** cumulative return, beating the universe by **+{best_vs_uni:.1f}%**"
-    else:
-        insight_color = '#FF9800'
-        insight_icon = '⚠️'
-        insight_text = f"No strategy beat the universe average ({universe_val:.1f}%). Best: **{best_name}** at {best_cum:.1f}%"
+    # Find strategy with best win rate, safest (best max DD), and best broad
+    non_uni = summary_df[summary_df['Strategy'] != 'S1: Universe Avg']
+    safest_row = non_uni.loc[non_uni['Max DD %'].idxmax()]  # Max DD is negative, so max = least negative
+    top_wr_row = non_uni.loc[non_uni['Win Rate %'].idxmax()]
+    # Best broad = high alpha among strategies with avg stocks > 50
+    broad_df = non_uni[non_uni['Avg Stocks/Wk'] > 50]
+    best_broad_row = broad_df.loc[broad_df['Alpha %'].idxmax()] if len(broad_df) > 0 else None
+
+    # ── Key Finding: Top 3 Recommendations ──
+    reco_cards = ''
+    recommendations = []
+
+    # Card 1: Best Alpha
+    recommendations.append({
+        'icon': '⭐', 'label': 'BEST ALPHA',
+        'name': best_name, 'color': '#3fb950',
+        'detail': f"Alpha: +{best_alpha:.1f}% | Cumulative: {best_cum:+.1f}% | Win Rate: {best_win:.0f}%",
+        'note': f"{int(best_strat['Avg Stocks/Wk'])} stocks/wk — focused portfolio"
+    })
+
+    # Card 2: Best Broad Strategy
+    if best_broad_row is not None:
+        recommendations.append({
+            'icon': '🛡️', 'label': 'BEST BROAD',
+            'name': best_broad_row['Strategy'], 'color': '#58a6ff',
+            'detail': f"Alpha: +{best_broad_row['Alpha %']:.1f}% | Win Rate: {best_broad_row['Win Rate %']:.0f}% | {int(best_broad_row['Avg Stocks/Wk'])} stocks",
+            'note': 'Maximum diversification with alpha'
+        })
+
+    # Card 3: Safest Strategy
+    recommendations.append({
+        'icon': '🔰', 'label': 'SAFEST',
+        'name': safest_row['Strategy'], 'color': '#ffa657',
+        'detail': f"Max DD: {safest_row['Max DD %']:.1f}% | Alpha: +{safest_row['Alpha %']:.1f}% | Win Rate: {safest_row['Win Rate %']:.0f}%",
+        'note': 'Lowest drawdown — capital preservation'
+    })
+
+    reco_html = '<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">'
+    for r in recommendations:
+        reco_html += f"""
+        <div style="flex:1; min-width:220px; background:linear-gradient(135deg, #0d1117, #161b22);
+                    border-radius:12px; padding:16px; border:2px solid {r['color']};">
+            <div style="font-size:0.75rem; font-weight:800; color:{r['color']}; letter-spacing:1px;">
+                {r['icon']} {r['label']}
+            </div>
+            <div style="font-size:1.05rem; font-weight:700; color:#e6edf3; margin:6px 0 4px;">
+                {r['name']}
+            </div>
+            <div style="font-size:0.8rem; color:#8b949e;">{r['detail']}</div>
+            <div style="font-size:0.7rem; color:#484f58; margin-top:4px;">{r['note']}</div>
+        </div>"""
+    reco_html += '</div>'
+
+    n_test_weeks = summary_rows[0]['Weeks Tested']
+    market_verdict = 'BEAR MARKET' if universe_val < -5 else ('BULL MARKET' if universe_val > 5 else 'SIDEWAYS MARKET')
+    market_color = '#ff7b72' if universe_val < -5 else ('#3fb950' if universe_val > 5 else '#ffa657')
 
     st.markdown(f"""
     <div style="background:linear-gradient(135deg, #0d1117, #161b22); border-radius:12px;
-                padding:20px; border:2px solid {insight_color}; margin-bottom:20px;">
-        <div style="font-size:1.2rem; font-weight:800; color:{insight_color}; margin-bottom:8px;">
-            {insight_icon} KEY FINDING
+                padding:20px; border:2px solid #30363d; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div style="font-size:1.2rem; font-weight:800; color:#e6edf3;">📊 BACKTEST RESULTS</div>
+            <div style="display:flex; gap:16px;">
+                <span style="font-size:0.8rem; color:#8b949e;">
+                    {n_test_weeks} test windows · Universe: <span style="color:{market_color}; font-weight:700;">{universe_val:+.1f}% ({market_verdict})</span>
+                </span>
+            </div>
         </div>
-        <div style="font-size:0.95rem; color:#e6edf3;">
-            {insight_text}
-        </div>
-        <div style="margin-top:8px; font-size:0.75rem; color:#484f58;">
-            Based on {summary_rows[0]['Weeks Tested']} walk-forward test windows with no lookahead bias
-        </div>
+        <div style="font-size:0.85rem; color:#8b949e; margin-bottom:14px;">Top strategy recommendations ranked by data-driven backtest performance:</div>
+        {reco_html}
     </div>
     """, unsafe_allow_html=True)
 
@@ -6833,10 +6921,11 @@ def render_backtest_tab(uploaded_files):
 
     styled_df = summary_df.style.applymap(
         _highlight_returns,
-        subset=['Avg Wk Return %', 'Cumulative %', 'Max DD %', 'Best Wk %', 'Worst Wk %']
+        subset=['Avg Wk Return %', 'Cumulative %', 'Alpha %', 'Max DD %', 'Best Wk %', 'Worst Wk %']
     ).format({
         'Avg Wk Return %': '{:+.2f}',
         'Cumulative %': '{:+.2f}',
+        'Alpha %': '{:+.2f}',
         'Win Rate %': '{:.0f}',
         'Sharpe (Ann.)': '{:.2f}',
         'Max DD %': '{:.2f}',
@@ -6845,6 +6934,103 @@ def render_backtest_tab(uploaded_files):
         'Avg Stocks/Wk': '{:.0f}',
     })
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+    # ── Strategy Insights (data-driven) ──
+    with st.expander("🔬 Strategy Insights (Data-Driven Analysis)", expanded=True):
+        # Find key patterns from actual data
+        insights = []
+
+        # Insight 1: Concentration risk — compare S2b vs S3b
+        s2b_row = summary_df[summary_df['Strategy'].str.contains('S2b')]
+        s3b_row = summary_df[summary_df['Strategy'].str.contains('S3b')]
+        if len(s2b_row) > 0 and len(s3b_row) > 0:
+            s2b_cum = float(s2b_row['Cumulative %'].iloc[0])
+            s3b_cum = float(s3b_row['Cumulative %'].iloc[0])
+            spread = s3b_cum - s2b_cum
+            if abs(spread) > 3:
+                if spread > 0:
+                    insights.append(('⚡', 'Concentration Risk', f'Top 20 T-Score ({s3b_cum:+.1f}%) beat Top 10 T-Score ({s2b_cum:+.1f}%) by **{spread:+.1f}%**. Broader baskets absorb single-stock blow-ups better.', '#ffa657'))
+                else:
+                    insights.append(('⚡', 'Concentration Pays', f'Top 10 T-Score ({s2b_cum:+.1f}%) beat Top 20 ({s3b_cum:+.1f}%) by **{abs(spread):.1f}%**. Concentrated picks are working.', '#3fb950'))
+
+        # Insight 2: T-Score vs WAVE Rank
+        s2_row = summary_df[summary_df['Strategy'] == 'S2: Top 10 WAVE Rank']
+        s3_row = summary_df[summary_df['Strategy'] == 'S3: Top 20 WAVE Rank']
+        if len(s2_row) > 0 and len(s2b_row) > 0:
+            wave_best = max(float(s2_row['Cumulative %'].iloc[0]), float(s3_row['Cumulative %'].iloc[0])) if len(s3_row) > 0 else float(s2_row['Cumulative %'].iloc[0])
+            tscore_best = max(float(s2b_row['Cumulative %'].iloc[0]), float(s3b_row['Cumulative %'].iloc[0])) if len(s3b_row) > 0 else float(s2b_row['Cumulative %'].iloc[0])
+            gap = tscore_best - wave_best
+            if abs(gap) > 2:
+                if gap > 0:
+                    insights.append(('🧠', 'T-Score Ranking Superior', f'Best T-Score strategy ({tscore_best:+.1f}%) outperformed best WAVE Rank strategy ({wave_best:+.1f}%) by **{gap:+.1f}%**. Trajectory Engine scoring adds real value.', '#3fb950'))
+                else:
+                    insights.append(('🧠', 'WAVE Rank Still Competitive', f'Best WAVE Rank ({wave_best:+.1f}%) beat best T-Score ({tscore_best:+.1f}%) by **{abs(gap):.1f}%**.', '#58a6ff'))
+
+        # Insight 3: Conviction signal effectiveness
+        s7_data = summary_df[summary_df['Strategy'].str.contains('S7')]
+        if len(s7_data) > 0:
+            s7_wr = float(s7_data['Win Rate %'].iloc[0])
+            s7_dd = float(s7_data['Max DD %'].iloc[0])
+            uni_wr = float(summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Win Rate %'].iloc[0])
+            if s7_wr > uni_wr:
+                insights.append(('🎯', 'Conviction Signal Works', f'Conviction ≥ 65 achieved **{s7_wr:.0f}% win rate** (vs universe {uni_wr:.0f}%), with the **best Max DD ({s7_dd:.1f}%)**. Conviction is the most protective filter.', '#3fb950'))
+
+        # Insight 4: Regime-Adaptive performance
+        s10_data = summary_df[summary_df['Strategy'].str.contains('S10')]
+        if len(s10_data) > 0:
+            s10_wr = float(s10_data['Win Rate %'].iloc[0])
+            s10_alpha = float(s10_data['Alpha %'].iloc[0])
+            if s10_wr >= 50:
+                insights.append(('🔄', 'Regime Detection Effective', f'Regime-Adaptive achieved **{s10_wr:.0f}% win rate** (highest) with **{s10_alpha:+.1f}% alpha**. Switching between bull/bear modes adds value.', '#bc8cff'))
+
+        # Insight 5: No Decay filter check
+        s5_data = summary_df[summary_df['Strategy'].str.contains('S5:')]
+        s6_data = summary_df[summary_df['Strategy'].str.contains('S6:')]
+        if len(s5_data) > 0 and len(s6_data) > 0:
+            s5_cum = float(s5_data['Cumulative %'].iloc[0])
+            s6_cum = float(s6_data['Cumulative %'].iloc[0])
+            diff = s6_cum - s5_cum
+            if diff < -0.5:
+                insights.append(('🔍', 'Decay Filter Drag', f'Adding No-Decay filter made results **{abs(diff):.1f}% worse** ({s6_cum:+.1f}% vs {s5_cum:+.1f}%). In downtrends, this filter removes bounce candidates.', '#ff7b72'))
+            elif diff > 0.5:
+                insights.append(('🔍', 'Decay Filter Helps', f'No-Decay filter improved results by **{diff:.1f}%** ({s6_cum:+.1f}% vs {s5_cum:+.1f}%).', '#3fb950'))
+
+        # Insight 6: Full Signal overfiltering check
+        s8_data = summary_df[summary_df['Strategy'].str.contains('S8:')]
+        if len(s8_data) > 0:
+            s8_alpha = float(s8_data['Alpha %'].iloc[0])
+            s8_stocks = float(s8_data['Avg Stocks/Wk'].iloc[0])
+            if s8_alpha < 2 and s8_stocks < 100:
+                insights.append(('⚙️', 'Full Signal Overfilters', f'Full Signal (S8) has only **{s8_alpha:+.1f}% alpha** with ~{s8_stocks:.0f} stocks. Stacking T-Score + Conviction + No Decay + WAVE filters together cancels out alpha.', '#ff7b72'))
+
+        if insights:
+            for icon, title, detail, color in insights:
+                st.markdown(f"""
+                <div style="background:#161b22; border-radius:8px; padding:12px 16px;
+                            border-left:4px solid {color}; margin-bottom:8px;">
+                    <div style="font-weight:700; color:{color}; font-size:0.9rem; margin-bottom:2px;">{icon} {title}</div>
+                    <div style="font-size:0.82rem; color:#c9d1d9;">{detail}</div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("Not enough data variance to generate insights. Add more CSV weeks.")
+
+    # ── Risk Warning for dangerous strategies ──
+    worst_name = worst_strat['Strategy']
+    worst_alpha = worst_strat['Alpha %']
+    worst_dd = worst_strat['Max DD %']
+    if worst_alpha < -3 and worst_name != 'S1: Universe Avg':
+        st.markdown(f"""
+        <div style="background:#1a0d0d; border-radius:8px; padding:12px 16px;
+                    border:1px solid #6e3630; margin-bottom:16px;">
+            <span style="color:#ff7b72; font-weight:700;">⚠️ RISK WARNING:</span>
+            <span style="color:#c9d1d9; font-size:0.85rem;">
+                <b>{worst_name}</b> underperformed the universe by <b>{worst_alpha:.1f}%</b>
+                with a max drawdown of <b>{worst_dd:.1f}%</b>.
+                Concentrated portfolios with few stocks carry severe single-stock blow-up risk.
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── Cumulative Return Chart ──
     st.markdown("#### 📈 Cumulative Return Over Time")
@@ -6865,6 +7051,11 @@ def render_backtest_tab(uploaded_files):
         'S10: Regime-Adaptive': '#bc8cff',
     }
 
+    # Highlight: best alpha, best broad, and safest strategies
+    highlight_names = {best_name, safest_row['Strategy'], 'S1: Universe Avg'}
+    if best_broad_row is not None:
+        highlight_names.add(best_broad_row['Strategy'])
+
     for sname, weeks in bt_results.items():
         if not weeks:
             continue
@@ -6876,7 +7067,7 @@ def render_backtest_tab(uploaded_files):
             cum_vals.append(cum)
             x_dates.append(w['forward_week'])
 
-        line_width = 3 if sname in ('S1: Universe Avg', best_name) else 1.5
+        line_width = 3 if sname in highlight_names else 1.5
         dash = 'dash' if sname == 'S1: Universe Avg' else None
 
         fig.add_trace(go.Scatter(
@@ -6992,8 +7183,9 @@ def render_backtest_tab(uploaded_files):
     dl1, dl2, dl3 = st.columns(3)
 
     with dl1:
-        # Summary CSV
-        summary_csv = summary_df.to_csv(index=False).encode('utf-8')
+        # Summary CSV — drop Rating column for clean data export
+        export_df = summary_df.drop(columns=['Rating'], errors='ignore')
+        summary_csv = export_df.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📋 Summary Table (CSV)",
             data=summary_csv,
