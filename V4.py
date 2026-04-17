@@ -2,12 +2,22 @@
 Rank Trajectory Engine v9.0 — Data-Driven
 =======================================================
 Professional Stock Rank Trajectory Analysis System
-with 8-Component Adaptive Scoring, Data-Driven Conviction, Sector-Relative Blending,
-Breakout Quality Component, Market State Signal, Momentum Decay Warning,
-Sector Alpha Detection, Market Regime Awareness, Confidence Intervals,
-Z-Score Normalization, Risk-Adjusted T-Score, Exit Warning System,
-Hot Streak Detection, Multi-Stage Selection Funnel,
-WAVE SIGNAL FUSION ENGINE, and WALK-FORWARD BACKTEST ENGINE.
+with 8-Component Adaptive Scoring, Data-Driven Conviction (12 signals),
+Sector-Relative Blending, Breakout Quality Component, Market State Signal,
+Momentum Decay Warning, Sector Alpha Detection, Market Regime Awareness,
+Confidence Intervals, Z-Score Normalization, Risk-Adjusted T-Score,
+Exit Warning System, Hot Streak Detection, Multi-Stage Selection Funnel,
+WAVE SIGNAL FUSION ENGINE, and 13-STRATEGY WALK-FORWARD BACKTEST ENGINE.
+
+v10.1 CONVICTION ENHANCEMENT:
+  Added 2 new conviction signals from previously unused CSV columns:
+    Signal 11: 12-Month Momentum (ret_1y) — 7pts max
+      Academic cross-sectional momentum: stocks with strong 1yr returns persist.
+    Signal 12: Low-Distance Strength (from_low_pct) — 5pts max
+      Stocks far from 52w low = structural uptrend. Double-confirms from_high_pct.
+  Added backtest strategy S11: Momentum-Quality
+    Filters: ret_1y ≥ 25% + from_low ≥ 50% + conviction ≥ 50 + no decay,
+    sector-capped 3/sector. Tests incremental value of new signals.
 
 v9.0 DATA-DRIVEN RECALIBRATION:
   Deep analysis of 28 CSVs, 27 week-to-week transitions, ~2,115 stocks/week:
@@ -1806,7 +1816,7 @@ def _compute_single_trajectory(h: dict) -> dict:
     #   Persistence 6+wk: +3.91%/wk (still dominant)
     #   Market State: BOUNCE +1.17%/wk, UPTREND -0.71%/wk (mean reversion)
     #
-    # Signals (9 total, 100pts max):
+    # Signals (12 total, 100pts max):
     #   1. Persistence Strength: 25pts — consecutive weeks in top 25%
     #   2. Consistency Quality:  12pts — consistency score component
     #   3. Near-High Strength:   14pts — from_high_pct (#1 forward predictor)
@@ -1816,6 +1826,9 @@ def _compute_single_trajectory(h: dict) -> dict:
     #   7. Sector Leadership:     7pts — sector-relative position
     #   8. Market State Signal:   8pts — BOUNCE/DOWNTREND mean-reversion bonus
     #   9. No-Decay Bonus:        6pts — absence of momentum deterioration
+    #  10. Trend-Hurst Persistence: 6pts — structural trend persistence
+    #  11. 12-Month Momentum:    7pts — ret_1y long-term trend strength
+    #  12. Low-Distance Strength: 5pts — from_low_pct proximity confirmation
     conviction = 0
 
     # Signal 1: Persistence Strength (25 pts max) — BACKTEST-PROVEN #1 PREDICTOR
@@ -1942,6 +1955,38 @@ def _compute_single_trajectory(h: dict) -> dict:
         conviction += 4    # Moderate trend + moderate persistence
     elif trend >= 52 and _hurst_raw >= 0.50:
         conviction += 2    # Mild trend + random walk boundary
+
+    # Signal 11: 12-Month Momentum (7 pts max) — v10.1 NEW
+    # Academic evidence (Jegadeesh & Titman): 12-month cross-sectional momentum
+    # is one of the strongest equity return predictors worldwide.
+    # ret_1y is stored in CSV but was NEVER used in scoring until now.
+    # Stocks with strong 1-year returns tend to continue outperforming.
+    # Combined with near-high signal (#3) this creates a dual momentum confirmation.
+    _ret_1y_val = _latest_valid(h.get('ret_1y', []), 0)
+    if _ret_1y_val >= 80:
+        conviction += 7    # Exceptional 1yr momentum (>80%)
+    elif _ret_1y_val >= 50:
+        conviction += 5    # Very strong 1yr momentum (>50%)
+    elif _ret_1y_val >= 25:
+        conviction += 3    # Solid 1yr momentum (>25%)
+    elif _ret_1y_val >= 10:
+        conviction += 1    # Mild positive 1yr momentum
+    # Negative or flat 1yr return → 0 pts (no penalty — other signals handle risk)
+
+    # Signal 12: Low-Distance Strength (5 pts max) — v10.1 NEW
+    # from_low_pct = % distance from 52-week LOW (positive = far from low).
+    # Stocks far from their low AND near their high (Signal 3) = double confirmation.
+    # from_low_pct is positive: 0 = at 52w low, 100 = 100% above 52w low.
+    # This is orthogonal to from_high_pct: a stock can be 50% above its low
+    # but still 20% below its high (wide trading range).
+    _from_low_val = _latest_valid(h.get('from_low_pct', []), 0)
+    if _from_low_val >= 80:
+        conviction += 5    # Far above 52w low — strong structural uptrend
+    elif _from_low_val >= 50:
+        conviction += 3    # Solidly above 52w low
+    elif _from_low_val >= 25:
+        conviction += 1    # Moderate distance from low
+    # Near 52w low → 0 pts (stock in trouble, other signals will reflect this)
 
     conviction = min(100, conviction)
 
@@ -6407,6 +6452,7 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         'S8: Full Signal',
         'S9: Conviction-Weighted',
         'S10: Regime-Adaptive',
+        'S11: Momentum-Quality',
     ]
     all_results = {name: [] for name in strategy_names}
 
@@ -6624,6 +6670,30 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         s2b_capped = _sector_cap(s2b_tickers, 2)
         s3b_capped = _sector_cap(s3b_tickers, 3)
 
+        # ── S11: Momentum-Quality Strategy (v10.1) ──
+        # Tests the NEW conviction signals: ret_1y (12-month momentum) +
+        # from_low_pct (distance from 52w low). Selects stocks with:
+        #   1. Strong 12-month return (>25%) — proven long-term momentum
+        #   2. Far from 52-week low (>50%) — structural uptrend confirmed
+        #   3. Conviction ≥ 50 — minimum multi-signal agreement
+        #   4. No high decay — momentum still intact
+        # This isolates the incremental value of ret_1y + from_low_pct signals.
+        s11_candidates = []
+        for t, r in traj.items():
+            h_dict = histories.get(t, {})
+            _r1y = h_dict.get('ret_1y', [])
+            _fl = h_dict.get('from_low_pct', [])
+            latest_ret_1y = float(_r1y[-1]) if _r1y and not np.isnan(_r1y[-1]) else 0
+            latest_from_low = float(_fl[-1]) if _fl and not np.isnan(_fl[-1]) else 0
+            if (latest_ret_1y >= 25
+                and latest_from_low >= 50
+                and r.get('conviction', 0) >= 50
+                and r.get('decay_label', '') not in ('DECAY_HIGH', 'DECAY_MODERATE')):
+                s11_candidates.append((t, r['trajectory_score']))
+        # Sort by T-Score descending, sector-cap at 3 per sector
+        s11_candidates.sort(key=lambda x: x[1], reverse=True)
+        s11_tickers = _sector_cap([t for t, _ in s11_candidates], 3)
+
         # ── Measure forward returns for each strategy ──
         strategy_picks = {
             'S1: Universe Avg': s1_tickers,
@@ -6637,6 +6707,7 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             'S7: Conviction ≥ 65': s7_tickers,
             'S8: Full Signal': s8_tickers,
             'S10: Regime-Adaptive': s10_tickers,
+            'S11: Momentum-Quality': s11_tickers,
         }
 
         week_label = date.strftime('%Y-%m-%d')
@@ -7059,6 +7130,7 @@ def render_backtest_tab(uploaded_files):
         'S8: Full Signal': '#FFD700',
         'S9: Conviction-Weighted': '#f778ba',
         'S10: Regime-Adaptive': '#bc8cff',
+        'S11: Momentum-Quality': '#56d364',
     }
 
     # Highlight: best alpha, best broad, and safest strategies
@@ -7176,6 +7248,7 @@ def render_backtest_tab(uploaded_files):
         | **S8: Full Signal** | T-Score ≥ 70 + Conviction ≥ 65 + No Decay + WAVE Confirmed/Strong | Does max filtering produce best results? |
         | **S9: Conviction-Weighted** | T-Score ≥ 60, conviction ≥ 40, weighted by conviction score | Does weighting by conviction add alpha? |
         | **S10: Regime-Adaptive** | Bull: Top T-Score + no decay; Bear: Conviction ≥ 65 + persistent + no decay | Does regime adaptation help? |
+        | **S11: Momentum-Quality** | ret_1y ≥ 25% + from_low ≥ 50% + Conviction ≥ 50 + no decay, sector-capped | Do 12-month momentum + low-distance signals add alpha? |
 
         **Forward Return:** Actual price change from current week to next week. Computed from price data, not ret_7d.
 
@@ -7186,6 +7259,8 @@ def render_backtest_tab(uploaded_files):
         **Conviction-Weighted (S9):** Instead of equal-weight, each stock's return is weighted by its conviction score. High-conviction picks get more capital.
         
         **Regime-Adaptive (S10):** Automatically switches between aggressive (momentum-focused) in bull markets and defensive (conviction+persistence) in bear markets based on median T-Score.
+        
+        **Momentum-Quality (S11):** Filters for stocks with strong 12-month returns (≥25%), far from 52-week low (≥50%), minimum conviction (≥50), and no momentum decay. Sector-capped at 3/sector. Tests whether long-term momentum + structural uptrend confirmation adds alpha.
         """)
 
     # ── Download Backtest Results ──
