@@ -4702,7 +4702,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                         histories: dict, metadata: dict):
     """Render the main rankings tab — Clean, minimal, maximum signal density."""
 
-    # ── Ensure all v2.3 columns exist (defensive) ──
+    # ── Ensure all required columns exist (defensive) ──
     for col, default in [('price_tag', ''), ('signal_tags', ''), ('decay_tag', ''),
                          ('decay_label', ''), ('decay_score', 0),
                          ('sector_alpha_tag', 'NEUTRAL'), ('sector_alpha_value', 0),
@@ -4710,16 +4710,28 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                          ('grade_emoji', '📉'),
                          ('pattern_key', 'neutral'), ('pattern', '➖ Neutral'),
                          ('sector', ''), ('return_quality', 50),
-                         ('company_name', ''), ('category', ''), ('industry', '')]:
+                         ('company_name', ''), ('category', ''), ('industry', ''),
+                         ('alpha_score', 0), ('conviction', 0), ('tmi', 0),
+                         ('rally_gain', 0), ('rally_stage', 'UNKNOWN'),
+                         ('rally_leg_pct', 0), ('confidence', 0)]:
         if col not in all_df.columns:
             all_df[col] = default
         if col not in filtered_df.columns:
             filtered_df[col] = default
 
-    # ── Compute metrics once ──
+    # ── Empty state guard ──
+    if filtered_df.empty:
+        st.info("🔍 No stocks match your current filters. Try adjusting or clearing filters.")
+        return
+
+    # ── Keep full filtered reference for intelligence dashboard ──
+    full_filtered_df = filtered_df.copy()
+
+    # ── Compute metrics from FULL filtered data (before Show Top truncation) ──
     total = len(all_df)
     shown = len(filtered_df)
-    avg_score = filtered_df['trajectory_score'].mean() if shown > 0 else 0
+    avg_score = filtered_df['trajectory_score'].mean()
+    avg_alpha = filtered_df['alpha_score'].mean()
     rockets = int((filtered_df['pattern_key'] == 'rocket').sum())
     elites = int((filtered_df['pattern_key'] == 'stable_elite').sum())
     confirmed = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum())
@@ -4735,15 +4747,17 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     clean_n = shown - decay_any
 
     # ════════════════════════════════════════════
-    # SECTION 1 — METRIC STRIP (compact, 8 chips)
+    # SECTION 1 — METRIC STRIP (compact, 9 chips)
     # ════════════════════════════════════════════
     def _chip(val, lbl, cls=''):
         return f'<div class="m-chip {cls}"><div class="m-val">{val}</div><div class="m-lbl">{lbl}</div></div>'
 
     sc_cls = 'm-green' if avg_score >= 55 else 'm-orange' if avg_score >= 40 else 'm-red'
+    al_cls = 'm-green' if avg_alpha >= 55 else 'm-orange' if avg_alpha >= 35 else 'm-red'
     chips = ''.join([
         _chip(f'{shown:,}', 'Stocks'),
-        _chip(f'{avg_score:.1f}', 'Avg Score', sc_cls),
+        _chip(f'{avg_score:.1f}', 'Avg T-Score', sc_cls),
+        _chip(f'{avg_alpha:.1f}', 'Avg Alpha', al_cls),
         _chip(f'{grade_s + grade_a}', 'S + A Grade', 'm-green'),
         _chip(f'{rockets}', '🚀 Rockets'),
         _chip(f'{confirmed}', '💰 Confirmed', 'm-green'),
@@ -4758,8 +4772,8 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ════════════════════════════════════════════
     st.markdown('<div class="sec-head">📋 Trajectory Rankings</div>', unsafe_allow_html=True)
 
-    # ── Control row: Show Top | Sort | View | Export ──
-    ctl0, ctl1, ctl2, ctl3 = st.columns([0.8, 1.3, 1.3, 1.0])
+    # ── Control row: Show Top | Sort | View ──
+    ctl0, ctl1, ctl2 = st.columns([0.8, 1.3, 1.3])
     with ctl0:
         show_top_options = [10, 20, 50, 100, 200, 500, "All"]
         display_n_select = st.selectbox("Show Top", show_top_options,
@@ -4767,22 +4781,14 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         display_n = len(filtered_df) if display_n_select == "All" else display_n_select
     with ctl1:
         sort_by = st.selectbox("Sort by", [
-            'Trajectory Score', 'Current Rank', 'Rank Change', 'TMI',
-            'Positional Quality', 'Best Rank', 'Streak', 'Trend', 'Velocity',
+            'Trajectory Score', 'Alpha Score', 'Current Rank', 'Rank Change', 'TMI',
+            'Conviction', 'Positional Quality', 'Best Rank', 'Streak', 'Trend', 'Velocity',
             'Consistency', 'Return Quality', 'Rally Gain', 'Price Alignment', 'Decay Score', 'Sector Alpha'
         ], key='rank_sort', label_visibility='collapsed')
     with ctl2:
         view_mode = st.selectbox("View", [
             'Standard', 'Compact', 'Signals', 'Trading', 'Complete', 'Custom'
         ], key='rank_view', label_visibility='collapsed')
-    with ctl3:
-        st.write("")  # placeholder — export button rendered below after data is ready
-
-    # ── Apply Show Top limit ──
-    filtered_df = filtered_df.head(display_n).copy()
-    filtered_df = filtered_df.reset_index(drop=True)
-    filtered_df['t_rank'] = range(1, len(filtered_df) + 1)
-    shown = len(filtered_df)
 
     # ── T-Rank = rank within full universe (stable, never changes with filters) ──
     t_rank_sorted = all_df.sort_values(
@@ -4792,8 +4798,10 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     t_rank_map = {t: i + 1 for i, t in enumerate(t_rank_sorted['ticker'])}
     filtered_df['t_rank_universe'] = filtered_df['ticker'].map(t_rank_map).fillna(0).astype(int)
 
+    # ── Sort FIRST, then apply Show Top limit ──
     sort_map = {
         'Trajectory Score': ('trajectory_score', False),
+        'Alpha Score': ('alpha_score', False),
         'Positional Quality': ('positional', False),
         'TMI': ('tmi', False),
         'Current Rank': ('current_rank', True),
@@ -4804,14 +4812,16 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Velocity': ('velocity', False),
         'Consistency': ('consistency', False),
         'Return Quality': ('return_quality', False),
+        'Conviction': ('conviction', False),
         'Rally Gain': ('rally_gain', False),
         'Price Alignment': ('price_alignment', False),
         'Decay Score': ('decay_score', True),
         'Sector Alpha': ('sector_alpha_value', False),
     }
     col_name, ascending = sort_map.get(sort_by, ('trajectory_score', False))
-    display_df = filtered_df.sort_values(col_name, ascending=ascending).reset_index(drop=True)
+    display_df = filtered_df.sort_values(col_name, ascending=ascending).head(display_n).reset_index(drop=True)
     display_df['t_rank'] = range(1, len(display_df) + 1)
+    table_n = len(display_df)
 
     # ── Add latest price from histories ──
     display_df['latest_price'] = display_df['ticker'].apply(
@@ -4832,6 +4842,8 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                      st.column_config.NumberColumn(format="₹%.2f")),
         'T-Score':  ('trajectory_score', 'T-Score', 'Composite trajectory score (0-100)',
                      st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f")),
+        'Alpha':    ('alpha_score', 'Alpha', 'Alpha Score — forward-return predictor (0-100)',
+                     st.column_config.ProgressColumn('Alpha', min_value=0, max_value=100, format="%.0f")),
         'Grade':    ('grade', 'Grade', 'S/A/B/C/D/F based on T-Score', None),
         'Pattern':  ('pattern', 'Pattern', 'Trajectory pattern classification', None),
         'Signals':  ('signal_tags', 'Signals', 'All signal tags combined', None),
@@ -4853,7 +4865,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                      st.column_config.ProgressColumn('RetQuality', min_value=0, max_value=100, format="%.1f")),
         'Price Signal': ('price_label', 'Price Signal', 'Price alignment: CONFIRMED/DIVERGENT/NEUTRAL', None),
         'Decay':    ('decay_label', 'Decay', 'Momentum decay level: HIGH/MODERATE/MILD/CLEAN', None),
-        'Alpha':    ('sector_alpha_tag', 'Alpha', 'Sector alpha classification', None),
+        'Sect Alpha': ('sector_alpha_tag', 'Sect Alpha', 'Sector alpha classification', None),
         'Trajectory': ('sparkline', 'Trajectory', 'Score trajectory over time',
                        st.column_config.LineChartColumn('Trajectory', y_min=0, y_max=100, width="medium")),
         # v6.3: Advanced Trading Signals
@@ -4885,19 +4897,19 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     }
 
     VIEW_PRESETS = {
-        'Compact':  ['T-Rank', 'Ticker', '₹ Price', 'T-Score', 'Grade', 'Pattern',
+        'Compact':  ['T-Rank', 'Ticker', '₹ Price', 'T-Score', 'Alpha', 'Grade', 'Pattern',
                      'Δ Total', 'Streak', 'Trajectory'],
-        'Standard': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Grade',
+        'Standard': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Alpha', 'Grade',
                      'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Stage', 'RallyGain', 'Rally%', 'Trajectory'],
-        'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Grade',
-                     'Pattern', 'Signals', 'Price Signal', 'Decay', 'Alpha', 'Trajectory'],
-        'Trading':  ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Grade', 'Conviction',
+        'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Alpha', 'Grade',
+                     'Pattern', 'Signals', 'Price Signal', 'Decay', 'Sect Alpha', 'Trajectory'],
+        'Trading':  ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Alpha', 'Grade', 'Conviction',
                      'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak',
                      'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Rally%', 'RallyGain', 'Stage', 'Streak', 'Trajectory'],
-        'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score',
+        'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Alpha',
                      'Grade', 'Pattern', 'Signals', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
-                     'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Alpha', 
+                     'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Sect Alpha',
                      'Conviction', 'Risk-Adj', 'Exit Risk', 'Hot Streak',
                      'Wave', 'Confluence', 'Inst Flow', 'Harmony', 'Rally%', 'RallyGain', 'Trajectory'],
     }
@@ -4945,7 +4957,22 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         table_df['Category'] = table_df['Category'].astype(str).str[:12]
 
     # ── Dynamic height ──
-    tbl_height = min(750, max(180, len(table_df) * 35 + 60))
+    tbl_height = min(800, max(180, len(table_df) * 35 + 60))
+
+    # ── Table info + Export row ──
+    _info_c, _exp_c = st.columns([3, 1])
+    with _info_c:
+        st.caption(f"Showing {table_n:,} of {shown:,} filtered stocks · Sorted by **{sort_by}**")
+    with _exp_c:
+        _csv_data = table_df.drop(columns=['Trajectory'], errors='ignore').to_csv(index=False)
+        st.download_button(
+            label="📥 CSV",
+            data=_csv_data,
+            file_name=f"trajectory_rankings_{metadata.get('last_date', 'export')}.csv",
+            mime='text/csv',
+            key='csv_download',
+            use_container_width=True,
+        )
 
     st.dataframe(
         table_df, column_config=col_config,
@@ -4970,19 +4997,6 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                 "| 🏷️BTA | **Sector Beta** — riding sector trend, not individual strength |\n"
                 "| 📉LAG | **Sector Laggard** — underperforming its sector peers |"
             )
-
-    # ── Export CSV — always rendered (single-click download) ──
-    # NOTE: Streamlit's st.button + conditional st.download_button requires TWO clicks.
-    # Fix: always render download_button directly so it works in one click.
-    _csv_data = table_df.drop(columns=['Trajectory'], errors='ignore').to_csv(index=False)
-    st.download_button(
-        label="📥 Download CSV",
-        data=_csv_data,
-        file_name=f"trajectory_rankings_{metadata.get('last_date', 'export')}.csv",
-        mime='text/csv',
-        key='csv_download',
-        use_container_width=False,
-    )
 
     # ════════════════════════════════════════════
     # SECTION 6 — INTELLIGENCE DASHBOARD (tabs)
@@ -5015,10 +5029,10 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             st.plotly_chart(fig_health, use_container_width=True)
 
         with h2:
-            above70 = int((filtered_df['trajectory_score'] >= 70).sum())
-            high_conviction = int((filtered_df['conviction'] >= 65).sum()) if 'conviction' in filtered_df.columns else 0
-            confirmed_n = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum()) if 'price_label' in filtered_df.columns else 0
-            decay_any_n = int(filtered_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE']).sum()) if 'decay_label' in filtered_df.columns else 0
+            above70 = int((full_filtered_df['trajectory_score'] >= 70).sum())
+            high_conviction = int((full_filtered_df['conviction'] >= 65).sum()) if 'conviction' in full_filtered_df.columns else 0
+            confirmed_n = int((full_filtered_df['price_label'] == 'PRICE_CONFIRMED').sum()) if 'price_label' in full_filtered_df.columns else 0
+            decay_any_n = int(full_filtered_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE']).sum()) if 'decay_label' in full_filtered_df.columns else 0
 
             fig_pipe = go.Figure(go.Waterfall(
                 orientation="v",
@@ -5049,7 +5063,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
 
     # ─── TAB: Sectors ───
     with tab_sectors:
-        qualified = filtered_df[filtered_df['weeks'] >= 3].copy()
+        qualified = full_filtered_df[full_filtered_df['weeks'] >= 3].copy()
         if not qualified.empty:
             sect_agg = qualified.groupby('sector').agg(
                 avg_score=('trajectory_score', 'mean'),
@@ -5093,7 +5107,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     with tab_patterns:
         p1, p2 = st.columns([3, 2])
         with p1:
-            pattern_counts = filtered_df['pattern_key'].value_counts()
+            pattern_counts = full_filtered_df['pattern_key'].value_counts()
             p_labels = [PATTERN_DEFS.get(k, ('', k, ''))[1] for k in pattern_counts.index]
             p_colors = [PATTERN_COLORS.get(k, '#8b949e') for k in pattern_counts.index]
             fig_pat = go.Figure(data=[go.Pie(
@@ -5115,7 +5129,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             for pk in pattern_counts.index[:10]:
                 emoji, name, _ = PATTERN_DEFS.get(pk, ('•', pk, ''))
                 cnt = int(pattern_counts[pk])
-                pct = round(cnt / max(shown, 1) * 100, 1)
+                pct = round(cnt / max(len(full_filtered_df), 1) * 100, 1)
                 bar_w = min(pct * 3, 100)
                 bar_color = PATTERN_COLORS.get(pk, '#8b949e')
                 st.markdown(f"""<div style="margin-bottom:5px;">
@@ -5129,7 +5143,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     with tab_grades:
         ga1, ga2 = st.columns(2)
         with ga1:
-            grade_counts = filtered_df['grade'].value_counts().reindex(['S', 'A', 'B', 'C', 'D', 'F']).fillna(0)
+            grade_counts = full_filtered_df['grade'].value_counts().reindex(['S', 'A', 'B', 'C', 'D', 'F']).fillna(0)
             fig_gr = go.Figure(data=[go.Bar(
                 x=grade_counts.index, y=grade_counts.values,
                 marker_color=[GRADE_COLORS.get(g, '#8b949e') for g in grade_counts.index],
@@ -5152,7 +5166,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             alpha_cmap = {'SECTOR_LEADER': '#d29922', 'SECTOR_OUTPERFORM': '#238636',
                           'SECTOR_ALIGNED': '#8b949e', 'SECTOR_BETA': '#da3633',
                           'SECTOR_LAGGARD': '#f85149', 'NEUTRAL': '#484f58'}
-            alpha_counts = filtered_df['sector_alpha_tag'].value_counts()
+            alpha_counts = full_filtered_df['sector_alpha_tag'].value_counts()
             al, av, ac = [], [], []
             for a in alpha_order:
                 if a in alpha_counts.index:
