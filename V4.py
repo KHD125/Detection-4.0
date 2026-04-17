@@ -1,7 +1,7 @@
 """
-Rank Trajectory Engine v10.1 — Data-Driven
+Alpha Trajectory v10.1 — Stock Intelligence Engine
 =======================================================
-Professional Stock Rank Trajectory Analysis System
+Professional Stock Alpha & Rank Trajectory Analysis System
 with 8-Component Adaptive Scoring, Data-Driven Conviction (12 signals),
 Sector-Relative Blending, Breakout Quality Component, Market State Signal,
 Momentum Decay Warning, Sector Alpha Detection, Market Regime Awareness,
@@ -7834,11 +7834,11 @@ def render_about_tab():
     """Render about/documentation tab"""
 
     st.markdown("""
-    ## 📊 Rank Trajectory Engine v9.0 — Data-Driven
+    ## ◉ Alpha Trajectory v10.1 — Stock Intelligence Engine
 
     The **ALL TIME BEST** stock rank trajectory analysis system with **8-component adaptive scoring**,
-    **data-driven conviction** (from_high + breakout as top predictors), **sector-relative blending**,
-    **momentum decay warning**, and **sector alpha detection**.
+    **Alpha Score Engine (8 forward-predictors)**, **data-driven conviction (12 signals)**,
+    **sector-relative blending**, **momentum decay warning**, and **sector alpha detection**.
 
     ---
 
@@ -8133,7 +8133,7 @@ def render_about_tab():
 
     ---
 
-    *Built for the Wave Detection ecosystem • v8.0 • Wave Signal Fusion • March 2026*
+    *Built for the Wave Detection ecosystem • v10.1 • Alpha Trajectory • April 2026*
     """)
 
 
@@ -8249,8 +8249,8 @@ def main():
                         )
 
     # Header
-    st.markdown('<div class="main-header">📊 RANK TRAJECTORY ENGINE</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Professional Stock Rank Trajectory Analysis • Multi-Week Momentum Intelligence</div>',
+    st.markdown('<div class="main-header">◉ ALPHA TRAJECTORY</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Stock Intelligence Engine • Multi-Week Momentum & Alpha Scoring</div>',
                 unsafe_allow_html=True)
 
     if not uploaded_files:
