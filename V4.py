@@ -5556,71 +5556,123 @@ def _render_comparison_chart(main_ticker: str, compare_tickers: list,
 # ============================================
 
 def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
-    """🔥 Top Movers Tab — 50 per side, multi-week filter."""
+    """🔥 Top Movers Tab v2.0 — multi-week window, 50/100/150 stock selector.
+
+    v2.0 fixes:
+      - XSS: all ticker/company names html-escaped
+      - Dropdown for 50/100/150 stocks per side
+      - Header hero badges update to match selected time window
+      - Info bar reflects actual count + window
+      - max-height scales with selected count
+      - Sector column added
+      - NaN guards on every .get() / merge field
+      - Summary stats row (avg/median rank change)
+    """
+    import html as _html
 
     # ── Ensure columns ──
-    _DEFAULTS = [
-        ('grade', 'F'), ('grade_emoji', '📉'),
-        ('company_name', ''), ('sector', ''), ('weeks', 0),
-        ('trajectory_score', 0),
-    ]
-    for col, default in _DEFAULTS:
+    for col, default in [('grade', 'F'), ('grade_emoji', '📉'), ('company_name', ''),
+                         ('sector', ''), ('weeks', 0), ('trajectory_score', 0)]:
         if col not in filtered_df.columns:
             filtered_df[col] = default
 
     _filtered_tickers = set(filtered_df['ticker'].tolist())
 
-    # ── Header Card ─────────────────────────────────────────────
-    gainers_1w, decliners_1w = get_top_movers(histories, n=1, weeks=1, tickers=_filtered_tickers)
-    top_gainer_delta = int(gainers_1w.iloc[0]['rank_change']) if not gainers_1w.empty else 0
-    top_decliner_delta = int(decliners_1w.iloc[0]['rank_change']) if not decliners_1w.empty else 0
-    top_gainer_name = gainers_1w.iloc[0]['ticker'] if not gainers_1w.empty else '—'
-    top_decliner_name = decliners_1w.iloc[0]['ticker'] if not decliners_1w.empty else '—'
+    # ── Controls: Time Window + Stock Count ──────────────────────
+    max_hist_len = max((len(h.get('ranks', [])) for h in histories.values()), default=2) - 1
+    week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len] or [1]
+    week_labels = {1: '1 Week', 2: '2 Weeks', 4: '4 Weeks', 8: '8 Weeks', 12: '12 Weeks'}
 
+    c_wk, c_ct, _ = st.columns([1, 1, 2])
+    with c_wk:
+        mv_weeks = st.selectbox(
+            'Time Window', options=week_options,
+            format_func=lambda x: week_labels.get(x, f'{x} Weeks'),
+            index=0, key='movers_tab_weeks',
+        )
+    with c_ct:
+        mv_count = st.selectbox(
+            'Stocks Per Side', options=[50, 100, 150],
+            index=0, key='movers_tab_count',
+        )
+
+    # ── Fetch movers ─────────────────────────────────────────────
+    gainers, decliners = get_top_movers(histories, n=mv_count, weeks=mv_weeks,
+                                         tickers=_filtered_tickers)
+
+    # ── Header Card (uses actual data) ───────────────────────────
+    _safe = _html.escape
+    if not gainers.empty:
+        tg_delta = int(gainers.iloc[0].get('rank_change', 0))
+        tg_name = _safe(str(gainers.iloc[0].get('ticker', '—')))
+    else:
+        tg_delta, tg_name = 0, '—'
+    if not decliners.empty:
+        td_delta = int(decliners.iloc[0].get('rank_change', 0))
+        td_name = _safe(str(decliners.iloc[0].get('ticker', '—')))
+    else:
+        td_delta, td_name = 0, '—'
+
+    wk_label = week_labels.get(mv_weeks, f'{mv_weeks}w')
     st.markdown(f"""
     <div style="background:#0d1117;border-radius:14px;padding:18px 24px;margin-bottom:16px;border:1px solid #30363d;">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <div>
           <span style="font-size:1.4rem;font-weight:800;color:#fff;">🔥 Top Movers</span>
-          <div style="color:#8b949e;font-size:0.88rem;margin-top:2px;">Biggest rank changes — filter by time window</div>
+          <div style="color:#8b949e;font-size:0.88rem;margin-top:2px;">
+            Biggest rank changes over <span style="color:#58a6ff;font-weight:700;">{wk_label}</span>
+            &nbsp;·&nbsp; {mv_count} per side
+          </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center;">
-          <span style="background:#3fb95018;color:#3fb950;padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">
-            ⬆️ {top_gainer_name} +{top_gainer_delta}</span>
-          <span style="background:#f8514918;color:#f85149;padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">
-            ⬇️ {top_decliner_name} {top_decliner_delta}</span>
+          <span style="background:#3fb95018;color:#3fb950;padding:4px 10px;border-radius:8px;
+                font-size:0.78rem;font-weight:600;">⬆️ {tg_name} +{tg_delta}</span>
+          <span style="background:#f8514918;color:#f85149;padding:4px 10px;border-radius:8px;
+                font-size:0.78rem;font-weight:600;">⬇️ {td_name} {td_delta}</span>
         </div>
       </div>
     </div>""", unsafe_allow_html=True)
 
-    # ── Time Window Selector ─────────────────────────────────────
-    max_hist_len = max((len(h['ranks']) for h in histories.values()), default=2) - 1
-    week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len]
-    if not week_options:
-        week_options = [1]
-    week_labels = {1: '1 Week', 2: '2 Weeks', 4: '4 Weeks', 8: '8 Weeks', 12: '12 Weeks'}
+    # ── Summary stats ────────────────────────────────────────────
+    def _stats(df_mv):
+        if df_mv.empty:
+            return 0, 0, 0, 0
+        rc = df_mv['rank_change']
+        return len(df_mv), int(rc.mean()), int(rc.median()), int(rc.iloc[0])
 
-    sel_col, info_col = st.columns([1, 3])
-    with sel_col:
-        mv_weeks = st.selectbox(
-            'Time Window',
-            options=week_options,
-            format_func=lambda x: week_labels.get(x, f'{x} Weeks'),
-            index=0,
-            key='movers_tab_weeks',
-        )
-    with info_col:
-        st.markdown(f"""
-        <div style="background:#161b22;border-radius:10px;padding:10px 16px;margin-top:6px;border:1px solid #30363d;">
-            <span style="color:#8b949e;font-size:0.82rem;">Showing rank change over </span>
-            <span style="color:#58a6ff;font-weight:700;font-size:0.88rem;">{week_labels.get(mv_weeks, f"{mv_weeks}w")}</span>
-            <span style="color:#8b949e;font-size:0.82rem;"> · Top 50 climbers &amp; 50 decliners</span>
-        </div>""", unsafe_allow_html=True)
+    g_cnt, g_avg, g_med, g_best = _stats(gainers)
+    d_cnt, d_avg, d_med, d_worst = _stats(decliners)
+    st.markdown(f"""
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px;">
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">{g_cnt}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Climbers</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">+{g_avg}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Avg Climb</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">+{g_best}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Best Climb</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_cnt}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Decliners</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_avg}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Avg Drop</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_worst}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Worst Drop</div></div>
+    </div>""", unsafe_allow_html=True)
 
-    gainers, decliners = get_top_movers(histories, n=50, weeks=mv_weeks, tickers=_filtered_tickers)
+    # ── Mover Table Builder ──────────────────────────────────────
+    enrich_cols = ['ticker', 'trajectory_score', 'grade', 'sector']
+    enrich_df = filtered_df[
+        [c for c in enrich_cols if c in filtered_df.columns]
+    ].drop_duplicates('ticker')
+
+    scroll_h = {50: 580, 100: 1050, 150: 1500}.get(mv_count, 580)
 
     def _mover_table_html(df_mv, accent, icon, label):
-        """Build one mover panel as a single HTML string."""
         count = len(df_mv)
         hdr = (f'<div style="background:#161b22;border-radius:10px 10px 0 0;padding:12px 16px;'
                f'border:1px solid #30363d;border-bottom:2px solid {accent};display:flex;'
@@ -5629,64 +5681,77 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                f'<span style="color:#6e7681;font-size:0.78rem;">{count} stocks</span></div>')
 
         if df_mv.empty:
-            return (hdr + '<div style="background:#0d1117;border-radius:0 0 10px 10px;padding:18px;'
-                    'border:1px solid #30363d;border-top:0;text-align:center;color:#6e7681;font-size:0.85rem;'
-                    '">No movers detected</div>')
+            return (hdr + '<div style="background:#0d1117;border-radius:0 0 10px 10px;padding:28px;'
+                    'border:1px solid #30363d;border-top:0;text-align:center;color:#6e7681;'
+                    'font-size:0.88rem;">No movers detected for this window</div>')
 
-        enriched = df_mv.merge(
-            filtered_df[['ticker', 'trajectory_score', 'grade']].drop_duplicates('ticker'),
-            on='ticker', how='left')
+        enriched = df_mv.merge(enrich_df, on='ticker', how='left')
 
         col_hdr = (
             '<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
             'background:#161b22;border-bottom:1px solid #30363d;font-size:0.72rem;color:#6e7681;'
             'text-transform:uppercase;letter-spacing:0.5px;">'
+            '<span style="min-width:28px;text-align:center;color:#6e7681;font-size:0.68rem;">#</span>'
             '<span style="min-width:44px;text-align:right;">Chg</span>'
             '<span style="flex:1;">Stock</span>'
+            '<span style="min-width:72px;text-align:left;">Sector</span>'
             '<span style="min-width:56px;text-align:right;">Price</span>'
             '<span style="min-width:80px;text-align:center;">Prev → Now</span>'
-            '<span style="min-width:36px;text-align:center;">Grd</span>'
-            '<span style="min-width:36px;text-align:right;">Score</span></div>'
-        )
+            '<span style="min-width:32px;text-align:center;">Grd</span>'
+            '<span style="min-width:36px;text-align:right;">Score</span></div>')
 
         rows_html = [col_hdr]
         for i, (_, m) in enumerate(enriched.iterrows()):
-            rc = int(m['rank_change'])
-            ts = m.get('trajectory_score', 0)
-            ts = 0 if pd.isna(ts) else ts
-            gr = m.get('grade', '—')
-            gr = '—' if pd.isna(gr) else gr
+            rc = int(m.get('rank_change', 0) if pd.notna(m.get('rank_change', 0)) else 0)
+            ts = float(m.get('trajectory_score', 0) if pd.notna(m.get('trajectory_score')) else 0)
+            gr = str(m.get('grade', '—') if pd.notna(m.get('grade')) else '—')
             gc = GRADE_COLORS.get(gr, '#8b949e')
+            sector_raw = str(m.get('sector', '') if pd.notna(m.get('sector')) else '')
+            sector_short = _safe(sector_raw[:14]) if sector_raw else '—'
             stripe = 'rgba(22,27,34,0.5)' if i % 2 else 'transparent'
-            chg_c = '#3fb950' if rc > 0 else '#f85149'
+            chg_c = '#3fb950' if rc > 0 else ('#f85149' if rc < 0 else '#8b949e')
             chg_sign = '+' if rc > 0 else ''
 
-            price_val = m.get('price', 0)
-            price_val = 0 if pd.isna(price_val) else float(price_val)
-            price_str = f'₹{price_val:,.0f}' if price_val >= 100 else (f'₹{price_val:,.2f}' if price_val > 0 else '—')
+            price_val = float(m.get('price', 0) if pd.notna(m.get('price')) else 0)
+            if price_val >= 100:
+                price_str = f'₹{price_val:,.0f}'
+            elif price_val > 0:
+                price_str = f'₹{price_val:,.2f}'
+            else:
+                price_str = '—'
+
+            prev_r = int(m.get('prev_rank', 0) if pd.notna(m.get('prev_rank')) else 0)
+            curr_r = int(m.get('current_rank', 0) if pd.notna(m.get('current_rank')) else 0)
+            ticker_esc = _safe(str(m.get('ticker', '')))
+            comp_esc = _safe(str(m.get('company_name', '') if pd.notna(m.get('company_name')) else '')[:22])
 
             rows_html.append(
-                f'<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;background:{stripe};'
-                f'border-bottom:1px solid #21262d;">'
-                f'<span style="color:{chg_c};font-weight:800;font-size:0.88rem;min-width:44px;text-align:right;'
-                f'font-variant-numeric:tabular-nums;">{chg_sign}{rc}</span>'
+                f'<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
+                f'background:{stripe};border-bottom:1px solid #21262d;">'
+                f'<span style="min-width:28px;text-align:center;color:#6e7681;font-size:0.72rem;'
+                f'font-variant-numeric:tabular-nums;">{i+1}</span>'
+                f'<span style="color:{chg_c};font-weight:800;font-size:0.88rem;min-width:44px;'
+                f'text-align:right;font-variant-numeric:tabular-nums;">{chg_sign}{rc}</span>'
                 f'<div style="flex:1;overflow:hidden;white-space:nowrap;">'
-                f'<span style="color:#e6edf3;font-weight:600;font-size:0.85rem;">{m["ticker"]}</span>'
-                f'<span style="color:#8b949e;font-size:0.75rem;margin-left:6px;">'
-                f'{str(m.get("company_name",""))[:20]}</span></div>'
-                f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:56px;text-align:right;'
-                f'font-variant-numeric:tabular-nums;">{price_str}</span>'
+                f'<span style="color:#e6edf3;font-weight:600;font-size:0.85rem;">{ticker_esc}</span>'
+                f'<span style="color:#8b949e;font-size:0.73rem;margin-left:6px;">{comp_esc}</span></div>'
+                f'<span style="color:#8b949e;font-size:0.75rem;min-width:72px;overflow:hidden;'
+                f'white-space:nowrap;text-overflow:ellipsis;">{sector_short}</span>'
+                f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:56px;'
+                f'text-align:right;font-variant-numeric:tabular-nums;">{price_str}</span>'
                 f'<span style="color:#8b949e;font-size:0.8rem;min-width:80px;text-align:center;'
-                f'font-variant-numeric:tabular-nums;">{int(m["prev_rank"])} → {int(m["current_rank"])}</span>'
-                f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:36px;text-align:center;">{gr}</span>'
-                f'<span style="color:#FF6B35;font-weight:600;font-size:0.82rem;min-width:36px;text-align:right;'
-                f'font-variant-numeric:tabular-nums;">{ts:.0f}</span></div>')
+                f'font-variant-numeric:tabular-nums;">{prev_r} → {curr_r}</span>'
+                f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:32px;'
+                f'text-align:center;">{_safe(gr)}</span>'
+                f'<span style="color:#FF6B35;font-weight:600;font-size:0.82rem;min-width:36px;'
+                f'text-align:right;font-variant-numeric:tabular-nums;">{ts:.0f}</span></div>')
 
         body = (f'<div style="background:#0d1117;border-radius:0 0 10px 10px;border:1px solid #30363d;'
-                f'border-top:0;overflow:hidden;max-height:580px;overflow-y:auto;">{"".join(rows_html)}</div>')
+                f'border-top:0;overflow:hidden;max-height:{scroll_h}px;overflow-y:auto;">'
+                f'{"".join(rows_html)}</div>')
         return hdr + body
 
-    g_html = _mover_table_html(gainers,   '#3fb950', '⬆️', 'Biggest Climbers')
+    g_html = _mover_table_html(gainers, '#3fb950', '⬆️', 'Biggest Climbers')
     d_html = _mover_table_html(decliners, '#f85149', '⬇️', 'Biggest Decliners')
     st.markdown(
         f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
