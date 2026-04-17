@@ -8174,18 +8174,8 @@ def render_about_tab():
 def main():
     """Main application entry point"""
 
-    # ── Sidebar: Branded Header + Data Source ──
+    # ── Sidebar: Data Source ──
     with st.sidebar:
-        # Branded header card
-        st.markdown("""
-        <div class="sb-brand">
-            <div class="sb-brand-icon">◉</div>
-            <div class="sb-brand-title">ALPHA TRAJECTORY</div>
-            <div class="sb-brand-sub">Stock Intelligence Engine</div>
-            <div class="sb-brand-ver">v10.1 · Max Alpha</div>
-        </div>
-        """, unsafe_allow_html=True)
-
         st.markdown('<div class="sb-section-head">📥 DATA SOURCE</div>', unsafe_allow_html=True)
         data_source_mode = st.radio(
             "Data Source",
