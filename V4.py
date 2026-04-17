@@ -4705,14 +4705,17 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                     'sector': latest['sectors'][i],
                 }
 
-            # Enrich with company_name + price from filtered_df
+            # Enrich with company_name from all_df + price from histories
             _enrich_map = {}
             for _, row in all_df.iterrows():
                 tk = row.get('ticker', '')
                 if tk:
+                    h = histories.get(tk, {})
+                    prices_list = h.get('prices', [])
+                    latest_price = prices_list[-1] if prices_list else 0
                     _enrich_map[tk] = {
                         'company_name': str(row.get('company_name', '') if pd.notna(row.get('company_name')) else ''),
-                        'price': float(row.get('price', 0) if pd.notna(row.get('price')) else 0) if 'price' in all_df.columns else 0,
+                        'price': float(latest_price) if latest_price and not (isinstance(latest_price, float) and latest_price != latest_price) else 0,
                     }
 
             # Compute grade deltas
