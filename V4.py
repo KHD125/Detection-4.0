@@ -8212,6 +8212,7 @@ def main():
                 st.session_state.pop('_traj_key', None)
                 st.session_state.pop('_traj_result', None)
                 st.session_state.pop('_drive_key_loaded', None)
+                st.session_state.pop('_sb_selected_files', None)
                 st.rerun()
         with qa2:
             if st.button("🧹 Clear Cache", key='sb_clear_cache_main', use_container_width=True):
@@ -8233,12 +8234,14 @@ def main():
                          type="primary" if st.session_state.get('data_source_mode', 'upload') == 'upload' else "secondary",
                          key='ds_btn_upload', use_container_width=True):
                 st.session_state['data_source_mode'] = 'upload'
+                st.session_state.pop('_sb_selected_files', None)
                 st.rerun()
         with ds2:
             if st.button("☁️ Google Drive",
                          type="primary" if st.session_state.get('data_source_mode', 'upload') == 'drive' else "secondary",
                          key='ds_btn_drive', use_container_width=True):
                 st.session_state['data_source_mode'] = 'drive'
+                st.session_state.pop('_sb_selected_files', None)
                 st.rerun()
 
         uploaded_files = []
@@ -8377,6 +8380,14 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Robust file recovery: always pull from session state for Drive mode ──
+    if not uploaded_files and data_source_mode == 'drive':
+        uploaded_files = st.session_state.get('_drive_uploads', [])
+
+    # Apply file-range selection from sidebar (if it ran)
+    if st.session_state.get('_sb_selected_files') is not None:
+        uploaded_files = st.session_state['_sb_selected_files']
+
     if not uploaded_files:
         if data_source_mode == "drive":
             st.info("👈 Paste your Google Drive folder key in the sidebar. App will fetch CSVs automatically.")
@@ -8398,8 +8409,6 @@ def main():
             """)
         return
 
-    # Use file-range-filtered files from sidebar
-    uploaded_files = st.session_state.get('_sb_selected_files', uploaded_files)
     total_uploaded = st.session_state.get('_sb_total_uploaded', len(uploaded_files))
     undated_count = st.session_state.get('_sb_undated', 0)
 
