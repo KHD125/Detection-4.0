@@ -6984,6 +6984,85 @@ def render_backtest_tab(uploaded_files):
         **Regime-Adaptive (S10):** Automatically switches between aggressive (momentum-focused) in bull markets and defensive (conviction+persistence) in bear markets based on median T-Score.
         """)
 
+    # ── Download Backtest Results ──
+    st.markdown("#### 📥 Download Results")
+    dl1, dl2, dl3 = st.columns(3)
+
+    with dl1:
+        # Summary CSV
+        summary_csv = summary_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📋 Summary Table (CSV)",
+            data=summary_csv,
+            file_name="backtest_summary.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key='bt_dl_summary',
+        )
+
+    with dl2:
+        # Weekly breakdown CSV — one row per strategy × week
+        weekly_rows = []
+        for sname, weeks in bt_results.items():
+            for w in weeks:
+                weekly_rows.append({
+                    'Strategy': sname,
+                    'Decision_Week': w['week'],
+                    'Forward_Week': w['forward_week'],
+                    'Avg_Return_%': round(w['avg_return'], 4),
+                    'Median_Return_%': round(w['median_return'], 4),
+                    'N_Stocks': w['n_stocks'],
+                    'N_Positive': w['n_positive'],
+                    'Best_%': round(w['best'], 4),
+                    'Worst_%': round(w['worst'], 4),
+                })
+        weekly_csv = pd.DataFrame(weekly_rows).to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📅 Weekly Breakdown (CSV)",
+            data=weekly_csv,
+            file_name="backtest_weekly.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key='bt_dl_weekly',
+        )
+
+    with dl3:
+        # Full combined report — summary + blank row + weekly detail
+        import io
+        buf = io.StringIO()
+        buf.write("=== BACKTEST SUMMARY ===\n")
+        summary_df.to_csv(buf, index=False)
+        buf.write("\n\n=== WEEKLY DETAIL (per strategy per week) ===\n")
+        pd.DataFrame(weekly_rows).to_csv(buf, index=False)
+
+        # Excess returns section
+        universe_rets_dl = [w['avg_return'] for w in bt_results.get('S1: Universe Avg', [])]
+        excess_rows = []
+        for sname, weeks in bt_results.items():
+            if sname == 'S1: Universe Avg' or not weeks:
+                continue
+            for w, ur in zip(weeks, universe_rets_dl):
+                excess_rows.append({
+                    'Strategy': sname,
+                    'Week': w['week'],
+                    'Return_%': round(w['avg_return'], 4),
+                    'Universe_%': round(ur, 4),
+                    'Alpha_%': round(w['avg_return'] - ur, 4),
+                })
+        if excess_rows:
+            buf.write("\n\n=== EXCESS RETURNS (Alpha vs Universe) ===\n")
+            pd.DataFrame(excess_rows).to_csv(buf, index=False)
+
+        full_csv = buf.getvalue().encode('utf-8')
+        st.download_button(
+            label="📊 Full Report (CSV)",
+            data=full_csv,
+            file_name="backtest_full_report.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key='bt_dl_full',
+        )
+
 
 # ============================================
 # UI: ABOUT TAB
