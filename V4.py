@@ -9146,6 +9146,8 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
                 score += 4; reasons.append('Market Leader')
             elif 'CAPITULATION' in p:
                 score += 5; reasons.append('Capitulation (BT#2)')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
 
         # ROTATION state strongly enriched (+5.8%)
         if state == 'ROTATION':
@@ -9187,7 +9189,14 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         prev2_tickers = set(prev2_df['ticker'].astype(str).str.strip())
 
     # ── Apply sidebar filters: only scan tickers passing global filters ──
-    sidebar_tickers = set(filtered_df['ticker'].astype(str).str.strip()) if not filtered_df.empty else None
+    # Always build the set — empty set correctly shows 0 results when filters exclude everything
+    # None = skip filtering (only when traj_df itself has no data)
+    if filtered_df is not None and not filtered_df.empty:
+        sidebar_tickers = set(filtered_df['ticker'].astype(str).str.strip())
+    elif traj_df is not None and not traj_df.empty:
+        sidebar_tickers = set()          # sidebar excluded everything → show nothing
+    else:
+        sidebar_tickers = None            # no trajectory data at all → don't filter
 
     results = []
     for _, row in latest_df.iterrows():
@@ -9354,7 +9363,8 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
                 with dc1:
                     st.metric("DNA Score", r['DNA Score'])
                 with dc2:
-                    st.metric("TQ", r['TQ'], delta=r['TQ Trend'].replace('→', '').replace('↑', '+').replace('↓', '') or None)
+                    _tq_d = r['TQ Trend'].replace('↑', '').replace('↓', '').replace('→', '').replace('—', '').strip() or None
+                    st.metric("TQ", r['TQ'], delta=_tq_d)
                 with dc3:
                     st.metric("Rank", r['Rank'])
                 with dc4:
