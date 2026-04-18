@@ -5493,7 +5493,6 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     wf_flow  = row.get('wave_inst_flow', 50)
     wf_harm  = row.get('wave_harmony', 50)
     wf_fund  = row.get('wave_fundamental', 50)
-    wf_tension = row.get('wave_position_tension') or 0
     wf_from_high = row.get('wave_from_high') or 0
     rally_gain = row.get('rally_gain', 0.0)
     rally_weeks = row.get('rally_weeks', 0)
@@ -5584,13 +5583,14 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
 
     # ── Week-by-Week History ──
     with st.expander("📅 Week-by-Week History", expanded=False):
+        _n_weeks = len(ranks_list)
         week_data = {
-            'Date': h.get('dates', []),
+            'Date': h.get('dates', [])[:_n_weeks],
             'Rank': [int(r) for r in ranks_list],
-            'Pctl': [round(p, 1) for p in pcts] if pcts else [],
-            'Price ₹': [round(p, 1) for p in h['prices']],
-            'M.Score': [round(s, 1) for s in h.get('scores', [])],
-            'Stocks': totals_list,
+            'Pctl': [round(p, 1) for p in pcts] if len(pcts) == _n_weeks else [None] * _n_weeks,
+            'Price ₹': ([round(p, 1) for p in h['prices']] + [None] * _n_weeks)[:_n_weeks],
+            'M.Score': ([round(s, 1) for s in h.get('scores', [])] + [None] * _n_weeks)[:_n_weeks],
+            'Stocks': (totals_list + [None] * _n_weeks)[:_n_weeks],
         }
         wk_changes = [0] + [int(ranks_list[i - 1] - ranks_list[i]) for i in range(1, len(ranks_list))]
         week_data['Δ Rank'] = wk_changes
@@ -5804,10 +5804,10 @@ def _render_comparison_chart(main_ticker: str, compare_tickers: list,
     fig = go.Figure()
     for i, ticker in enumerate(all_tickers):
         h = histories.get(ticker, {})
-        if not h:
+        if not h or not h.get('ranks') or not h.get('total_per_week'):
             continue
         # Convert to percentiles for fair comparison
-        pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
+        pcts = ranks_to_percentiles(h.get('ranks', []), h.get('total_per_week', []))
         name_row = traj_df[traj_df['ticker'] == ticker]
         label = f"{ticker}"
         if not name_row.empty:
