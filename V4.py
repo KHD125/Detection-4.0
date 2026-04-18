@@ -6361,6 +6361,9 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         'S16: Pattern Flip Alpha',
         'S17: Stealth Alpha',
         'S18: Near-High Breakout',
+        'S19: Winner DNA Momentum',
+        'S20: Winner DNA Contrarian',
+        'S21: Winner DNA Composite',
     ]
     all_results = {name: [] for name in strategy_names}
 
@@ -6703,6 +6706,93 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             if fh > -10 and brk_val >= 70 and t in forward_rets:
                 s18_tickers.append(t)
 
+        # ── S19: Winner DNA — Momentum Path ──
+        # From deep analysis of 200 best 6-month winners: trending leaders with
+        # high TQ/Score/Breakout, near highs, UPTREND state, leadership patterns.
+        # Two winner archetypes identified; this captures the momentum/leadership path.
+        s19_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            if t not in forward_rets:
+                continue
+            ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+            tq_val = float(row.get('trend_quality', 0)) if pd.notna(row.get('trend_quality')) else 0
+            brk_val = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
+            pos_val = float(row.get('position_score', 0)) if pd.notna(row.get('position_score')) else 0
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            state_val = str(row.get('market_state', ''))
+            pats_str = str(row.get('patterns', ''))
+            cat_val = str(row.get('category', ''))
+            if (ms_val >= 50 and tq_val >= 50 and brk_val >= 40 and pos_val >= 40
+                and rk <= 800 and fh > -25
+                and state_val in ('UPTREND', 'STRONG_UPTREND', 'PULLBACK')
+                and any(lp in pats_str for lp in ['CAT LEADER', 'MARKET LEADER', 'LIQUID LEADER',
+                                                   '52W HIGH APPROACH', 'PREMIUM MOMENTUM', 'RUNAWAY GAP'])
+                and 'HIDDEN GEM' not in pats_str
+                and 'Micro' not in cat_val):
+                s19_tickers.append(t)
+
+        # ── S20: Winner DNA — Contrarian Path ──
+        # From deep analysis: beaten-down stocks in DOWNTREND with reversal signals.
+        # rank≤1000, from_high -40% to -15%, has VOL EXPLOSION/RANGE COMPRESS/
+        # CAPITULATION/PULLBACK SUPPORT. Not Micro Cap. Not Hidden Gem.
+        s20_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            if t not in forward_rets:
+                continue
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            state_val = str(row.get('market_state', ''))
+            pats_str = str(row.get('patterns', ''))
+            cat_val = str(row.get('category', ''))
+            if (state_val == 'DOWNTREND'
+                and rk <= 1000
+                and -40 <= fh <= -15
+                and any(rp in pats_str for rp in ['VOL EXPLOSION', 'RANGE COMPRESS',
+                                                   'CAPITULATION', 'PULLBACK SUPPORT'])
+                and 'HIDDEN GEM' not in pats_str
+                and 'Micro' not in cat_val):
+                s20_tickers.append(t)
+
+        # ── S21: Winner DNA Composite ──
+        # Scores each stock using Winner DNA Score based on Random Forest feature
+        # importances (AUC=0.928). Combines both momentum and contrarian paths.
+        # Pattern bonuses from chi-squared enrichment ratios.
+        # Top 20 by DNA score, sector-capped at 3/sector.
+        s21_scored = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            if t not in forward_rets:
+                continue
+            ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+            tq_val = float(row.get('trend_quality', 0)) if pd.notna(row.get('trend_quality')) else 0
+            brk_val = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
+            pos_val = float(row.get('position_score', 0)) if pd.notna(row.get('position_score')) else 0
+            vol_val = float(row.get('volume_score', 0)) if pd.notna(row.get('volume_score')) else 0
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            pats_str = str(row.get('patterns', ''))
+            cat_val = str(row.get('category', ''))
+            if 'Micro' in cat_val or 'HIDDEN GEM' in pats_str:
+                continue
+            rank_sc = max(0, (2100 - min(rk, 2100)) / 2100) * 100
+            fh_sc = max(0, min(100, (fh + 50) * 2))
+            dna = (pos_val * 0.10 + tq_val * 0.085 + fh_sc * 0.084
+                   + rank_sc * 0.08 + vol_val * 0.078 + ms_val * 0.072 + brk_val * 0.07)
+            if 'RUNAWAY GAP' in pats_str: dna += 8
+            if '52W HIGH APPROACH' in pats_str: dna += 6
+            if 'MARKET LEADER' in pats_str: dna += 4
+            if 'CAT LEADER' in pats_str: dna += 4
+            if 'LIQUID LEADER' in pats_str: dna += 3
+            if 'PREMIUM MOMENTUM' in pats_str: dna += 3
+            if 'PULLBACK SUPPORT' in pats_str: dna += 3
+            if 'VOL EXPLOSION' in pats_str: dna += 2
+            s21_scored.append((t, dna))
+        s21_scored.sort(key=lambda x: x[1], reverse=True)
+        s21_tickers = _sector_cap([t for t, _ in s21_scored], 3)[:20]
+
         # ── Measure forward returns for each strategy ──
         strategy_picks = {
             'S1: Universe Avg': s1_tickers,
@@ -6724,6 +6814,9 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             'S16: Pattern Flip Alpha': s16_tickers,
             'S17: Stealth Alpha': s17_tickers,
             'S18: Near-High Breakout': s18_tickers,
+            'S19: Winner DNA Momentum': s19_tickers,
+            'S20: Winner DNA Contrarian': s20_tickers,
+            'S21: Winner DNA Composite': s21_tickers,
         }
 
         week_label = date.strftime('%Y-%m-%d')
@@ -7298,6 +7391,9 @@ def render_backtest_tab(uploaded_files):
         | **S16: Pattern Flip Alpha** | CAPITULATION or VOL EXPLOSION+Score≥60 NEWLY appeared this week | Fresh pattern signal: NEW Capitulation +3.06%, 60.8% WR. |
         | **S17: Stealth Alpha** | 🤫 STEALTH pattern + Rank ≤ 100 | Stealth accumulation in top ranks: +0.10% in bear market, 48% WR. |
         | **S18: Near-High Breakout** | Within 10% of 52w high + Breakout score ≥ 70 | Relative strength: largest N screen (4335 obs), 45.6% WR. |
+        | **S19: Winner DNA Momentum** | TQ≥50 + Score≥50 + Brk≥40 + Pos≥40 + Rank≤800 + Near High>-25% + UPTREND/PULLBACK + Leadership pattern + No Micro/Hidden Gem | Momentum path from deep 200-winner analysis. Trending leaders archetype. |
+        | **S20: Winner DNA Contrarian** | DOWNTREND + Rank≤1000 + From High -40% to -15% + Reversal pattern (VOL EXPLOSION/RANGE COMPRESS/CAPITULATION/PULLBACK SUPPORT) + No Micro/Hidden Gem | Contrarian path from 200-winner analysis. Mean-reversion archetype. |
+        | **S21: Winner DNA Composite** | Top 20 by Winner DNA Score (RF-weighted: position, TQ, from-high, rank, volume, score, breakout + pattern bonuses). Sector-capped 3/sector. | ML-derived composite score (RF AUC=0.928). Both paths combined. |
 
         **Forward Return:** Actual price change from current week to next week. Computed from price data, not ret_7d.
 
@@ -7312,6 +7408,12 @@ def render_backtest_tab(uploaded_files):
         **Momentum-Quality (S11):** Filters for stocks with strong 12-month returns (≥25%), far from 52-week low (≥50%), minimum conviction (≥50), and no momentum decay. Sector-capped at 3/sector. Tests whether long-term momentum + structural uptrend confirmation adds alpha.
         
         **Max Alpha (S12):** Uses Alpha Score — a purpose-built forward-return predictor combining ONLY factors with proven next-week alpha: near-high proximity (+0.55%/wk), breakout quality (+0.44%/wk), persistence (+3.91%/wk), position strength (+0.34%/wk), market state (BOUNCE +1.17%/wk), no-decay, wave fusion, and early rally stage. Returns are alpha-score-weighted (higher alpha_score = more capital). Sector-capped at 2/sector for diversification.
+        
+        **Winner DNA Momentum (S19):** Derived from forensic analysis of the 200 stocks with the highest 6-month returns. These winners had significantly higher trend quality (+10.5, p<0.001), position score (+9.2), breakout score (+6.6), and were closer to highs (+5.6pp). S19 captures the "momentum leadership" archetype: already strong stocks (Score≥50, TQ≥50, Rank≤800) in UPTREND/PULLBACK with leadership patterns (CAT/MARKET/LIQUID LEADER, 52W HIGH APPROACH, PREMIUM MOMENTUM, RUNAWAY GAP). Excludes Micro Cap (-25.7% under-represented in winners) and HIDDEN GEM (0% in winners).
+        
+        **Winner DNA Contrarian (S20):** The second winner archetype from the same analysis — beaten-down stocks that staged massive comebacks. Examples: MTARTECH (+198%, Rank 1401, DOWNTREND), 513599 (+131%, Rank 887, DOWNTREND). S20 captures these contrarian plays: DOWNTREND state with Rank≤1000, From High -40% to -15% (beaten but not dead), and reversal signals (VOL EXPLOSION 1.6x enriched, RANGE COMPRESS 4.3x combo enrichment, CAPITULATION, PULLBACK SUPPORT 2.1x enriched).
+        
+        **Winner DNA Composite (S21):** Uses a Winner DNA Score derived from Random Forest feature importances (AUC=0.928) from the 200-winner analysis. The RF identified money_flow, position_score, trend_quality, from_high_pct, rank, volume_score, master_score, and breakout_score as the strongest discriminators. Pattern bonuses from chi-squared enrichment: RUNAWAY GAP (+9.7x enriched), 52W HIGH APPROACH (+3.6x), MARKET/CAT LEADER (+1.8x/1.5x). Top 20 by DNA score, sector-capped at 3/sector.
         """)
 
     # ── Download Backtest Results ──
@@ -7461,10 +7563,10 @@ def render_pattern_analyser_tab(uploaded_files):
         st.info("Click **Run Analysis** to compute pattern intelligence from your data.")
         return
 
-    pa1, pa2, pa3, pa4, pa5, pa6 = st.tabs([
+    pa1, pa2, pa3, pa4, pa5, pa6, pa7 = st.tabs([
         "📊 Pattern Performance", "🎯 Multi-Factor Screens",
         "🔄 Pattern Flips", "🗺️ Pattern × State Matrix",
-        "🧩 Combo Explorer", "📈 Category & Sector",
+        "🧩 Combo Explorer", "📈 Category & Sector", "🧬 Winner DNA",
     ])
     with pa1:
         _render_pa_pattern_performance(pa_data)
@@ -7478,6 +7580,8 @@ def render_pattern_analyser_tab(uploaded_files):
         _render_pa_combo_explorer(pa_data)
     with pa6:
         _render_pa_category_sector(pa_data)
+    with pa7:
+        _render_pa_winner_dna(pa_data)
 
 
 # ---------- Pattern Analyser: data builder ----------
@@ -7532,6 +7636,8 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
             mom = float(row.get('momentum_score', 0)) if pd.notna(row.get('momentum_score')) else 0
             brk = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
             fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            pos = float(row.get('position_score', 0)) if pd.notna(row.get('position_score')) else 0
+            vol = float(row.get('volume_score', 0)) if pd.notna(row.get('volume_score')) else 0
             cat = str(row.get('category', '')).strip()
             sect = str(row.get('sector', '')).strip()
             pats_str = str(row.get('patterns', ''))
@@ -7541,7 +7647,7 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
             results.append(dict(
                 fwd=fwd, ms=ms, rk=rk, state=state, tq=tq, mom=mom,
                 brk=brk, fh=fh, cat=cat, sector=sect, n_pats=n_pats,
-                pats_str=pats_str,
+                pats_str=pats_str, pos=pos, vol=vol,
             ))
 
             for p in pats_list:
@@ -7617,6 +7723,67 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
              rdf['pats_str'].str.contains('INSTITUTIONAL', na=False) &
              ~rdf['pats_str'].str.contains('TSUNAMI', na=False))
 
+        # ── Winner DNA screens ──
+        _scr('🧬 DNA: Momentum Path',
+             (rdf['ms'] >= 50) & (rdf['tq'] >= 50) & (rdf['brk'] >= 40) & (rdf['pos'] >= 40) &
+             (rdf['rk'] <= 800) & (rdf['fh'] > -25) &
+             rdf['state'].isin(['UPTREND', 'STRONG_UPTREND', 'PULLBACK']) &
+             rdf['pats_str'].str.contains('CAT LEADER|MARKET LEADER|LIQUID LEADER|52W HIGH APPROACH|PREMIUM MOMENTUM|RUNAWAY GAP', na=False, regex=True) &
+             ~rdf['pats_str'].str.contains('HIDDEN GEM', na=False) &
+             ~rdf['cat'].str.contains('Micro', na=False))
+        _scr('🧬 DNA: Contrarian Path',
+             (rdf['state'] == 'DOWNTREND') &
+             (rdf['rk'] <= 1000) &
+             (rdf['fh'] >= -40) & (rdf['fh'] <= -15) &
+             rdf['pats_str'].str.contains('VOL EXPLOSION|RANGE COMPRESS|CAPITULATION|PULLBACK SUPPORT', na=False, regex=True) &
+             ~rdf['pats_str'].str.contains('HIDDEN GEM', na=False) &
+             ~rdf['cat'].str.contains('Micro', na=False))
+
+    # ── Winner DNA Score computation ──
+    dna_buckets = {}
+    dna_criteria = {}
+    if not rdf.empty and 'pos' in rdf.columns and 'vol' in rdf.columns:
+        rdf['rank_sc'] = ((2100 - rdf['rk'].clip(1, 2100)) / 2100) * 100
+        rdf['fh_sc'] = ((rdf['fh'] + 50) * 2).clip(0, 100)
+        rdf['dna_score'] = (
+            rdf['pos'] * 0.10 + rdf['tq'] * 0.085 + rdf['fh_sc'] * 0.084
+            + rdf['rank_sc'] * 0.08 + rdf['vol'] * 0.078
+            + rdf['ms'] * 0.072 + rdf['brk'] * 0.07
+        )
+        # Pattern bonuses from chi-squared enrichment
+        for pat, bonus in [('RUNAWAY GAP', 8), ('52W HIGH APPROACH', 6),
+                           ('MARKET LEADER', 4), ('CAT LEADER', 4),
+                           ('LIQUID LEADER', 3), ('PREMIUM MOMENTUM', 3),
+                           ('PULLBACK SUPPORT', 3), ('VOL EXPLOSION', 2)]:
+            rdf.loc[rdf['pats_str'].str.contains(pat, na=False), 'dna_score'] += bonus
+        # Penalties
+        rdf.loc[rdf['pats_str'].str.contains('HIDDEN GEM', na=False), 'dna_score'] -= 10
+        rdf.loc[rdf['cat'].str.contains('Micro', na=False), 'dna_score'] -= 8
+
+        # DNA decile buckets
+        q90 = rdf['dna_score'].quantile(0.9)
+        q75 = rdf['dna_score'].quantile(0.75)
+        q50 = rdf['dna_score'].quantile(0.5)
+        q25 = rdf['dna_score'].quantile(0.25)
+        for label, mask in [
+            ('Top 10%', rdf['dna_score'] >= q90),
+            ('Top 25%', (rdf['dna_score'] >= q75) & (rdf['dna_score'] < q90)),
+            ('50-75%', (rdf['dna_score'] >= q50) & (rdf['dna_score'] < q75)),
+            ('25-50%', (rdf['dna_score'] >= q25) & (rdf['dna_score'] < q50)),
+            ('Bottom 25%', rdf['dna_score'] < q25),
+        ]:
+            sub = rdf[mask]
+            if len(sub) >= 10:
+                dna_buckets[label] = dict(
+                    n=len(sub), avg=float(sub['fwd'].mean()),
+                    med=float(sub['fwd'].median()),
+                    wr=float((sub['fwd'] > 0).mean() * 100),
+                )
+        dna_criteria = dict(
+            q90=float(q90), q75=float(q75), q50=float(q50), q25=float(q25),
+            mean=float(rdf['dna_score'].mean()), std=float(rdf['dna_score'].std()),
+        )
+
     def _summarize(rets_dict, min_n=10):
         out = []
         for key, rets in rets_dict.items():
@@ -7663,6 +7830,8 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
         flip_stats=_summarize(new_pat_rets, 10),
         pat_state_matrix=pat_state_matrix,
         cat_score_matrix=cat_score_matrix,
+        dna_buckets=dna_buckets,
+        dna_criteria=dna_criteria,
     )
 
 
@@ -8072,6 +8241,262 @@ def _render_pa_category_sector(pa_data):
                 f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
                 unsafe_allow_html=True,
             )
+
+
+# ---------- Pattern Analyser: Winner DNA sub-tab ----------
+
+def _render_pa_winner_dna(pa_data):
+    """Winner DNA analysis — derived from deep forensic analysis of 200 top 6-month winners."""
+    st.markdown("#### 🧬 Winner DNA — What Makes a 6-Month Winner?")
+    st.caption("Based on forensic analysis of the 200 stocks with highest 6-month returns. "
+               "Two winner archetypes identified: Momentum Leaders and Deep Contrarians.")
+
+    # ── DNA Score Distribution ──
+    dna_buckets = pa_data.get('dna_buckets', {})
+    dna_criteria = pa_data.get('dna_criteria', {})
+
+    if not dna_buckets:
+        st.info("DNA score data not available. Click **Run Analysis** to compute.")
+        return
+
+    # ── Header metrics ──
+    screens = pa_data.get('screens', {})
+    mom_scr = screens.get('🧬 DNA: Momentum Path', {})
+    con_scr = screens.get('🧬 DNA: Contrarian Path', {})
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        if mom_scr and not mom_scr.get('few'):
+            st.metric("Momentum Path Avg", f"{mom_scr['avg']:+.2f}%",
+                       f"WR: {mom_scr['wr']:.1f}% (N={mom_scr['n']})")
+        else:
+            st.metric("Momentum Path", "—", "Insufficient data")
+    with c2:
+        if con_scr and not con_scr.get('few'):
+            st.metric("Contrarian Path Avg", f"{con_scr['avg']:+.2f}%",
+                       f"WR: {con_scr['wr']:.1f}% (N={con_scr['n']})")
+        else:
+            st.metric("Contrarian Path", "—", "Insufficient data")
+    with c3:
+        top_bucket = dna_buckets.get('Top 10%', {})
+        if top_bucket:
+            st.metric("DNA Top 10% Avg", f"{top_bucket['avg']:+.2f}%",
+                       f"WR: {top_bucket['wr']:.1f}% (N={top_bucket['n']})")
+    with c4:
+        bot_bucket = dna_buckets.get('Bottom 25%', {})
+        if bot_bucket:
+            st.metric("DNA Bottom 25% Avg", f"{bot_bucket['avg']:+.2f}%",
+                       f"WR: {bot_bucket['wr']:.1f}% (N={bot_bucket['n']})")
+
+    st.markdown("---")
+
+    # ── Two Paths Side by Side ──
+    left, right = st.columns(2)
+    with left:
+        st.markdown("""
+        ##### 🚀 Path 1: Momentum Leaders
+        <div style="background:#161b22; padding:16px; border-radius:10px; border:1px solid #238636;">
+        <p style="color:#3fb950; font-weight:700; margin-bottom:8px;">BUY when ALL criteria met:</p>
+        <ul style="color:#e6edf3; font-size:0.85rem; margin:0; padding-left:18px;">
+        <li>Master Score ≥ 50</li>
+        <li>Trend Quality ≥ 50 <span style="color:#3fb950;">(+10.5 vs others, p<0.001)</span></li>
+        <li>Breakout Score ≥ 40 <span style="color:#3fb950;">(+6.6 vs others)</span></li>
+        <li>Position Score ≥ 40 <span style="color:#3fb950;">(+9.2 vs others)</span></li>
+        <li>Rank ≤ 800 <span style="color:#8b949e;">(winners avg: 819)</span></li>
+        <li>From High > -25% <span style="color:#3fb950;">(closer to highs)</span></li>
+        <li>State: UPTREND / STRONG_UPTREND / PULLBACK</li>
+        <li>Has: CAT/MARKET/LIQUID LEADER, 52W HIGH, PREMIUM MOM, or RUNAWAY GAP</li>
+        <li>❌ NOT Micro Cap <span style="color:#ff7b72;">(-25.7% under-rep)</span></li>
+        <li>❌ NOT Hidden Gem <span style="color:#ff7b72;">(0% in winners)</span></li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with right:
+        st.markdown("""
+        ##### 🔄 Path 2: Deep Contrarians
+        <div style="background:#161b22; padding:16px; border-radius:10px; border:1px solid #1f6feb;">
+        <p style="color:#58a6ff; font-weight:700; margin-bottom:8px;">BUY when ALL criteria met:</p>
+        <ul style="color:#e6edf3; font-size:0.85rem; margin:0; padding-left:18px;">
+        <li>State: DOWNTREND <span style="color:#8b949e;">(mean-reversion setup)</span></li>
+        <li>Rank ≤ 1000 <span style="color:#8b949e;">(not garbage)</span></li>
+        <li>From High: -40% to -15% <span style="color:#58a6ff;">(beaten but not dead)</span></li>
+        <li>Has: VOL EXPLOSION <span style="color:#58a6ff;">(1.6x enriched)</span></li>
+        <li>Or: RANGE COMPRESS <span style="color:#58a6ff;">(4.3x combo enriched)</span></li>
+        <li>Or: CAPITULATION <span style="color:#58a6ff;">(mean reversion)</span></li>
+        <li>Or: PULLBACK SUPPORT <span style="color:#58a6ff;">(2.1x enriched)</span></li>
+        <li>❌ NOT Micro Cap</li>
+        <li>❌ NOT Hidden Gem</li>
+        </ul>
+        <p style="color:#8b949e; font-size:0.75rem; margin-top:8px;">
+        Examples: MTARTECH +198%, 513599 +131%, NATIONALUM +125%</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── DNA Score Performance by Decile ──
+    st.markdown("##### 📊 DNA Score Performance — Does Higher DNA Score = Better Returns?")
+    bucket_order = ['Top 10%', 'Top 25%', '50-75%', '25-50%', 'Bottom 25%']
+    bucket_display = [b for b in bucket_order if b in dna_buckets]
+
+    if bucket_display:
+        fig = go.Figure()
+        avgs = [dna_buckets[b]['avg'] for b in bucket_display]
+        wrs = [dna_buckets[b]['wr'] for b in bucket_display]
+        ns = [dna_buckets[b]['n'] for b in bucket_display]
+        colors = [_pa_color(a) for a in avgs]
+        fig.add_trace(go.Bar(
+            x=bucket_display, y=avgs,
+            marker_color=colors,
+            text=[f"{a:+.2f}%<br>WR:{w:.0f}%<br>N:{n:,}" for a, w, n in zip(avgs, wrs, ns)],
+            textposition='outside', textfont=dict(size=11),
+        ))
+        fig.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=350, margin=dict(l=40, r=20, t=30, b=40),
+            yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+            xaxis=dict(title='DNA Score Bucket'),
+        )
+        fig.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig, use_container_width=True, key='pa_dna_decile')
+
+    # ── DNA Score Thresholds ──
+    if dna_criteria:
+        st.markdown("##### 🎯 DNA Score Thresholds")
+        th_cols = st.columns(5)
+        labels = [('Top 10%', 'q90', '#3fb950'), ('Top 25%', 'q75', '#58a6ff'),
+                  ('Median', 'q50', '#d29922'), ('Bottom 25%', 'q25', '#ff7b72'),
+                  ('Mean ± Std', 'mean', '#8b949e')]
+        for col, (label, key, color) in zip(th_cols, labels):
+            with col:
+                if key == 'mean':
+                    val = f"{dna_criteria.get('mean', 0):.1f} ± {dna_criteria.get('std', 0):.1f}"
+                else:
+                    val = f"{dna_criteria.get(key, 0):.1f}"
+                st.markdown(
+                    f'<div style="text-align:center;padding:8px;background:#161b22;border-radius:8px;border:1px solid #30363d;">'
+                    f'<div style="color:#8b949e;font-size:0.75rem;">{label}</div>'
+                    f'<div style="color:{color};font-size:1.2rem;font-weight:700;">{val}</div></div>',
+                    unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Key Findings Summary ──
+    st.markdown("##### 🔬 Key Findings from 200-Winner Deep Analysis")
+    st.markdown("""
+    <div style="background:#161b22; padding:16px; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d;">
+    <th style="padding:8px;text-align:left;color:#8b949e;">Signal</th>
+    <th style="padding:8px;text-align:right;color:#8b949e;">Winners</th>
+    <th style="padding:8px;text-align:right;color:#8b949e;">Others</th>
+    <th style="padding:8px;text-align:right;color:#8b949e;">Diff</th>
+    <th style="padding:8px;text-align:right;color:#8b949e;">Sig</th>
+    </tr></thead><tbody>
+    <tr style="background:#0d1117;"><td style="padding:6px 8px;color:#e6edf3;">Trend Quality</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">55.2</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">44.7</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+10.5</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#161b22;"><td style="padding:6px 8px;color:#e6edf3;">Position Score</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">47.4</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">38.1</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+9.2</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#0d1117;"><td style="padding:6px 8px;color:#e6edf3;">Breakout Score</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">49.9</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">43.2</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+6.6</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#161b22;"><td style="padding:6px 8px;color:#e6edf3;">Master Score</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">48.3</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">43.2</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+5.2</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#0d1117;"><td style="padding:6px 8px;color:#e6edf3;">From High %</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">-23.5%</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">-29.1%</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+5.6pp</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#161b22;"><td style="padding:6px 8px;color:#e6edf3;">Rank (lower=better)</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">819</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">1077</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">-258</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    </tbody></table>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Pattern Enrichment ──
+    st.markdown("##### 🎯 Pattern Enrichment — Chi-Squared Significance")
+    pat_data = [
+        ('🏃 RUNAWAY GAP', '9.7x', '#3fb950', '***'),
+        ('🎲 52W HIGH APPROACH', '3.6x', '#3fb950', '**'),
+        ('🛡️ PULLBACK SUPPORT', '2.1x', '#3fb950', '*'),
+        ('💰 LIQUID LEADER', '1.9x', '#3fb950', '***'),
+        ('🔥 PREMIUM MOMENTUM', '1.8x', '#58a6ff', '*'),
+        ('👑 MARKET LEADER', '1.8x', '#58a6ff', '***'),
+        ('⚡ VOL EXPLOSION', '1.6x', '#58a6ff', '**'),
+        ('🐱 CAT LEADER', '1.5x', '#58a6ff', '***'),
+        ('💎 HIDDEN GEM', '0.0x ❌', '#ff7b72', '*'),
+    ]
+    rows_html = ""
+    for i, (pat, enrich, color, sig) in enumerate(pat_data):
+        bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 10px;color:#e6edf3;">{pat}</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{color};font-weight:700;">{enrich}</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{color};">{sig}</td></tr>'
+        )
+    st.markdown(f"""
+    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d; color:#8b949e;">
+        <th style="padding:8px 10px;text-align:left;">Pattern</th>
+        <th style="padding:8px 10px;text-align:center;">Winner Enrichment</th>
+        <th style="padding:8px 10px;text-align:center;">Significance</th>
+    </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── DNA Score Formula ──
+    with st.expander("🧮 Winner DNA Score Formula", expanded=False):
+        st.markdown("""
+        **Winner DNA Score** is computed from Random Forest feature importances (AUC = 0.928):
+
+        ```
+        DNA Score = position_score × 0.10
+                  + trend_quality × 0.085
+                  + from_high_normalized × 0.084
+                  + rank_percentile × 0.08
+                  + volume_score × 0.078
+                  + master_score × 0.072
+                  + breakout_score × 0.07
+        ```
+
+        **Pattern Bonuses** (from chi-squared enrichment ratios):
+        | Pattern | Bonus | Enrichment |
+        |---------|-------|-----------|
+        | RUNAWAY GAP | +8 | 9.7x |
+        | 52W HIGH APPROACH | +6 | 3.6x |
+        | MARKET LEADER | +4 | 1.8x |
+        | CAT LEADER | +4 | 1.5x |
+        | LIQUID LEADER | +3 | 1.9x |
+        | PREMIUM MOMENTUM | +3 | 1.8x |
+        | PULLBACK SUPPORT | +3 | 2.1x |
+        | VOL EXPLOSION | +2 | 1.6x |
+
+        **Penalties:** HIDDEN GEM -10, Micro Cap -8
+
+        **Category Distribution** (in winners): Small Cap +12.4%, Mid Cap +7.3%, Large Cap +7.0%, Micro Cap -25.7%
+
+        **EPS Sweet Spot:** 20-50% EPS change tier (+9.0pp over-represented in winners)
+        """)
 
 
 # ============================================
