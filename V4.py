@@ -4430,11 +4430,9 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     Sections:
       1. Pulse Hero       – regime badge, market strength, 6 breadth KPIs
       2. Breadth Over Time – % improving / % strong / advance-decline over weeks
-      3. Sector Heatmap    – sector × week avg score-change grid
-      4. Week-over-Week Δ  – upgrade/downgrade/rocket/crash counts + top movers
-      5. Grade Migration   – grade flow matrix (prev week → this week)
-      6. Pattern Trend     – stacked area of pattern distribution over time
+      3. Week-over-Week Δ  – upgrade/downgrade/rocket/crash counts + grade tables
 
+    All data is filter-aware — respects sidebar filters via filtered_df/histories.
     Uses ONLY pre-computed data from histories/traj_df — zero new API calls.
     """
     import html as _html
@@ -4444,10 +4442,17 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         st.info("No stocks match the current filters. Adjust sidebar filters to see Market Pulse.")
         return
 
+    # ── Filter histories to only include tickers in filtered_df ──
+    _filtered_tickers = set(filtered_df['ticker'].unique())
+    _filtered_hist = {t: h for t, h in histories.items() if t in _filtered_tickers}
+    if not _filtered_hist:
+        st.info("No history data for filtered stocks.")
+        return
+
     # ── Helper: build weekly snapshots from histories ────────────
     @st.cache_data(ttl=300, show_spinner=False)
     def _build_weekly_snapshots(_hist_keys, _hist_data_tuple):
-        """Reconstruct per-week aggregates from histories dict.
+        """Reconstruct per-week aggregates from filtered histories dict.
 
         We receive histories data as a tuple-of-tuples for hashability.
         Returns list of dicts, one per week, sorted chronologically.
@@ -4502,10 +4507,10 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             weeks.append(snap)
         return weeks
 
-    # Build hashable args for caching
-    _h_keys = tuple(histories.keys())
+    # Build hashable args for caching (uses FILTERED histories only)
+    _h_keys = tuple(sorted(_filtered_hist.keys()))
     _h_data = tuple(
-        {k: (tuple(v) if isinstance(v, list) else v) for k, v in histories[t].items()}
+        {k: (tuple(v) if isinstance(v, list) else v) for k, v in _filtered_hist[t].items()}
         for t in _h_keys
     )
     weekly_snaps = _build_weekly_snapshots(_h_keys, _h_data)
@@ -4694,9 +4699,9 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         if prev is None:
             st.info("Need at least 2 weekly snapshots for week-over-week comparison.")
         else:
-            # Build actual-grade map from traj_df (trajectory-score-based grade)
+            # Build actual-grade map from filtered_df (trajectory-score-based grade)
             _actual_grade = {}
-            for _, row in all_df.iterrows():
+            for _, row in filtered_df.iterrows():
                 tk = row.get('ticker', '')
                 if tk and 'grade' in row and pd.notna(row.get('grade')):
                     _actual_grade[tk] = str(row['grade'])
@@ -4719,12 +4724,12 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                     'sector': latest['sectors'][i],
                 }
 
-            # Enrich with company_name from all_df + price from histories
+            # Enrich with company_name from filtered_df + price from histories
             _enrich_map = {}
-            for _, row in all_df.iterrows():
+            for _, row in filtered_df.iterrows():
                 tk = row.get('ticker', '')
                 if tk:
-                    h = histories.get(tk, {})
+                    h = _filtered_hist.get(tk, {})
                     prices_list = h.get('prices', [])
                     latest_price = prices_list[-1] if prices_list else 0
                     _enrich_map[tk] = {
