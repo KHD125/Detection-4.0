@@ -9270,22 +9270,10 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         company = str(row.get('company_name', tk)).strip()
         ms = _safe(row, 'master_score')
 
-        # Get latest price for this ticker from row or histories
-        price = None
-        if 'price' in row:
-            try:
-                price = float(row['price'])
-            except Exception:
-                price = None
-        if price is None and histories is not None:
-            h = histories.get(tk, {})
-            if h and 'prices' in h and h['prices']:
-                price = h['prices'][-1]
         results.append({
             'Ticker': tk,
             'Company': company[:25],
             'Category': cat,
-            'Price': price if price is not None else '',
             'DNA Score': dna_score,
             'Conviction': conviction,
             'Path': path,
@@ -9297,6 +9285,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             'Rank': f'{rk_now:.0f}',
             'Rank Δ': rk_trend,
             'MS': f'{ms:.0f}',
+            'New': '🆕' if is_new else '',
             '_score': dna_score,
         })
 
@@ -9335,7 +9324,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         (res_df['Conviction'].isin(conv_filter))
     ].copy()
 
-    display_cols = ['Ticker', 'Company', 'Category', 'Price', 'DNA Score', 'Conviction',
+    display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'Conviction',
                     'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
                     'Rank', 'Rank Δ', 'MS']
     display_df = display_df[display_cols]
@@ -9355,7 +9344,12 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             st.markdown(f"**{cat_name}**: {len(cat_df)} matches ({high_c} high conviction)")
 
     # ── NEW THIS WEEK SPOTLIGHT ──
-    # Removed 'New' column and new-this-week spotlight section as requested
+    new_df = display_df[display_df['New'] == '🆕']
+    if not new_df.empty:
+        st.markdown("---")
+        st.markdown("#### 🆕 New DNA Matches This Week")
+        st.markdown("*These stocks just appeared on the DNA radar — early signals.*")
+        st.dataframe(new_df, use_container_width=True, height=min(300, 35 * len(new_df) + 40))
 
     # ── HIGH CONVICTION DETAIL ──
     high_df = display_df[display_df['Conviction'] == '🔴 HIGH']
@@ -9997,6 +9991,7 @@ def main():
 
     with tab_about:
         render_about_tab()
+
 
 if __name__ == "__main__":
     main()
