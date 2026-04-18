@@ -6355,6 +6355,12 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         'S10: Regime-Adaptive',
         'S11: Momentum-Quality',
         'S12: Max Alpha',
+        'S13: Capitulation Contrarian',
+        'S14: Bounce Recovery',
+        'S15: Quality GARP',
+        'S16: Pattern Flip Alpha',
+        'S17: Stealth Alpha',
+        'S18: Near-High Breakout',
     ]
     all_results = {name: [] for name in strategy_names}
 
@@ -6613,6 +6619,90 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         s12_tickers = _sector_cap(s12_tickers_raw, 2)[:20]
         s12_weights = {t: r.get('alpha_score', 50) for t, r in traj.items() if t in s12_tickers}
 
+        # ── S13: Capitulation Contrarian (data-proven: +2.99%, 60% WR) ──
+        # Stocks showing CAPITULATION pattern — extreme selling exhaustion
+        # signals high-probability mean reversion. Strongest single-pattern signal.
+        s13_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            pats_str = str(row.get('patterns', ''))
+            if 'CAPITULATION' in pats_str and t in forward_rets:
+                s13_tickers.append(t)
+
+        # ── S14: Bounce Recovery (BOUNCE state: +3.56%, 54.2% WR) ──
+        # Stocks in BOUNCE or PULLBACK market state with score ≥ 50.
+        # BOUNCE is the single strongest market state signal.
+        s14_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+            state_val = str(row.get('market_state', ''))
+            if state_val in ('BOUNCE', 'PULLBACK') and ms_val >= 50 and t in forward_rets:
+                s14_tickers.append(t)
+
+        # ── S15: Quality GARP (Quality Leader+Score≥65: +0.98%, GARP+Score≥65: +1.00%) ──
+        # Stocks with QUALITY LEADER or GARP LEADER pattern + high master_score.
+        # Combines fundamental quality signals with scoring system.
+        s15_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+            pats_str = str(row.get('patterns', ''))
+            has_quality = 'QUALITY LEADER' in pats_str or 'GARP' in pats_str
+            if has_quality and ms_val >= 65 and t in forward_rets:
+                s15_tickers.append(t)
+
+        # ── S16: Pattern Flip Alpha (NEW Capitulation: +3.06%, 60.8% WR) ──
+        # Stocks where CAPITULATION or VOL EXPLOSION+score≥60 pattern NEWLY appeared
+        # (was absent in previous week). Fresh pattern appearance = strongest signal.
+        s16_tickers = []
+        if week_idx >= 1:
+            prev_date = dates[week_idx - 1]
+            prev_df = weekly_data.get(prev_date)
+            if prev_df is not None:
+                prev_pats_map = dict(zip(prev_df['ticker'].astype(str).str.strip(),
+                                         prev_df['patterns'].astype(str)))
+                for _, row in df.iterrows():
+                    t = str(row['ticker']).strip()
+                    if t not in forward_rets:
+                        continue
+                    cur_pats_str = str(row.get('patterns', ''))
+                    prev_pats_str = prev_pats_map.get(t, '')
+                    cur_set = set(p.strip() for p in cur_pats_str.split('|') if p.strip() and p.strip() != 'nan')
+                    prev_set = set(p.strip() for p in prev_pats_str.split('|') if p.strip() and p.strip() != 'nan')
+                    new_pats = cur_set - prev_set
+                    # Newly appeared capitulation or vol explosion with decent score
+                    ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+                    for np_name in new_pats:
+                        if 'CAPITULATION' in np_name:
+                            s16_tickers.append(t)
+                            break
+                        if 'VOL EXPLOSION' in np_name and ms_val >= 60:
+                            s16_tickers.append(t)
+                            break
+
+        # ── S17: Stealth Alpha (Stealth+Rank≤100: +0.10%, 48% WR in bear market) ──
+        # Under-the-radar stocks with STEALTH pattern + strong rank.
+        # Stealth = accumulation without price movement — leads to breakouts.
+        s17_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            pats_str = str(row.get('patterns', ''))
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            if 'STEALTH' in pats_str and rk <= 100 and t in forward_rets:
+                s17_tickers.append(t)
+
+        # ── S18: Near-High Breakout (Near High+Breakout≥70: -0.13%, 45.6% WR) ──
+        # Stocks within 10% of 52-week high + strong breakout score.
+        # Large-N screen (4335 obs) — relative strength filter.
+        s18_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            brk_val = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
+            if fh > -10 and brk_val >= 70 and t in forward_rets:
+                s18_tickers.append(t)
+
         # ── Measure forward returns for each strategy ──
         strategy_picks = {
             'S1: Universe Avg': s1_tickers,
@@ -6628,6 +6718,12 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             'S10: Regime-Adaptive': s10_tickers,
             'S11: Momentum-Quality': s11_tickers,
             'S12: Max Alpha': s12_tickers,
+            'S13: Capitulation Contrarian': s13_tickers,
+            'S14: Bounce Recovery': s14_tickers,
+            'S15: Quality GARP': s15_tickers,
+            'S16: Pattern Flip Alpha': s16_tickers,
+            'S17: Stealth Alpha': s17_tickers,
+            'S18: Near-High Breakout': s18_tickers,
         }
 
         week_label = date.strftime('%Y-%m-%d')
@@ -7196,6 +7292,12 @@ def render_backtest_tab(uploaded_files):
         | **S10: Regime-Adaptive** | Bull: Top T-Score + no decay; Bear: Conviction ≥ 65 + persistent + no decay | Does regime adaptation help? |
         | **S11: Momentum-Quality** | ret_1y ≥ 25% + from_low ≥ 50% + Conviction ≥ 50 + no decay, sector-capped | Do 12-month momentum + low-distance signals add alpha? |
         | **S12: Max Alpha** | Top 20 by Alpha Score (≥40), alpha-weighted returns, sector-capped ≤2/sector | Does a pure forward-predictor score maximize future returns? |
+        | **S13: Capitulation Contrarian** | Stocks with 💣 CAPITULATION pattern (extreme selling exhaustion) | Backtest-proven: +2.99% avg, 60% WR. Mean reversion signal. |
+        | **S14: Bounce Recovery** | BOUNCE/PULLBACK market state + Score ≥ 50 | BOUNCE is the #1 market state: +3.56% avg, 54.2% WR. |
+        | **S15: Quality GARP** | QUALITY LEADER or GARP pattern + Score ≥ 65 | Quality + fundamentals: +0.98% avg (Quality), +1.00% avg (GARP). |
+        | **S16: Pattern Flip Alpha** | CAPITULATION or VOL EXPLOSION+Score≥60 NEWLY appeared this week | Fresh pattern signal: NEW Capitulation +3.06%, 60.8% WR. |
+        | **S17: Stealth Alpha** | 🤫 STEALTH pattern + Rank ≤ 100 | Stealth accumulation in top ranks: +0.10% in bear market, 48% WR. |
+        | **S18: Near-High Breakout** | Within 10% of 52w high + Breakout score ≥ 70 | Relative strength: largest N screen (4335 obs), 45.6% WR. |
 
         **Forward Return:** Actual price change from current week to next week. Computed from price data, not ret_7d.
 
@@ -7291,6 +7393,685 @@ def render_backtest_tab(uploaded_files):
             use_container_width=True,
             key='bt_dl_full',
         )
+
+
+# ============================================
+# UI: PATTERN ANALYSER TAB
+# ============================================
+
+def render_pattern_analyser_tab(uploaded_files):
+    """Data-driven pattern intelligence across all loaded CSVs."""
+    st.markdown("### 🔬 Pattern Analyser — Data-Driven Intelligence")
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#0d1117,#161b22); border-radius:10px;
+                padding:16px; border:1px solid #30363d; margin-bottom:16px;">
+        <div style="font-size:0.85rem; color:#8b949e;">
+            <b>What this does:</b> Analyses every pattern, market state, and combination across
+            ALL your loaded CSVs. Uses <b>price-based forward returns</b> (next week's actual price change)
+            to measure which signals genuinely predict future performance. No lookahead bias.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Parse all CSVs ──
+    weekly_data = {}
+    for ufile in uploaded_files:
+        date = parse_date_from_filename(ufile.name)
+        if date is None:
+            continue
+        try:
+            ufile.seek(0)
+            df = pd.read_csv(ufile)
+            if 'rank' in df.columns and 'ticker' in df.columns:
+                df['ticker'] = df['ticker'].astype(str).str.strip()
+                df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
+                df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
+                df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+                weekly_data[date] = df
+        except Exception:
+            pass
+
+    dates = sorted(weekly_data.keys())
+    if len(dates) < 3:
+        st.warning("Need at least 3 weekly CSVs for pattern analysis.")
+        return
+
+    pa_cache_key = ('PA', tuple(sorted((f.name, f.size) for f in uploaded_files)))
+    cached = st.session_state.get('_pa_result')
+    cached_key = st.session_state.get('_pa_key')
+    pa_data = cached if (cached is not None and cached_key == pa_cache_key) else None
+
+    col_run, col_info = st.columns([1, 3])
+    with col_run:
+        run_btn = st.button("🔬 Run Analysis", type="primary", use_container_width=True, key='pa_run')
+    with col_info:
+        if pa_data is None:
+            st.caption(f"📁 {len(dates)} weekly CSVs → {len(dates)-1} forward-return windows")
+        else:
+            st.caption(f"✅ Loaded ({pa_data['n_obs']:,} observations). Click to refresh.")
+
+    if run_btn:
+        prog = st.progress(0, text="Building pattern analysis...")
+        pa_data = _build_pattern_analysis(weekly_data, dates, prog)
+        st.session_state['_pa_result'] = pa_data
+        st.session_state['_pa_key'] = pa_cache_key
+        prog.progress(1.0, text="Analysis complete!")
+
+    if pa_data is None:
+        st.info("Click **Run Analysis** to compute pattern intelligence from your data.")
+        return
+
+    pa1, pa2, pa3, pa4, pa5, pa6 = st.tabs([
+        "📊 Pattern Performance", "🎯 Multi-Factor Screens",
+        "🔄 Pattern Flips", "🗺️ Pattern × State Matrix",
+        "🧩 Combo Explorer", "📈 Category & Sector",
+    ])
+    with pa1:
+        _render_pa_pattern_performance(pa_data)
+    with pa2:
+        _render_pa_multifactor_screens(pa_data)
+    with pa3:
+        _render_pa_pattern_flips(pa_data)
+    with pa4:
+        _render_pa_pattern_state_matrix(pa_data)
+    with pa5:
+        _render_pa_combo_explorer(pa_data)
+    with pa6:
+        _render_pa_category_sector(pa_data)
+
+
+# ---------- Pattern Analyser: data builder ----------
+
+def _build_pattern_analysis(weekly_data, dates, progress_bar):
+    """Build comprehensive pattern analysis from consecutive week pairs."""
+    from collections import defaultdict
+
+    results = []
+    pat_rets = defaultdict(list)
+    combo_rets = defaultdict(list)
+    state_rets = defaultdict(list)
+    score_bucket_rets = defaultdict(list)
+    rank_bucket_rets = defaultdict(list)
+    cat_rets = defaultdict(list)
+    sector_rets = defaultdict(list)
+    pat_state_rets = defaultdict(lambda: defaultdict(list))
+    cat_score_rets = defaultdict(lambda: defaultdict(list))
+    new_pat_rets = defaultdict(list)
+    month_rets = defaultdict(list)
+
+    n_pairs = len(dates) - 1
+    for i in range(n_pairs):
+        progress_bar.progress(i / max(n_pairs, 1) * 0.9,
+                              text=f"Analysing week {i+1}/{n_pairs}...")
+        d1, d2 = dates[i], dates[i + 1]
+        df1 = weekly_data[d1]
+        df2 = weekly_data[d2]
+        p2 = dict(zip(df2['ticker'].astype(str).str.strip(), df2['price']))
+        month_str = d1.strftime('%Y-%m')
+
+        prev_pats_map = {}
+        if i > 0:
+            prev_df = weekly_data[dates[i - 1]]
+            prev_pats_map = dict(zip(
+                prev_df['ticker'].astype(str).str.strip(),
+                prev_df['patterns'].astype(str),
+            ))
+
+        for _, row in df1.iterrows():
+            tk = str(row['ticker']).strip()
+            pr1 = float(row['price']) if pd.notna(row.get('price')) and float(row.get('price', 0)) > 0 else 0
+            pr2_val = p2.get(tk, 0)
+            pr2 = float(pr2_val) if pd.notna(pr2_val) and float(pr2_val) > 0 else 0
+            if pr1 <= 0 or pr2 <= 0:
+                continue
+            fwd = (pr2 / pr1 - 1) * 100
+            ms = float(row.get('master_score', 0)) if pd.notna(row.get('master_score')) else 0
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            state = str(row.get('market_state', '')).strip()
+            tq = float(row.get('trend_quality', 0)) if pd.notna(row.get('trend_quality')) else 0
+            mom = float(row.get('momentum_score', 0)) if pd.notna(row.get('momentum_score')) else 0
+            brk = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            cat = str(row.get('category', '')).strip()
+            sect = str(row.get('sector', '')).strip()
+            pats_str = str(row.get('patterns', ''))
+            pats_list = [p.strip() for p in pats_str.split('|') if p.strip() and p.strip() != 'nan']
+            n_pats = len(pats_list)
+
+            results.append(dict(
+                fwd=fwd, ms=ms, rk=rk, state=state, tq=tq, mom=mom,
+                brk=brk, fh=fh, cat=cat, sector=sect, n_pats=n_pats,
+                pats_str=pats_str,
+            ))
+
+            for p in pats_list:
+                pat_rets[p].append(fwd)
+                if state:
+                    pat_state_rets[p][state].append(fwd)
+
+            if n_pats >= 2:
+                combo_rets[' + '.join(sorted(pats_list)[:4])].append(fwd)
+
+            if state:
+                state_rets[state].append(fwd)
+
+            sb = '70+' if ms >= 70 else '60-70' if ms >= 60 else '50-60' if ms >= 50 else '40-50' if ms >= 40 else '0-40'
+            score_bucket_rets[sb].append(fwd)
+
+            rb = 'Top 10' if rk <= 10 else 'Top 50' if rk <= 50 else 'Top 100' if rk <= 100 else 'Top 500' if rk <= 500 else '500+'
+            rank_bucket_rets[rb].append(fwd)
+
+            if cat:
+                cat_rets[cat].append(fwd)
+                cat_score_rets[cat][sb].append(fwd)
+            if sect:
+                sector_rets[sect].append(fwd)
+            month_rets[month_str].append(fwd)
+
+            if prev_pats_map:
+                prev_set = set(pp.strip() for pp in prev_pats_map.get(tk, '').split('|')
+                               if pp.strip() and pp.strip() != 'nan')
+                for np_name in (set(pats_list) - prev_set):
+                    new_pat_rets[np_name].append(fwd)
+
+    # Multi-factor screens
+    rdf = pd.DataFrame(results) if results else pd.DataFrame()
+    screens = {}
+    if not rdf.empty:
+        def _scr(name, mask):
+            sub = rdf[mask]
+            n = len(sub)
+            if n >= 5:
+                screens[name] = dict(n=n, avg=sub['fwd'].mean(), med=sub['fwd'].median(),
+                                     wr=(sub['fwd'] > 0).mean() * 100)
+            else:
+                screens[name] = dict(n=n, avg=0, med=0, wr=0, few=True)
+
+        _scr('Capitulation', rdf['pats_str'].str.contains('CAPITULATION', na=False))
+        _scr('High Score + PULLBACK state', (rdf['ms'] >= 70) & (rdf['state'] == 'PULLBACK'))
+        _scr('High Score + BOUNCE state', (rdf['ms'] >= 60) & (rdf['state'] == 'BOUNCE'))
+        _scr('Quality Leader + Score≥65', rdf['pats_str'].str.contains('QUALITY LEADER', na=False) & (rdf['ms'] >= 65))
+        _scr('GARP + Score≥65', rdf['pats_str'].str.contains('GARP', na=False) & (rdf['ms'] >= 65))
+        _scr('Stealth + Rank≤100', rdf['pats_str'].str.contains('STEALTH', na=False) & (rdf['rk'] <= 100))
+        _scr('Near High + Breakout≥70', (rdf['fh'] > -10) & (rdf['brk'] >= 70))
+        _scr('High Score + Near High', (rdf['ms'] >= 70) & (rdf['fh'] > -10))
+        _scr('Top 50 + TQ≥70', (rdf['rk'] <= 50) & (rdf['tq'] >= 70))
+        _scr('Cat+Mkt Leader + Institutional',
+             rdf['pats_str'].str.contains('CAT LEADER', na=False) &
+             rdf['pats_str'].str.contains('MARKET LEADER', na=False) &
+             rdf['pats_str'].str.contains('INSTITUTIONAL', na=False) &
+             ~rdf['pats_str'].str.contains('TSUNAMI', na=False))
+        _scr('Quality Leader + GARP',
+             rdf['pats_str'].str.contains('QUALITY LEADER', na=False) &
+             rdf['pats_str'].str.contains('GARP', na=False))
+        _scr('BOUNCE + Score≥50', (rdf['state'] == 'BOUNCE') & (rdf['ms'] >= 50))
+        _scr('Vol Explosion + Mom≥60',
+             rdf['pats_str'].str.contains('VOL EXPLOSION', na=False) & (rdf['mom'] >= 60))
+        _scr('Golden Cross + TQ≥70',
+             rdf['pats_str'].str.contains('GOLDEN CROSS', na=False) & (rdf['tq'] >= 70))
+        _scr('Distribution (AVOID)', rdf['pats_str'].str.contains('DISTRIBUTION', na=False))
+        _scr('Hidden Gem (AVOID)', rdf['pats_str'].str.contains('HIDDEN GEM', na=False))
+        _scr('Mega Cap + Score≥60', (rdf['cat'] == 'Mega Cap') & (rdf['ms'] >= 60))
+        _scr('Large Cap + Near High + Institutional',
+             (rdf['cat'] == 'Large Cap') & (rdf['fh'] > -10) &
+             rdf['pats_str'].str.contains('INSTITUTIONAL', na=False) &
+             ~rdf['pats_str'].str.contains('TSUNAMI', na=False))
+
+    def _summarize(rets_dict, min_n=10):
+        out = []
+        for key, rets in rets_dict.items():
+            if len(rets) >= min_n:
+                out.append(dict(
+                    name=key, n=len(rets), avg=float(np.mean(rets)),
+                    med=float(np.median(rets)),
+                    wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
+                ))
+        return sorted(out, key=lambda x: -x['avg'])
+
+    pat_state_matrix = {}
+    for pat, sd in pat_state_rets.items():
+        pat_state_matrix[pat] = {}
+        for st_name, rets in sd.items():
+            if len(rets) >= 5:
+                pat_state_matrix[pat][st_name] = dict(
+                    n=len(rets), avg=float(np.mean(rets)),
+                    wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
+                )
+
+    cat_score_matrix = {}
+    for cat, sd in cat_score_rets.items():
+        cat_score_matrix[cat] = {}
+        for sl, rets in sd.items():
+            if len(rets) >= 10:
+                cat_score_matrix[cat][sl] = dict(
+                    n=len(rets), avg=float(np.mean(rets)),
+                    wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
+                )
+
+    return dict(
+        n_obs=len(results), n_weeks=len(dates) - 1,
+        date_range=(dates[0].strftime('%Y-%m-%d'), dates[-1].strftime('%Y-%m-%d')),
+        pat_stats=_summarize(pat_rets, 10),
+        combo_stats=_summarize(combo_rets, 10),
+        state_stats=_summarize(state_rets, 20),
+        score_stats=_summarize(score_bucket_rets, 20),
+        rank_stats=_summarize(rank_bucket_rets, 20),
+        cat_stats=_summarize(cat_rets, 20),
+        sector_stats=_summarize(sector_rets, 50),
+        month_stats=_summarize(month_rets, 20),
+        screens=screens,
+        flip_stats=_summarize(new_pat_rets, 10),
+        pat_state_matrix=pat_state_matrix,
+        cat_score_matrix=cat_score_matrix,
+    )
+
+
+# ---------- Pattern Analyser: color helpers ----------
+
+def _pa_color(val, threshold_good=0, threshold_great=1.0):
+    if val >= threshold_great:
+        return '#3fb950'
+    elif val >= threshold_good:
+        return '#58a6ff'
+    elif val >= -0.5:
+        return '#d29922'
+    return '#ff7b72'
+
+
+def _pa_wr_color(wr):
+    if wr >= 55:
+        return '#3fb950'
+    elif wr >= 45:
+        return '#58a6ff'
+    elif wr >= 38:
+        return '#d29922'
+    return '#ff7b72'
+
+
+# ---------- Pattern Analyser: sub-tab renderers ----------
+
+def _render_pa_pattern_performance(pa_data):
+    """Pattern performance table + state + monthly charts."""
+    st.markdown("#### 📊 Individual Pattern Forward Returns")
+    st.caption(f"{pa_data['n_obs']:,} stock-week observations across {pa_data['n_weeks']} weeks "
+               f"({pa_data['date_range'][0]} → {pa_data['date_range'][1]})")
+
+    pat_stats = pa_data['pat_stats']
+    if not pat_stats:
+        st.info("No pattern data available.")
+        return
+
+    best = pat_stats[0]
+    worst = pat_stats[-1]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🏆 Best Pattern", best['name'], f"{best['avg']:+.2f}% avg")
+    c2.metric("⚠️ Worst Pattern", worst['name'], f"{worst['avg']:+.2f}% avg")
+    c3.metric("📊 Patterns Tracked", len(pat_stats))
+
+    rows_html = ""
+    for i, s in enumerate(pat_stats):
+        bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 10px;color:#c9d1d9;">{i+1}</td>'
+            f'<td style="padding:6px 10px;color:#e6edf3;">{s["name"]}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["med"])};">{s["med"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};font-weight:600;">{s["wr"]:.1f}%</td>'
+            f'</tr>'
+        )
+    st.markdown(f"""
+    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d; color:#8b949e;">
+        <th style="padding:8px 10px;text-align:left;">#</th>
+        <th style="padding:8px 10px;text-align:left;">Pattern</th>
+        <th style="padding:8px 10px;text-align:right;">N</th>
+        <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+        <th style="padding:8px 10px;text-align:right;">Med Return</th>
+        <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+    </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("#### 🌡️ Market State Performance")
+    state_stats = pa_data['state_stats']
+    if state_stats:
+        fig = go.Figure()
+        names = [s['name'] for s in state_stats]
+        avgs = [s['avg'] for s in state_stats]
+        wrs = [s['wr'] for s in state_stats]
+        fig.add_trace(go.Bar(
+            x=names, y=avgs, marker_color=[_pa_color(a) for a in avgs],
+            text=[f"{a:+.2f}%<br>WR:{w:.0f}%" for a, w in zip(avgs, wrs)],
+            textposition='outside', textfont=dict(size=10),
+        ))
+        fig.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=350, margin=dict(l=40, r=20, t=30, b=60),
+            yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+        )
+        fig.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig, use_container_width=True, key='pa_state_chart')
+
+    st.markdown("#### 📅 Monthly Market Regime")
+    month_stats = pa_data['month_stats']
+    if month_stats:
+        ms_sorted = sorted(month_stats, key=lambda x: x['name'])
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+            x=[s['name'] for s in ms_sorted],
+            y=[s['avg'] for s in ms_sorted],
+            marker_color=['#3fb950' if s['avg'] >= 0 else '#ff7b72' for s in ms_sorted],
+            text=[f"{s['avg']:+.1f}%" for s in ms_sorted], textposition='outside',
+        ))
+        fig2.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=300, margin=dict(l=40, r=20, t=30, b=40),
+            yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+        )
+        fig2.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig2, use_container_width=True, key='pa_month_chart')
+
+
+def _render_pa_multifactor_screens(pa_data):
+    """Pre-built multi-factor screens ranked by performance."""
+    st.markdown("#### 🎯 Multi-Factor Screens — Pre-Built Signal Combinations")
+    st.caption("Each screen combines multiple factors. Ranked by average forward return.")
+    screens = pa_data.get('screens', {})
+    if not screens:
+        st.info("No screen data available.")
+        return
+
+    sorted_screens = sorted(screens.items(), key=lambda x: x[1].get('avg', -999), reverse=True)
+    rows_html = ""
+    for i, (name, s) in enumerate(sorted_screens):
+        if s.get('few'):
+            avg_str, med_str, wr_str = "—", "—", f"N={s['n']}"
+            avg_color = wr_color = '#484f58'
+        else:
+            avg_str = f"{s['avg']:+.2f}%"
+            med_str = f"{s['med']:+.2f}%"
+            wr_str = f"{s['wr']:.1f}%"
+            avg_color = _pa_color(s['avg'])
+            wr_color = _pa_wr_color(s['wr'])
+        tag = ""
+        if 'AVOID' in name:
+            tag = ' <span style="background:#ff7b72;color:#0d1117;border-radius:4px;padding:1px 6px;font-size:0.7rem;font-weight:700;">AVOID</span>'
+        elif s.get('avg', -1) >= 1.0 and not s.get('few'):
+            tag = ' <span style="background:#3fb950;color:#0d1117;border-radius:4px;padding:1px 6px;font-size:0.7rem;font-weight:700;">STRONG</span>'
+        elif s.get('avg', -1) >= 0 and not s.get('few'):
+            tag = ' <span style="background:#58a6ff;color:#0d1117;border-radius:4px;padding:1px 6px;font-size:0.7rem;font-weight:700;">EDGE</span>'
+        bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 10px;color:#e6edf3;">{name}{tag}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{avg_color};font-weight:600;">{avg_str}</td>'
+            f'<td style="padding:6px 10px;text-align:right;">{med_str}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{wr_color};font-weight:600;">{wr_str}</td>'
+            f'</tr>'
+        )
+    st.markdown(f"""
+    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d; color:#8b949e;">
+        <th style="padding:8px 10px;text-align:left;">Screen</th>
+        <th style="padding:8px 10px;text-align:right;">N</th>
+        <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+        <th style="padding:8px 10px;text-align:right;">Med Return</th>
+        <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+    </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+    <div style="background:#161b22;border-radius:8px;padding:12px;margin-top:12px;border:1px solid #30363d;">
+        <div style="font-size:0.78rem;color:#8b949e;">
+            <b>🟢 STRONG</b> = Avg ≥ +1.0% &nbsp; <b>🔵 EDGE</b> = Avg ≥ 0% &nbsp;
+            <b>🔴 AVOID</b> = Confirmed negative signal
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _render_pa_pattern_flips(pa_data):
+    """Newly-appeared pattern performance."""
+    st.markdown("#### 🔄 Pattern Flip Analysis — New Appearance Signals")
+    st.caption("When a pattern NEWLY appears (absent the previous week), what happens next?")
+    flip_stats = pa_data.get('flip_stats', [])
+    if not flip_stats:
+        st.info("No flip data available (need ≥3 CSVs).")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🚀 Best New Signal", f"NEW {flip_stats[0]['name']}", f"{flip_stats[0]['avg']:+.2f}%")
+    c2.metric("⚠️ Worst New Signal", f"NEW {flip_stats[-1]['name']}", f"{flip_stats[-1]['avg']:+.2f}%")
+    c3.metric("🔄 Patterns Tracked", len(flip_stats))
+
+    rows_html = ""
+    for i, s in enumerate(flip_stats):
+        bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        ind = "🟢" if s['avg'] >= 0.5 else "🔵" if s['avg'] >= 0 else "🟡" if s['avg'] >= -0.5 else "🔴"
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 10px;color:#c9d1d9;">{ind}</td>'
+            f'<td style="padding:6px 10px;color:#e6edf3;">NEW {s["name"]}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["med"])};">{s["med"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};font-weight:600;">{s["wr"]:.1f}%</td>'
+            f'</tr>'
+        )
+    st.markdown(f"""
+    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d; color:#8b949e;">
+        <th style="padding:8px 10px;"></th>
+        <th style="padding:8px 10px;text-align:left;">New Pattern Signal</th>
+        <th style="padding:8px 10px;text-align:right;">N</th>
+        <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+        <th style="padding:8px 10px;text-align:right;">Med Return</th>
+        <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+    </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+
+
+def _render_pa_pattern_state_matrix(pa_data):
+    """Pattern × Market State heatmap."""
+    st.markdown("#### 🗺️ Pattern × Market State Matrix")
+    st.caption("Green = positive avg return, Red = negative. N ≥ 5 required.")
+    matrix = pa_data.get('pat_state_matrix', {})
+    if not matrix:
+        st.info("No matrix data available.")
+        return
+
+    all_states = set()
+    for pd_dict in matrix.values():
+        all_states.update(pd_dict.keys())
+    state_order = ['BOUNCE', 'STRONG_DOWNTREND', 'DOWNTREND', 'PULLBACK',
+                   'STRONG_UPTREND', 'SIDEWAYS', 'UPTREND', 'ROTATION']
+    states = [s for s in state_order if s in all_states]
+
+    pat_overall = {s['name']: s['avg'] for s in pa_data.get('pat_stats', [])}
+    pats_sorted = [p for p in sorted(matrix.keys(), key=lambda x: -pat_overall.get(x, -99))
+                   if matrix[p]]
+    if not pats_sorted or not states:
+        st.info("Insufficient cross-data for matrix.")
+        return
+
+    z_vals, hover_text = [], []
+    for pat in pats_sorted:
+        rz, rh = [], []
+        for state in states:
+            cell = matrix.get(pat, {}).get(state)
+            if cell:
+                rz.append(cell['avg'])
+                rh.append(f"{pat} × {state}<br>Avg: {cell['avg']:+.2f}%<br>WR: {cell['wr']:.0f}%<br>N: {cell['n']}")
+            else:
+                rz.append(None)
+                rh.append(f"{pat} × {state}<br>N < 5")
+        z_vals.append(rz)
+        hover_text.append(rh)
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z_vals, x=states, y=pats_sorted,
+        colorscale=[[0, '#ff7b72'], [0.35, '#21262d'], [0.5, '#30363d'],
+                    [0.65, '#21262d'], [1.0, '#3fb950']],
+        zmid=0, text=hover_text, hovertemplate='%{text}<extra></extra>',
+        colorbar=dict(title='Avg Ret %', tickformat='+.1f'),
+    ))
+    fig.update_layout(
+        template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+        height=max(350, len(pats_sorted) * 22 + 100),
+        margin=dict(l=180, r=20, t=30, b=60),
+        yaxis=dict(autorange='reversed'), xaxis=dict(side='top'),
+    )
+    st.plotly_chart(fig, use_container_width=True, key='pa_heatmap')
+
+
+def _render_pa_combo_explorer(pa_data):
+    """Top and worst pattern combos."""
+    st.markdown("#### 🧩 Pattern Combo Explorer")
+    st.caption("Exact pattern combinations (≥2 patterns) ranked by forward return. N ≥ 10.")
+    combo_stats = pa_data.get('combo_stats', [])
+    if not combo_stats:
+        st.info("No combo data available.")
+        return
+
+    def _combo_table(title, data):
+        if not data:
+            return
+        st.markdown(f"##### {title}")
+        rows_html = ""
+        for i, s in enumerate(data):
+            bg = '#161b22' if i % 2 == 0 else '#0d1117'
+            rows_html += (
+                f'<tr style="background:{bg};">'
+                f'<td style="padding:6px 10px;color:#e6edf3;max-width:400px;overflow:hidden;text-overflow:ellipsis;">{s["name"]}</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]}</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};">{s["wr"]:.1f}%</td>'
+                f'</tr>'
+            )
+        st.markdown(f"""
+        <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+        <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+        <thead><tr style="background:#21262d; color:#8b949e;">
+            <th style="padding:8px 10px;text-align:left;">Pattern Combo</th>
+            <th style="padding:8px 10px;text-align:right;">N</th>
+            <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+            <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+        </tr></thead><tbody>{rows_html}</tbody></table></div>
+        """, unsafe_allow_html=True)
+
+    _combo_table("🟢 Top Positive Combos", [c for c in combo_stats if c['avg'] >= 0][:20])
+    _combo_table("🔴 Worst Combos (AVOID)", list(reversed([c for c in combo_stats if c['avg'] < 0]))[:10])
+
+
+def _render_pa_category_sector(pa_data):
+    """Category, sector, score and rank breakdowns."""
+    st.markdown("#### 📈 Category & Sector Performance")
+
+    cat_stats = pa_data.get('cat_stats', [])
+    if cat_stats:
+        st.markdown("##### 🏢 Category (Market Cap)")
+        cat_order = ['Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']
+        ordered = sorted(cat_stats, key=lambda x: cat_order.index(x['name']) if x['name'] in cat_order else 99)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=[s['name'] for s in ordered], y=[s['avg'] for s in ordered],
+            marker_color=[_pa_color(s['avg']) for s in ordered],
+            text=[f"{s['avg']:+.2f}%<br>WR:{s['wr']:.0f}%<br>N:{s['n']:,}" for s in ordered],
+            textposition='outside', textfont=dict(size=10),
+        ))
+        fig.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=320, margin=dict(l=40, r=20, t=30, b=40),
+            yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+        )
+        fig.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig, use_container_width=True, key='pa_cat_chart')
+
+    cat_score_matrix = pa_data.get('cat_score_matrix', {})
+    if cat_score_matrix:
+        st.markdown("##### 🏢 × 📊 Category × Score Matrix")
+        score_labels = ['70+', '60-70', '50-60', '40-50', '0-40']
+        cat_order_list = ['Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']
+        rows_html = ""
+        for ci, cat in enumerate(cat_order_list):
+            if cat not in cat_score_matrix:
+                continue
+            cells = ""
+            for sl in score_labels:
+                cell = cat_score_matrix[cat].get(sl)
+                if cell:
+                    color = _pa_color(cell['avg'])
+                    cells += (f'<td style="padding:6px;text-align:center;color:{color};font-weight:600;">'
+                              f'{cell["avg"]:+.1f}%<br><span style="font-size:0.7rem;color:#8b949e;">'
+                              f'WR:{cell["wr"]:.0f}% N:{cell["n"]}</span></td>')
+                else:
+                    cells += '<td style="padding:6px;text-align:center;color:#484f58;">—</td>'
+            bg = '#161b22' if ci % 2 == 0 else '#0d1117'
+            rows_html += f'<tr style="background:{bg};"><td style="padding:6px 10px;color:#e6edf3;font-weight:600;">{cat}</td>{cells}</tr>'
+        hdr = ''.join(f'<th style="padding:8px;text-align:center;">Score {sl}</th>' for sl in score_labels)
+        st.markdown(f"""
+        <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+        <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+        <thead><tr style="background:#21262d; color:#8b949e;">
+            <th style="padding:8px 10px;text-align:left;">Category</th>{hdr}
+        </tr></thead><tbody>{rows_html}</tbody></table></div>
+        """, unsafe_allow_html=True)
+
+    sector_stats = pa_data.get('sector_stats', [])
+    if sector_stats:
+        st.markdown("##### 🏭 Top 15 Sectors")
+        top15 = sector_stats[:15]
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+            x=[s['avg'] for s in top15], y=[s['name'] for s in top15],
+            orientation='h',
+            marker_color=['#3fb950' if s['avg'] >= 0 else '#ff7b72' for s in top15],
+            text=[f"{s['avg']:+.2f}% (WR:{s['wr']:.0f}%)" for s in top15],
+            textposition='outside', textfont=dict(size=9),
+        ))
+        fig2.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=max(300, len(top15) * 28 + 80),
+            margin=dict(l=180, r=60, t=30, b=40),
+            xaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+            yaxis=dict(autorange='reversed'),
+        )
+        fig2.add_vline(x=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig2, use_container_width=True, key='pa_sector_chart')
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### 📊 Score Range Performance")
+        for s in sorted(pa_data.get('score_stats', []),
+                        key=lambda x: ['70+', '60-70', '50-60', '40-50', '0-40'].index(x['name'])
+                        if x['name'] in ['70+', '60-70', '50-60', '40-50', '0-40'] else 99):
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #21262d;">'
+                f'<span style="color:#e6edf3;">Score {s["name"]}</span>'
+                f'<span><span style="color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</span>'
+                f' <span style="color:{_pa_wr_color(s["wr"])};">WR:{s["wr"]:.0f}%</span>'
+                f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
+                unsafe_allow_html=True,
+            )
+    with c2:
+        st.markdown("##### 🏅 Rank Range Performance")
+        for s in sorted(pa_data.get('rank_stats', []),
+                        key=lambda x: ['Top 10', 'Top 50', 'Top 100', 'Top 500', '500+'].index(x['name'])
+                        if x['name'] in ['Top 10', 'Top 50', 'Top 100', 'Top 500', '500+'] else 99):
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #21262d;">'
+                f'<span style="color:#e6edf3;">{s["name"]}</span>'
+                f'<span><span style="color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</span>'
+                f' <span style="color:{_pa_wr_color(s["wr"])};">WR:{s["wr"]:.0f}%</span>'
+                f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ============================================
@@ -7848,9 +8629,9 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_movers, tab_export, tab_about = st.tabs([
+    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_movers, tab_pattern, tab_export, tab_about = st.tabs([
         "📡 Market Pulse", "🏆 Rankings", "🔍 Search & Analyze",
-        "📊 Backtest", "🔥 Top Movers", "📤 Export", "ℹ️ About"
+        "📊 Backtest", "🔥 Top Movers", "🔬 Pattern Analyser", "📤 Export", "ℹ️ About"
     ])
 
     with tab_pulse:
@@ -7867,6 +8648,9 @@ def main():
 
     with tab_movers:
         render_top_movers_tab(filtered_df, histories)
+
+    with tab_pattern:
+        render_pattern_analyser_tab(uploaded_files)
 
     with tab_export:
         render_export_tab(filtered_df, traj_df, histories)
