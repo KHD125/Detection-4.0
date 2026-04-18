@@ -7563,6 +7563,110 @@ def render_pattern_analyser_tab(uploaded_files):
         st.info("Click **Run Analysis** to compute pattern intelligence from your data.")
         return
 
+    # ── Download Full Report ──
+    def _build_pa_report(pa_data):
+        import io
+        buf = io.StringIO()
+        dr = pa_data.get('date_range', ('?', '?'))
+        buf.write(f"PATTERN ANALYSER REPORT\n")
+        buf.write(f"Period: {dr[0]} to {dr[1]} | Observations: {pa_data['n_obs']:,} | Weeks: {pa_data['n_weeks']}\n\n")
+
+        def _write_section(title, stats, extra_cols=None):
+            buf.write(f"=== {title} ===\n")
+            if not stats:
+                buf.write("(no data)\n\n")
+                return
+            header = "Name,N,Avg_Return_%,Median_Return_%,Win_Rate_%"
+            if extra_cols:
+                header += ',' + ','.join(extra_cols)
+            buf.write(header + "\n")
+            for s in stats:
+                line = f"{s['name']},{s['n']},{s['avg']:.3f},{s['med']:.3f},{s['wr']:.1f}"
+                buf.write(line + "\n")
+            buf.write("\n")
+
+        _write_section("PATTERN PERFORMANCE (sorted by avg return)", pa_data.get('pat_stats', []))
+        _write_section("PATTERN FLIPS (new pattern appearances)", pa_data.get('flip_stats', []))
+        _write_section("MARKET STATE PERFORMANCE", pa_data.get('state_stats', []))
+        _write_section("SCORE BUCKET PERFORMANCE", pa_data.get('score_stats', []))
+        _write_section("RANK BUCKET PERFORMANCE", pa_data.get('rank_stats', []))
+        _write_section("CATEGORY PERFORMANCE", pa_data.get('cat_stats', []))
+        _write_section("SECTOR PERFORMANCE", pa_data.get('sector_stats', []))
+        _write_section("MONTH PERFORMANCE", pa_data.get('month_stats', []))
+        _write_section("COMBO PERFORMANCE (pattern combinations)", pa_data.get('combo_stats', []))
+
+        # Multi-Factor Screens
+        screens = pa_data.get('screens', {})
+        if screens:
+            buf.write("=== MULTI-FACTOR SCREENS ===\n")
+            buf.write("Screen,N,Avg_Return_%,Median_Return_%,Win_Rate_%,Note\n")
+            for sname, sd in sorted(screens.items(), key=lambda x: -x[1].get('avg', 0)):
+                note = "(too few)" if sd.get('few') else ""
+                buf.write(f"{sname},{sd['n']},{sd['avg']:.3f},{sd['med']:.3f},{sd['wr']:.1f},{note}\n")
+            buf.write("\n")
+
+        # Pattern x State Matrix
+        psm = pa_data.get('pat_state_matrix', {})
+        if psm:
+            all_states = sorted({st for sd in psm.values() for st in sd})
+            buf.write("=== PATTERN x STATE MATRIX (Avg Return %) ===\n")
+            buf.write("Pattern," + ",".join(f"{st}_Avg,{st}_WR,{st}_N" for st in all_states) + "\n")
+            for pat in sorted(psm.keys()):
+                parts = [pat]
+                for st in all_states:
+                    cell = psm[pat].get(st)
+                    if cell:
+                        parts.append(f"{cell['avg']:.3f}")
+                        parts.append(f"{cell['wr']:.1f}")
+                        parts.append(str(cell['n']))
+                    else:
+                        parts.extend(['', '', ''])
+                buf.write(",".join(parts) + "\n")
+            buf.write("\n")
+
+        # Category x Score Matrix
+        csm = pa_data.get('cat_score_matrix', {})
+        if csm:
+            all_buckets = sorted({b for sd in csm.values() for b in sd})
+            buf.write("=== CATEGORY x SCORE MATRIX (Avg Return %) ===\n")
+            buf.write("Category," + ",".join(f"{b}_Avg,{b}_WR,{b}_N" for b in all_buckets) + "\n")
+            for cat in sorted(csm.keys()):
+                parts = [cat]
+                for b in all_buckets:
+                    cell = csm[cat].get(b)
+                    if cell:
+                        parts.append(f"{cell['avg']:.3f}")
+                        parts.append(f"{cell['wr']:.1f}")
+                        parts.append(str(cell['n']))
+                    else:
+                        parts.extend(['', '', ''])
+                buf.write(",".join(parts) + "\n")
+            buf.write("\n")
+
+        # DNA Buckets
+        dna_b = pa_data.get('dna_buckets', {})
+        dna_c = pa_data.get('dna_criteria', {})
+        if dna_b:
+            buf.write("=== WINNER DNA SCORE BUCKETS ===\n")
+            buf.write(f"Thresholds: Top10%>={dna_c.get('q90',0):.1f}, Top25%>={dna_c.get('q75',0):.1f}, Median={dna_c.get('q50',0):.1f}\n")
+            buf.write("Bucket,N,Avg_Return_%,Median_Return_%,Win_Rate_%\n")
+            for label in ['Top 10%', 'Top 25%', '50-75%', '25-50%', 'Bottom 25%']:
+                d = dna_b.get(label)
+                if d:
+                    buf.write(f"{label},{d['n']},{d['avg']:.3f},{d['med']:.3f},{d['wr']:.1f}\n")
+            buf.write("\n")
+
+        return buf.getvalue().encode('utf-8')
+
+    report_csv = _build_pa_report(pa_data)
+    st.download_button(
+        label="📥 Download Full Pattern Report (CSV)",
+        data=report_csv,
+        file_name="pattern_analyser_report.csv",
+        mime="text/csv",
+        key='pa_dl_full',
+    )
+
     pa1, pa2, pa3, pa4, pa5, pa6, pa7 = st.tabs([
         "📊 Pattern Performance", "🎯 Multi-Factor Screens",
         "🔄 Pattern Flips", "🗺️ Pattern × State Matrix",
