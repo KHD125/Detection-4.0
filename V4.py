@@ -9992,6 +9992,5 @@ def main():
     with tab_about:
         render_about_tab()
 
-
 if __name__ == "__main__":
     main()
