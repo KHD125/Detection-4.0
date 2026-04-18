@@ -4700,43 +4700,34 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         if prev is None:
             st.info("Need at least 2 weekly snapshots for week-over-week comparison.")
         else:
-            # Build actual-grade map from filtered_df (trajectory-score-based grade)
-            _actual_grade = {}
-            for _, row in filtered_df.iterrows():
-                tk = row.get('ticker', '')
-                if tk and 'grade' in row and pd.notna(row.get('grade')):
-                    _actual_grade[tk] = str(row['grade'])
-
             # Build ticker-keyed lookup for prev & latest week
-            # prev week: use raw-score grade from snapshot (trajectory not available)
+            # Both use raw-score grades from snapshots for a fair WoW comparison
             prev_map = {}
             for i, t in enumerate(prev['tickers']):
                 prev_map[t] = {
                     'rank': prev['ranks'][i], 'score': prev['scores'][i],
                     'grade': prev['grades'][i], 'pattern': prev['patterns'][i],
                 }
-            # latest week: override grade with actual trajectory-based grade
             lat_map = {}
             for i, t in enumerate(latest['tickers']):
                 lat_map[t] = {
                     'rank': latest['ranks'][i], 'score': latest['scores'][i],
-                    'grade': _actual_grade.get(t, latest['grades'][i]),
+                    'grade': latest['grades'][i],
                     'pattern': latest['patterns'][i],
                     'sector': latest['sectors'][i],
                 }
 
-            # Enrich with company_name from filtered_df + price from histories
+            # Enrich with company_name + price directly from histories
             _enrich_map = {}
-            for _, row in filtered_df.iterrows():
-                tk = row.get('ticker', '')
-                if tk:
-                    h = _filtered_hist.get(tk, {})
-                    prices_list = h.get('prices', [])
-                    latest_price = prices_list[-1] if prices_list else 0
-                    _enrich_map[tk] = {
-                        'company_name': str(row.get('company_name', '') if pd.notna(row.get('company_name')) else ''),
-                        'price': float(latest_price) if latest_price and not (isinstance(latest_price, float) and latest_price != latest_price) else 0,
-                    }
+            for tk in set(lat_map) | set(prev_map):
+                h = _filtered_hist.get(tk) or histories.get(tk, {})
+                prices_list = h.get('prices', [])
+                lp = prices_list[-1] if prices_list else 0
+                cn = h.get('company_name', '')
+                _enrich_map[tk] = {
+                    'company_name': str(cn) if cn else '',
+                    'price': float(lp) if lp and not (isinstance(lp, float) and lp != lp) else 0,
+                }
 
             # Compute grade deltas
             grade_order = {'S': 5, 'A': 4, 'B': 3, 'C': 2, 'D': 1, 'F': 0}
