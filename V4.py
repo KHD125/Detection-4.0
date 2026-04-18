@@ -3855,6 +3855,15 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         # Conditional slider keys (only rendered when Custom Range is chosen)
         _conditional_keys = ['sb_gain_slider', 'sb_age_slider', 'sb_gap_slider']
 
+        # ── Handle pending clear (set by button callback on PREVIOUS run) ──
+        if st.session_state.get('_sb_pending_clear'):
+            del st.session_state['_sb_pending_clear']
+            for _k, _v in _defaults.items():
+                st.session_state[_k] = _v
+            for _ck in _conditional_keys:
+                if _ck in st.session_state:
+                    del st.session_state[_ck]
+
         # Count active filters
         _active = 0
         for _k in _sb_keys:
@@ -3867,11 +3876,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
 
         if st.button("🗑️ Clear All Filters", key='sb_clear_all', use_container_width=True,
                      type='primary' if _active > 0 else 'secondary'):
-            for _k, _v in _defaults.items():
-                st.session_state[_k] = _v
-            for _ck in _conditional_keys:
-                if _ck in st.session_state:
-                    del st.session_state[_ck]
+            st.session_state['_sb_pending_clear'] = True
             st.rerun()
 
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
@@ -4162,11 +4167,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
 
         if st.button("🗑️ Clear All Filters", key='sb_clear_all_bottom', use_container_width=True,
                      type='primary' if _active > 0 else 'secondary'):
-            for _k, _v in _defaults.items():
-                st.session_state[_k] = _v
-            for _ck in _conditional_keys:
-                if _ck in st.session_state:
-                    del st.session_state[_ck]
+            st.session_state['_sb_pending_clear'] = True
             st.rerun()
 
         st.caption("v10.1 · Alpha Engine · Data-Driven")
