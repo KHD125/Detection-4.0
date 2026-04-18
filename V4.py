@@ -9082,10 +9082,17 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         prev2_df = weekly_data[dates[-3]]
         prev2_tickers = set(prev2_df['ticker'].astype(str).str.strip())
 
+    # ── Apply sidebar filters: only scan tickers passing global filters ──
+    sidebar_tickers = set(filtered_df['ticker'].astype(str).str.strip()) if not filtered_df.empty else None
+
     results = []
     for _, row in latest_df.iterrows():
         tk = str(row['ticker']).strip()
         cat = str(row.get('category', '')).strip()
+
+        # Respect sidebar filters (sector, category, market state, industry, etc.)
+        if sidebar_tickers is not None and tk not in sidebar_tickers:
+            continue
 
         # Determine which scanner to use
         if sel_cat != "All Categories" and cat != sel_cat:
