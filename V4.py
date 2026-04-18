@@ -8500,6 +8500,791 @@ def _render_pa_winner_dna(pa_data):
 
 
 # ============================================
+# ============================================
+# UI: DNA WATCHLIST TAB
+# ============================================
+
+def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
+    """🎯 DNA Watchlist — Category-specific forward-looking winner scanner."""
+    st.markdown("### 🎯 DNA Watchlist — Find Winners Before They Win")
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#0d1117,#161b22); border-radius:10px;
+                padding:16px; border:1px solid #30363d; margin-bottom:16px;">
+        <div style="font-size:0.85rem; color:#8b949e;">
+            <b>What this does:</b> Scans TODAY's stocks using <b>category-specific DNA profiles</b>
+            derived from actual 6-month winners. Each cap size has its own scoring formula
+            calibrated to how past winners looked <b>before</b> they started winning.<br>
+            <b>Large Cap</b>: Position + Tension leaders | <b>Mega Cap</b>: Volume + Near-high + Low tension |
+            <b>Mid Cap</b>: Score leaders + Trend quality | <b>Small Cap</b>: Position + TQ driven |
+            <b>Micro Cap</b>: Coiled Spring — low volume, high tension, rotation state
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Parse all weekly data ──
+    weekly_data = {}
+    for ufile in uploaded_files:
+        try:
+            ufile.seek(0)
+            df = pd.read_csv(ufile)
+            df['ticker'] = df['ticker'].astype(str).str.strip()
+            fname = getattr(ufile, 'name', str(ufile))
+            parts = fname.replace('.csv', '').split('_')
+            date_str = parts[2] if len(parts) >= 3 else fname
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+            weekly_data[dt] = df
+        except Exception:
+            continue
+
+    if len(weekly_data) < 2:
+        st.warning("Need at least 2 weeks of CSV data for DNA Watchlist.")
+        return
+
+    dates = sorted(weekly_data.keys())
+    latest_df = weekly_data[dates[-1]]
+    prev_df = weekly_data[dates[-2]] if len(dates) >= 2 else None
+
+    # ── Category selector ──
+    cat_options = ["All Categories", "Large Cap", "Mega Cap", "Mid Cap", "Small Cap", "Micro Cap"]
+    sel_cat = st.selectbox("📁 Select Category", cat_options, key='dna_wl_cat')
+
+    # ═══════════════════════════════════════════════════════
+    # DNA SCORING FUNCTIONS — Calibrated to actual winners
+    # ═══════════════════════════════════════════════════════
+
+    def _safe(row, col, default=0):
+        v = row.get(col)
+        if pd.isna(v):
+            return default
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return default
+
+    def _get_patterns(row):
+        p = str(row.get('patterns', ''))
+        return [x.strip() for x in p.split('|') if x.strip() and x.strip() != 'nan']
+
+    def _score_large(row):
+        """Large Cap: position_score***, position_tension***, from_low_pct***
+        Enriched: LIQUID LEADER, CAT LEADER, VOL EXPLOSION, STEALTH, PYRAMID"""
+        score = 0
+        reasons = []
+        pos = _safe(row, 'position_score')
+        pt = _safe(row, 'position_tension')
+        fl = _safe(row, 'from_low_pct')
+        ms = _safe(row, 'master_score')
+        rk = _safe(row, 'rank', 9999)
+        fh = _safe(row, 'from_high_pct', -99)
+        pats = _get_patterns(row)
+
+        # Position score ≥ 30 (winner P25)
+        if pos >= 55:
+            score += 20; reasons.append('High Position')
+        elif pos >= 35:
+            score += 12; reasons.append('Good Position')
+        elif pos >= 30:
+            score += 5
+
+        # Position tension ≥ 55 (others avg), winners avg 69
+        if pt >= 90:
+            score += 20; reasons.append('Very High Tension')
+        elif pt >= 69:
+            score += 14; reasons.append('High Tension')
+        elif pt >= 55:
+            score += 7
+
+        # From low ≥ 36 (others avg), winners 49
+        if fl >= 49:
+            score += 12; reasons.append('Strong From Low')
+        elif fl >= 36:
+            score += 6
+
+        # Rank ≤ 750 (median)
+        if rk <= 400:
+            score += 10; reasons.append('Top Rank')
+        elif rk <= 750:
+            score += 6
+
+        # Master score
+        if ms >= 57:
+            score += 8; reasons.append('High Master Score')
+        elif ms >= 47:
+            score += 4
+
+        # From high (closer to 0 better)
+        if fh >= -12:
+            score += 8; reasons.append('Near 52W High')
+        elif fh >= -18:
+            score += 4
+
+        # Pattern bonuses
+        for p in pats:
+            if 'LIQUID LEADER' in p:
+                score += 6; reasons.append('Liquid Leader')
+            elif 'CAT LEADER' in p:
+                score += 5; reasons.append('Cat Leader')
+            elif 'VOL EXPLOSION' in p:
+                score += 5; reasons.append('Vol Explosion')
+            elif 'STEALTH' in p:
+                score += 6; reasons.append('Stealth (BT+12%)')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+            elif 'PYRAMID' in p:
+                score += 4; reasons.append('Pyramid')
+            elif '52W HIGH' in p:
+                score += 4; reasons.append('52W High Approach')
+            elif 'GOLDEN CROSS' in p:
+                score += 4; reasons.append('Golden Cross')
+            elif 'CAPITULATION' in p:
+                score += 6; reasons.append('Capitulation (BT#2)')
+
+        # State bonus
+        state = str(row.get('market_state', '')).strip()
+        if state == 'UPTREND':
+            score += 4
+        elif state == 'ROTATION':
+            score += 2
+
+        return min(score, 100), reasons
+
+    def _score_mega(row):
+        """Mega Cap: volume_score*, from_high_pct*, LOW position_tension***,
+        LOW from_low_pct***. Enriched: PREMIUM MOMENTUM, INSTITUTIONAL, VOL EXPLOSION"""
+        score = 0
+        reasons = []
+        vol = _safe(row, 'volume_score')
+        fh = _safe(row, 'from_high_pct', -99)
+        pt = _safe(row, 'position_tension')
+        fl = _safe(row, 'from_low_pct')
+        rk = _safe(row, 'rank', 9999)
+        rvol_s = _safe(row, 'rvol_score')
+        brk = _safe(row, 'breakout_score')
+        tq = _safe(row, 'trend_quality')
+        pats = _get_patterns(row)
+
+        # Volume score ≥ 59 (winner median 60)
+        if vol >= 69:
+            score += 18; reasons.append('Very High Volume')
+        elif vol >= 59:
+            score += 12; reasons.append('High Volume')
+        elif vol >= 49:
+            score += 5
+
+        # Near high (winner -15 vs others -19)
+        if fh >= -7:
+            score += 16; reasons.append('Very Near High')
+        elif fh >= -15:
+            score += 10; reasons.append('Near High')
+        elif fh >= -24:
+            score += 4
+
+        # LOW position tension (winners 41 vs others 57)
+        if pt <= 30:
+            score += 16; reasons.append('Low Tension (Mega DNA)')
+        elif pt <= 41:
+            score += 10; reasons.append('Moderate-Low Tension')
+        elif pt <= 57:
+            score += 4
+
+        # LOW from low (winners 26 vs others 38)
+        if fl <= 20:
+            score += 12; reasons.append('Low From Low (Stable)')
+        elif fl <= 26:
+            score += 8
+        elif fl <= 38:
+            score += 3
+
+        # Trend quality
+        if tq >= 82:
+            score += 8; reasons.append('Strong Trend')
+        elif tq >= 60:
+            score += 4
+
+        # Breakout
+        if brk >= 83:
+            score += 6; reasons.append('High Breakout')
+        elif brk >= 51:
+            score += 3
+
+        # Rvol score (winners 45 vs 36)
+        if rvol_s >= 45:
+            score += 6; reasons.append('High Rvol')
+
+        # Pattern bonuses
+        for p in pats:
+            if 'PREMIUM MOMENTUM' in p:
+                score += 8; reasons.append('Premium Momentum')
+            elif 'INSTITUTIONAL' in p:
+                score += 8; reasons.append('Institutional')
+            elif 'VOL EXPLOSION' in p:
+                score += 6; reasons.append('Vol Explosion')
+            elif '52W HIGH' in p:
+                score += 5; reasons.append('52W High Approach')
+            elif 'PULLBACK SUPPORT' in p:
+                score += 5; reasons.append('Pullback Support')
+            elif 'STEALTH' in p:
+                score += 6; reasons.append('Stealth (BT+12%)')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+            elif 'CAPITULATION' in p:
+                score += 5; reasons.append('Capitulation (BT#2)')
+
+        # State bonus (SIDEWAYS and UPTREND strongly enriched)
+        state = str(row.get('market_state', '')).strip()
+        if state == 'UPTREND':
+            score += 5
+        elif state == 'SIDEWAYS':
+            score += 3
+        # Downtrend penalty (0% winners in downtrend)
+        if state in ('DOWNTREND', 'STRONG_DOWNTREND'):
+            score -= 10
+
+        return min(score, 100), reasons
+
+    def _score_mid(row):
+        """Mid Cap: master_score***, position_score***, breakout_score***,
+        trend_quality***, rank***, from_high_pct**. Dual-path: momentum + contrarian."""
+        score = 0
+        reasons = []
+        ms = _safe(row, 'master_score')
+        pos = _safe(row, 'position_score')
+        brk = _safe(row, 'breakout_score')
+        tq = _safe(row, 'trend_quality')
+        rk = _safe(row, 'rank', 9999)
+        fh = _safe(row, 'from_high_pct', -99)
+        fl = _safe(row, 'from_low_pct')
+        pt = _safe(row, 'position_tension')
+        mom = _safe(row, 'momentum_score')
+        pats = _get_patterns(row)
+        state = str(row.get('market_state', '')).strip()
+
+        # ── Path detection ──
+        is_momentum = state in ('UPTREND', 'STRONG_UPTREND') or (tq >= 66 and ms >= 51)
+        is_contrarian = state in ('DOWNTREND', 'STRONG_DOWNTREND') and pos >= 40
+
+        # Master score ≥ 51 (winner median)
+        if ms >= 61:
+            score += 14; reasons.append('Elite Master Score')
+        elif ms >= 51:
+            score += 10; reasons.append('Strong Master Score')
+        elif ms >= 43:
+            score += 4
+
+        # Position score (winner median 48)
+        if pos >= 71:
+            score += 14; reasons.append('Elite Position')
+        elif pos >= 48:
+            score += 10; reasons.append('Strong Position')
+        elif pos >= 34:
+            score += 4
+
+        # Trend quality (winner median 66)
+        if tq >= 89:
+            score += 12; reasons.append('Exceptional TQ')
+        elif tq >= 66:
+            score += 9; reasons.append('Strong TQ')
+        elif tq >= 40:
+            score += 3
+
+        # Breakout score
+        if brk >= 74:
+            score += 10; reasons.append('High Breakout')
+        elif brk >= 51:
+            score += 6; reasons.append('Good Breakout')
+        elif brk >= 35:
+            score += 2
+
+        # Rank
+        if rk <= 200:
+            score += 10; reasons.append('Top 200 Rank')
+        elif rk <= 562:
+            score += 6; reasons.append('Top-Half Rank')
+        elif rk <= 986:
+            score += 2
+
+        # From high
+        if fh >= -8:
+            score += 6; reasons.append('Near High')
+        elif fh >= -18:
+            score += 3
+
+        # Momentum score
+        if mom >= 67:
+            score += 6; reasons.append('High Momentum')
+        elif mom >= 56:
+            score += 3
+
+        # Position tension
+        if pt >= 94:
+            score += 6; reasons.append('High Tension')
+        elif pt >= 75:
+            score += 3
+
+        # Pattern bonuses (MARKET LEADER 2.2x, CAT LEADER 2.0x)
+        for p in pats:
+            if 'MARKET LEADER' in p:
+                score += 7; reasons.append('Market Leader')
+            elif 'CAT LEADER' in p:
+                score += 6; reasons.append('Cat Leader')
+            elif 'LIQUID LEADER' in p:
+                score += 5; reasons.append('Liquid Leader')
+            elif 'PREMIUM MOMENTUM' in p:
+                score += 5; reasons.append('Premium Momentum')
+            elif 'GOLDEN CROSS' in p:
+                score += 4; reasons.append('Golden Cross')
+            elif 'PULLBACK SUPPORT' in p:
+                score += 4; reasons.append('Pullback Support')
+            elif 'STEALTH' in p:
+                score += 6; reasons.append('Stealth (BT+12%)')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+            elif 'CAPITULATION' in p:
+                score += 7; reasons.append('Capitulation (BT#2)')
+
+        # State bonuses
+        if state in ('UPTREND', 'STRONG_UPTREND'):
+            score += 4
+        elif state == 'PULLBACK' and pos >= 40:
+            score += 3
+        # Contrarian state boost (S20 Contrarian = +12.49% alpha, proven)
+        elif state in ('DOWNTREND', 'STRONG_DOWNTREND') and pos >= 30:
+            score += 5; reasons.append('Contrarian State')
+
+        # Path label — Contrarian heavily favoured per backtest (S20=+12.49% vs S19=+0.72%)
+        path = 'Momentum' if is_momentum else ('Contrarian' if is_contrarian else 'Neutral')
+        if is_momentum:
+            score += 2
+        if is_contrarian:
+            score += 8; reasons.append('Contrarian Setup (BT#3)')
+
+        return min(score, 100), reasons, path
+
+    def _score_small(row):
+        """Small Cap: position_score***, trend_quality***, breakout_score***,
+        master_score***, rank***, from_high_pct***, from_low_pct***, position_tension**"""
+        score = 0
+        reasons = []
+        pos = _safe(row, 'position_score')
+        tq = _safe(row, 'trend_quality')
+        brk = _safe(row, 'breakout_score')
+        ms = _safe(row, 'master_score')
+        rk = _safe(row, 'rank', 9999)
+        fh = _safe(row, 'from_high_pct', -99)
+        fl = _safe(row, 'from_low_pct')
+        pt = _safe(row, 'position_tension')
+        pats = _get_patterns(row)
+
+        # Position score (winner median 45, P75=65)
+        if pos >= 65:
+            score += 16; reasons.append('Elite Position')
+        elif pos >= 45:
+            score += 10; reasons.append('Strong Position')
+        elif pos >= 33:
+            score += 4
+
+        # Trend quality (winner median 59, P75=83)
+        if tq >= 83:
+            score += 14; reasons.append('Exceptional TQ')
+        elif tq >= 59:
+            score += 9; reasons.append('Strong TQ')
+        elif tq >= 29:
+            score += 3
+
+        # Breakout score
+        if brk >= 56:
+            score += 10; reasons.append('High Breakout')
+        elif brk >= 45:
+            score += 6; reasons.append('Good Breakout')
+        elif brk >= 34:
+            score += 2
+
+        # Master score
+        if ms >= 56:
+            score += 10; reasons.append('High Master Score')
+        elif ms >= 46:
+            score += 6
+        elif ms >= 40:
+            score += 2
+
+        # Rank
+        if rk <= 400:
+            score += 8; reasons.append('Top 400 Rank')
+        elif rk <= 823:
+            score += 5; reasons.append('Above-Median Rank')
+        elif rk <= 1280:
+            score += 2
+
+        # From high
+        if fh >= -13:
+            score += 8; reasons.append('Near High')
+        elif fh >= -26:
+            score += 4
+
+        # Position tension
+        if pt >= 94:
+            score += 8; reasons.append('High Tension')
+        elif pt >= 83:
+            score += 4
+
+        # From low
+        if fl >= 69:
+            score += 6; reasons.append('Strong Recovery')
+        elif fl >= 54:
+            score += 3
+
+        # Pattern bonuses
+        for p in pats:
+            if 'VELOCITY SQUEEZE' in p:
+                score += 7; reasons.append('Velocity Squeeze')
+            elif 'ACCELERATION' in p:
+                score += 6; reasons.append('Acceleration')
+            elif 'MARKET LEADER' in p:
+                score += 5; reasons.append('Market Leader')
+            elif 'CAT LEADER' in p:
+                score += 5; reasons.append('Cat Leader')
+            elif 'PULLBACK SUPPORT' in p:
+                score += 5; reasons.append('Pullback Support')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+            elif 'RUNAWAY GAP' in p:
+                score += 6; reasons.append('Runaway Gap')
+            elif 'PREMIUM MOMENTUM' in p:
+                score += 4; reasons.append('Premium Momentum')
+            elif 'STEALTH' in p:
+                score += 6; reasons.append('Stealth (BT+12%)')
+            elif 'CAPITULATION' in p:
+                score += 6; reasons.append('Capitulation (BT#2)')
+
+        # State
+        state = str(row.get('market_state', '')).strip()
+        if state in ('UPTREND', 'STRONG_UPTREND'):
+            score += 4
+        elif state == 'PULLBACK':
+            score += 2
+
+        return min(score, 100), reasons
+
+    def _score_micro(row):
+        """Micro Cap — Coiled Spring: LOW volume**, LOW money_flow**, HIGH position_tension*,
+        position_score*, LOW acceleration*. ROTATION state enriched.
+        Patterns: VALUE MOMENTUM 16x, INFO DECAY 3.9x, STEALTH 1.9x"""
+        score = 0
+        reasons = []
+        vol = _safe(row, 'volume_score')
+        mf = _safe(row, 'money_flow_mm')
+        pt = _safe(row, 'position_tension')
+        pos = _safe(row, 'position_score')
+        acc = _safe(row, 'acceleration_score')
+        rvol_s = _safe(row, 'rvol_score')
+        tq = _safe(row, 'trend_quality')
+        rk = _safe(row, 'rank', 9999)
+        pats = _get_patterns(row)
+        state = str(row.get('market_state', '')).strip()
+
+        # LOW volume score (winners 29 vs others 34)
+        if vol <= 15:
+            score += 18; reasons.append('Very Low Volume (Coiled)')
+        elif vol <= 27:
+            score += 12; reasons.append('Low Volume')
+        elif vol <= 34:
+            score += 4
+
+        # LOW money flow (winners 1.7 vs others 31.5)
+        if mf <= 2:
+            score += 16; reasons.append('Minimal Money Flow')
+        elif mf <= 10:
+            score += 10; reasons.append('Low Money Flow')
+        elif mf <= 31:
+            score += 3
+
+        # HIGH position tension (winners 412 vs others 85)
+        if pt >= 400:
+            score += 16; reasons.append('Extreme Tension')
+        elif pt >= 150:
+            score += 10; reasons.append('High Tension')
+        elif pt >= 85:
+            score += 4
+
+        # Position score
+        if pos >= 62:
+            score += 10; reasons.append('High Position')
+        elif pos >= 35:
+            score += 6; reasons.append('Good Position')
+        elif pos >= 29:
+            score += 2
+
+        # LOW rvol score (winners 23 vs others 28)
+        if rvol_s <= 15:
+            score += 6; reasons.append('Low Rvol (Under Radar)')
+
+        # LOW acceleration (winners 49 vs others 51)
+        if acc <= 45:
+            score += 4; reasons.append('Low Acceleration')
+
+        # TQ — trajectory matters more than level
+        if tq >= 77:
+            score += 6; reasons.append('Rising TQ')
+        elif tq >= 43:
+            score += 3
+
+        # Pattern bonuses (VALUE MOMENTUM 16x!)
+        for p in pats:
+            if 'VALUE MOMENTUM' in p:
+                score += 12; reasons.append('Value Momentum (16x!)')
+            elif 'INFORMATION DECAY' in p:
+                score += 8; reasons.append('Info Decay Arb (3.9x)')
+            elif 'STEALTH' in p:
+                score += 7; reasons.append('Stealth (BT+12%)')
+            elif 'GOLDEN CROSS' in p:
+                score += 5; reasons.append('Golden Cross')
+            elif 'MARKET LEADER' in p:
+                score += 4; reasons.append('Market Leader')
+            elif 'CAPITULATION' in p:
+                score += 5; reasons.append('Capitulation (BT#2)')
+
+        # ROTATION state strongly enriched (+5.8%)
+        if state == 'ROTATION':
+            score += 8; reasons.append('Rotation State')
+        elif state == 'DOWNTREND':
+            score += 3; reasons.append('Downtrend (Potential Coil)')
+        elif state == 'STRONG_DOWNTREND':
+            score += 2
+
+        return min(score, 100), reasons
+
+    # ═══════════════════════════════════════════════════════
+    # SCAN ALL STOCKS
+    # ═══════════════════════════════════════════════════════
+
+    # Build prev-week lookup for TQ trajectory
+    prev_tq_map = {}
+    prev_rank_map = {}
+    if prev_df is not None:
+        for _, r in prev_df.iterrows():
+            tk = str(r['ticker']).strip()
+            tq_v = r.get('trend_quality')
+            rk_v = r.get('rank')
+            if pd.notna(tq_v):
+                try:
+                    prev_tq_map[tk] = float(tq_v)
+                except (ValueError, TypeError):
+                    pass
+            if pd.notna(rk_v):
+                try:
+                    prev_rank_map[tk] = float(rk_v)
+                except (ValueError, TypeError):
+                    pass
+
+    # Build 2-weeks-ago lookup for "New This Week"
+    prev2_tickers = set()
+    if len(dates) >= 3:
+        prev2_df = weekly_data[dates[-3]]
+        prev2_tickers = set(prev2_df['ticker'].astype(str).str.strip())
+
+    results = []
+    for _, row in latest_df.iterrows():
+        tk = str(row['ticker']).strip()
+        cat = str(row.get('category', '')).strip()
+
+        # Determine which scanner to use
+        if sel_cat != "All Categories" and cat != sel_cat:
+            # Special case: Mega Cap data might be labeled Large Cap
+            if not (sel_cat == "Mega Cap" and cat == "Large Cap"):
+                continue
+
+        if cat == 'Large Cap':
+            dna_score, reasons = _score_large(row)
+            path = 'Quality Leader'
+        elif cat == 'Mega Cap':
+            dna_score, reasons = _score_mega(row)
+            path = 'Institutional'
+        elif cat == 'Mid Cap':
+            dna_score, reasons, path = _score_mid(row)
+        elif cat == 'Small Cap':
+            dna_score, reasons = _score_small(row)
+            path = 'Position/TQ'
+        elif cat == 'Micro Cap':
+            dna_score, reasons = _score_micro(row)
+            path = 'Coiled Spring'
+        else:
+            continue
+
+        # Conviction level
+        if dna_score >= 65:
+            conviction = '🔴 HIGH'
+        elif dna_score >= 45:
+            conviction = '🟡 MEDIUM'
+        elif dna_score >= 30:
+            conviction = '🟢 LOW'
+        else:
+            continue  # Skip very low scores
+
+        # TQ trend
+        tq_now = _safe(row, 'trend_quality')
+        tq_prev = prev_tq_map.get(tk)
+        if tq_prev is not None:
+            tq_delta = tq_now - tq_prev
+            if tq_delta > 5:
+                tq_trend = f'↑ +{tq_delta:.0f}'
+            elif tq_delta < -5:
+                tq_trend = f'↓ {tq_delta:.0f}'
+            else:
+                tq_trend = f'→ {tq_delta:+.0f}'
+        else:
+            tq_trend = '—'
+
+        # Rank improvement
+        rk_now = _safe(row, 'rank', 9999)
+        rk_prev = prev_rank_map.get(tk)
+        if rk_prev is not None:
+            rk_delta = rk_prev - rk_now  # positive = improved
+            rk_trend = f'↑{rk_delta:.0f}' if rk_delta > 20 else (f'↓{-rk_delta:.0f}' if rk_delta < -20 else '→')
+        else:
+            rk_trend = '—'
+
+        # New this week flag
+        is_new = tk not in prev2_tickers if prev2_tickers else False
+
+        state = str(row.get('market_state', '')).strip()
+        company = str(row.get('company_name', tk)).strip()
+        ms = _safe(row, 'master_score')
+
+        results.append({
+            'Ticker': tk,
+            'Company': company[:25],
+            'Category': cat,
+            'DNA Score': dna_score,
+            'Conviction': conviction,
+            'Path': path,
+            'State': state,
+            'Criteria Met': len(reasons),
+            'Key Signals': ', '.join(reasons[:4]),
+            'TQ': f'{tq_now:.0f}',
+            'TQ Trend': tq_trend,
+            'Rank': f'{rk_now:.0f}',
+            'Rank Δ': rk_trend,
+            'MS': f'{ms:.0f}',
+            'New': '🆕' if is_new else '',
+            '_score': dna_score,
+        })
+
+    if not results:
+        st.warning("No stocks match DNA criteria for this category.")
+        return
+
+    res_df = pd.DataFrame(results).sort_values('_score', ascending=False)
+
+    # ── Summary metrics ──
+    total = len(res_df)
+    high_conv = len(res_df[res_df['Conviction'].str.contains('HIGH')])
+    med_conv = len(res_df[res_df['Conviction'].str.contains('MEDIUM')])
+    new_count = len(res_df[res_df['New'] == '🆕'])
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Total Matches", total)
+    with c2:
+        st.metric("🔴 High Conviction", high_conv)
+    with c3:
+        st.metric("🟡 Medium Conviction", med_conv)
+    with c4:
+        st.metric("🆕 New This Week", new_count)
+
+    # ── Filter options ──
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        min_score = st.slider("Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore')
+    with fc2:
+        conv_filter = st.multiselect("Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
+                                     default=['🔴 HIGH', '🟡 MEDIUM'], key='dna_wl_conv')
+
+    display_df = res_df[
+        (res_df['_score'] >= min_score) &
+        (res_df['Conviction'].isin(conv_filter))
+    ].copy()
+
+    display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'Conviction',
+                    'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
+                    'Rank', 'Rank Δ', 'MS']
+    display_df = display_df[display_cols]
+
+    st.markdown(f"**Showing {len(display_df)} stocks** (sorted by DNA Score)")
+    st.dataframe(display_df, use_container_width=True, height=min(600, 35 * len(display_df) + 40))
+
+    # ── Category breakdown (when All Categories selected) ──
+    if sel_cat == "All Categories":
+        st.markdown("---")
+        st.markdown("#### 📊 Category Breakdown")
+        for cat_name in ['Large Cap', 'Mega Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']:
+            cat_df = res_df[res_df['Category'] == cat_name]
+            if cat_df.empty:
+                continue
+            high_c = len(cat_df[cat_df['Conviction'].str.contains('HIGH')])
+            st.markdown(f"**{cat_name}**: {len(cat_df)} matches ({high_c} high conviction)")
+
+    # ── NEW THIS WEEK SPOTLIGHT ──
+    new_df = display_df[display_df['New'] == '🆕']
+    if not new_df.empty:
+        st.markdown("---")
+        st.markdown("#### 🆕 New DNA Matches This Week")
+        st.markdown("*These stocks just appeared on the DNA radar — early signals.*")
+        st.dataframe(new_df, use_container_width=True, height=min(300, 35 * len(new_df) + 40))
+
+    # ── HIGH CONVICTION DETAIL ──
+    high_df = display_df[display_df['Conviction'] == '🔴 HIGH']
+    if not high_df.empty:
+        st.markdown("---")
+        st.markdown("#### 🔴 High Conviction Picks — Detailed View")
+
+        for _, r in high_df.head(20).iterrows():
+            with st.expander(f"**{r['Ticker']}** — {r['Company']} | DNA: {r['DNA Score']} | {r['Path']}"):
+                dc1, dc2, dc3, dc4 = st.columns(4)
+                with dc1:
+                    st.metric("DNA Score", r['DNA Score'])
+                with dc2:
+                    st.metric("TQ", r['TQ'], delta=r['TQ Trend'].replace('→', '').replace('↑', '+').replace('↓', '') or None)
+                with dc3:
+                    st.metric("Rank", r['Rank'])
+                with dc4:
+                    st.metric("Master Score", r['MS'])
+                st.markdown(f"**State:** {r['State']} | **Path:** {r['Path']} | **Criteria Met:** {r['Criteria Met']}")
+                st.markdown(f"**Key Signals:** {r['Key Signals']}")
+
+    # ── DNA SCORING LEGEND ──
+    with st.expander("📖 DNA Scoring Methodology"):
+        st.markdown(r"""
+        Each category uses a **unique scoring formula** calibrated to actual 6-month winner profiles
+        + **backtest-validated pattern bonuses** (BT = backtest proven):
+
+        | Category | Key Drivers | Winner Archetype |
+        |----------|------------|------------------|
+        | **Large Cap** | Position Score\*\*\*, Position Tension\*\*\*, From Low\*\*\* | Quality leaders with building tension |
+        | **Mega Cap** | Volume Score\*, Near High\*, LOW Tension\*\*\* | Stable blue chips with volume interest |
+        | **Mid Cap** | Master\*\*\*, Position\*\*\*, Breakout\*\*\*, TQ\*\*\*, Rank\*\*\* | Dual-path: Momentum OR **Contrarian (BT#3)** |
+        | **Small Cap** | Position\*\*\*, TQ\*\*\*, Breakout\*\*\*, Rank\*\*\* | TQ & Position driven, pattern enrichment |
+        | **Micro Cap** | LOW Volume\*\*, LOW Money Flow\*\*, HIGH Tension\* | Coiled Spring — under radar, building tension |
+
+        **Backtest-Validated Boosts** (applied across ALL categories):
+        - 🏆 **Quality GARP** (+7): S15 = **+20.28% alpha**, #1 strategy overall
+        - 🔄 **Capitulation** (+5-7): S13 = **+17.82% alpha**, #2 strategy overall
+        - 🤫 **Stealth** (+6-7): S17 = **+12.37% alpha**, #4 strategy overall
+        - 📉 **Contrarian Path** (+8 Mid Cap): S20 = **+12.49% alpha** vs S19 Momentum = +0.72%
+
+        **Conviction Levels:**
+        - 🔴 **HIGH** (65+): Strong DNA match — multiple winner criteria aligned
+        - 🟡 **MEDIUM** (45-64): Moderate match — developing setup, worth monitoring
+        - 🟢 **LOW** (30-44): Early signal — partial match, watch for improvement
+
+        **Pattern Enrichment** (compared to non-winners):
+        - Micro: VALUE MOMENTUM (16.2x!), INFO DECAY (3.9x), STEALTH (1.9x)
+        - Mid: MARKET LEADER (2.2x), CAT LEADER (2.0x), LIQUID LEADER (2.4x)
+        - Small: RUNAWAY GAP (9.0x), VELOCITY SQUEEZE (3.4x), ACCELERATION (2.5x)
+        - Large: 52W HIGH APPROACH (2.2x), PYRAMID (2.0x), VOL EXPLOSION (1.8x)
+        - Mega: PREMIUM MOMENTUM (3.5x), INSTITUTIONAL (3.2x), VOL EXPLOSION (3.0x)
+        """)
+
+
 # UI: ABOUT TAB
 # ============================================
 
@@ -9054,9 +9839,9 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_movers, tab_pattern, tab_export, tab_about = st.tabs([
+    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_movers, tab_pattern, tab_dna_wl, tab_export, tab_about = st.tabs([
         "📡 Market Pulse", "🏆 Rankings", "🔍 Search & Analyze",
-        "📊 Backtest", "🔥 Top Movers", "🔬 Pattern Analyser", "📤 Export", "ℹ️ About"
+        "📊 Backtest", "🔥 Top Movers", "🔬 Pattern Analyser", "🎯 DNA Watchlist", "📤 Export", "ℹ️ About"
     ])
 
     with tab_pulse:
@@ -9076,6 +9861,9 @@ def main():
 
     with tab_pattern:
         render_pattern_analyser_tab(uploaded_files)
+
+    with tab_dna_wl:
+        render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories)
 
     with tab_export:
         render_export_tab(filtered_df, traj_df, histories)
