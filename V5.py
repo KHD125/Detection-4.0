@@ -5952,7 +5952,7 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
     week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len] or [1]
     week_labels = {1: '1 Week', 2: '2 Weeks', 4: '4 Weeks', 8: '8 Weeks', 12: '12 Weeks'}
 
-    c_wk, c_ct, _ = st.columns([1, 1, 2])
+    c_wk, c_ct, c_side, _ = st.columns([1, 1, 1, 1])
     with c_wk:
         mv_weeks = st.selectbox(
             'Time Window', options=week_options,
@@ -5963,6 +5963,11 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
         mv_count = st.selectbox(
             'Stocks Per Side', options=[50, 100, 150],
             index=0, key='movers_tab_count',
+        )
+    with c_side:
+        mv_side = st.selectbox(
+            'View', options=['⬆️ Biggest Climbers', '⬇️ Biggest Decliners'],
+            index=0, key='movers_tab_side',
         )
 
     # ── Fetch movers ─────────────────────────────────────────────
@@ -6256,11 +6261,11 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'{"".join(rows_html)}</div>')
         return hdr + body
 
-    g_html = _mover_table_html(gainers, '#3fb950', '⬆️', 'Biggest Climbers')
-    d_html = _mover_table_html(decliners, '#f85149', '⬇️', 'Biggest Decliners')
-    st.markdown(
-        f'<div class="mv-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
-        f'<div>{g_html}</div><div>{d_html}</div></div>', unsafe_allow_html=True)
+    if mv_side == '⬆️ Biggest Climbers':
+        mv_html = _mover_table_html(gainers, '#3fb950', '⬆️', 'Biggest Climbers')
+    else:
+        mv_html = _mover_table_html(decliners, '#f85149', '⬇️', 'Biggest Decliners')
+    st.markdown(mv_html, unsafe_allow_html=True)
 
 
 # ============================================
