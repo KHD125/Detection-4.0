@@ -9497,6 +9497,756 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         """)
 
 
+# ============================================
+# DNA BACKTEST ENGINE
+# ============================================
+
+def _score_row_dna(row):
+    """Score a single CSV row through the DNA scoring pipeline.
+    Returns dict with dna_score, conviction, path, reasons or None."""
+    cat = str(row.get('category', ''))
+    if not cat or cat == 'nan':
+        return None
+    try:
+        if cat == 'Large Cap':
+            dna_score, reasons = _dna_score_large(row)
+            path = 'Quality Leader'
+        elif cat == 'Mega Cap':
+            dna_score, reasons = _dna_score_mega(row)
+            path = 'Institutional'
+        elif cat == 'Mid Cap':
+            dna_score, reasons, path = _dna_score_mid(row)
+        elif cat == 'Small Cap':
+            dna_score, reasons = _dna_score_small(row)
+            path = 'Position/TQ'
+        elif cat == 'Micro Cap':
+            dna_score, reasons = _dna_score_micro(row)
+            path = 'Tension/Recovery'
+        else:
+            return None
+    except Exception:
+        return None
+
+    if dna_score >= 65:
+        conviction = 'HIGH'
+    elif dna_score >= 45:
+        conviction = 'MEDIUM'
+    elif dna_score >= 30:
+        conviction = 'LOW'
+    else:
+        conviction = 'MINIMAL'
+
+    return {
+        'dna_score': dna_score,
+        'conviction': conviction,
+        'path': path,
+        'reasons': reasons,
+    }
+
+
+def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
+                      categories_filter=None, progress_callback=None):
+    """
+    DNA Backtest Engine — walk-forward validation of DNA scoring.
+
+    For each entry week where forward data exists:
+      1. Score every ticker with DNA (from that week's CSV row — no lookahead)
+      2. Compute actual forward returns at multiple horizons by matching prices
+
+    Args:
+        uploaded_files: Streamlit uploaded file objects
+        mode: 'all', 'tickers', or 'category'
+        tickers_filter: list of tickers (for mode='tickers')
+        categories_filter: list of categories (for mode='category')
+        progress_callback: fn(pct, text)
+
+    Returns: (detail_df, dates_list) or None
+    """
+    # ── Step 1: Parse all CSVs ──
+    weekly_data = {}
+    for ufile in uploaded_files:
+        dt = parse_date_from_filename(ufile.name)
+        if dt is None:
+            continue
+        try:
+            ufile.seek(0)
+            df = pd.read_csv(ufile)
+            if 'rank' in df.columns and 'ticker' in df.columns:
+                df['ticker'] = df['ticker'].astype(str).str.strip()
+                for nc in ['rank', 'master_score', 'price', 'position_score', 'volume_score',
+                           'momentum_score', 'acceleration_score', 'breakout_score', 'rvol_score',
+                           'trend_quality', 'from_high_pct', 'from_low_pct', 'position_tension',
+                           'money_flow_mm', 'momentum_harmony', 'pe', 'eps_current', 'eps_change_pct',
+                           'ret_1d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y', 'rvol', 'vmi']:
+                    if nc in df.columns:
+                        df[nc] = pd.to_numeric(df[nc], errors='coerce')
+                weekly_data[dt] = df
+        except Exception:
+            continue
+
+    dates = sorted(weekly_data.keys())
+    n_weeks = len(dates)
+    if n_weeks < 3:
+        return None
+
+    # ── Step 2: Build price matrix {ticker: {date_index: price}} ──
+    date_to_idx = {d: i for i, d in enumerate(dates)}
+    price_matrix = {}
+    for d_idx, d in enumerate(dates):
+        df = weekly_data[d]
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            p = float(row['price']) if pd.notna(row.get('price')) and float(row.get('price', 0)) > 0 else 0
+            if p > 0:
+                if t not in price_matrix:
+                    price_matrix[t] = {}
+                price_matrix[t][d_idx] = p
+
+    # ── Step 3: Define horizon lookups ──
+    # Horizons in weeks: find nearest available date index
+    horizons = {'1w': 1, '2w': 2, '4w': 4, '8w': 8, '13w': 13}
+
+    def _find_nearest_future_idx(entry_idx, weeks_ahead):
+        """Find the nearest date index that is ~weeks_ahead from entry_idx."""
+        target = entry_idx + weeks_ahead
+        if target >= n_weeks:
+            return None
+        # Search within ±1 week tolerance
+        best_idx = None
+        best_dist = 999
+        for candidate in range(max(entry_idx + 1, target - 1), min(n_weeks, target + 2)):
+            dist = abs(candidate - target)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = candidate
+        return best_idx
+
+    # ── Step 4: Walk-forward — score each week ──
+    all_rows = []
+    total_entry_weeks = sum(1 for i in range(n_weeks) if i + 1 < n_weeks)
+
+    processed = 0
+    for entry_idx, entry_date in enumerate(dates):
+        # Need at least 1 week forward
+        if entry_idx + 1 >= n_weeks:
+            continue
+
+        df = weekly_data[entry_date]
+        entry_label = entry_date.strftime('%Y-%m-%d')
+
+        # Compute category average returns at each horizon for alpha calculation
+        cat_returns = {}  # {category: {horizon: [returns]}}
+
+        processed += 1
+        if progress_callback:
+            progress_callback(
+                processed / max(total_entry_weeks, 1),
+                f"Scoring week {entry_label} ({processed}/{total_entry_weeks})"
+            )
+
+        for _, row in df.iterrows():
+            ticker = str(row['ticker']).strip()
+            if not ticker or ticker == 'nan':
+                continue
+
+            cat = str(row.get('category', ''))
+
+            # ── Apply filters ──
+            if mode == 'tickers' and tickers_filter:
+                if ticker not in tickers_filter:
+                    continue
+            elif mode == 'category' and categories_filter:
+                if cat not in categories_filter:
+                    continue
+
+            # ── DNA Score ──
+            row_dict = row.to_dict()
+            dna_result = _score_row_dna(row_dict)
+
+            dna_score = dna_result['dna_score'] if dna_result else 0
+            conviction = dna_result['conviction'] if dna_result else 'NONE'
+            path = dna_result['path'] if dna_result else ''
+            reasons = dna_result['reasons'] if dna_result else []
+
+            # ── Forward Returns from price matrix ──
+            entry_price = price_matrix.get(ticker, {}).get(entry_idx, 0)
+            if entry_price <= 0:
+                continue
+
+            fwd_data = {}
+            for h_name, h_weeks in horizons.items():
+                fwd_idx = _find_nearest_future_idx(entry_idx, h_weeks)
+                if fwd_idx is not None:
+                    fwd_price = price_matrix.get(ticker, {}).get(fwd_idx, 0)
+                    if fwd_price > 0:
+                        fwd_data[f'price_{h_name}'] = round(fwd_price, 2)
+                        fwd_data[f'ret_{h_name}'] = round((fwd_price / entry_price - 1) * 100, 2)
+                    else:
+                        fwd_data[f'price_{h_name}'] = None
+                        fwd_data[f'ret_{h_name}'] = None
+                else:
+                    fwd_data[f'price_{h_name}'] = None
+                    fwd_data[f'ret_{h_name}'] = None
+
+            # ── Collect for category averages ──
+            if cat not in cat_returns:
+                cat_returns[cat] = {f'ret_{h}': [] for h in horizons}
+            for h_name in horizons:
+                rv = fwd_data.get(f'ret_{h_name}')
+                if rv is not None:
+                    cat_returns[cat][f'ret_{h_name}'].append(rv)
+
+            # ── Build row ──
+            detail_row = {
+                'entry_week': entry_label,
+                'ticker': ticker,
+                'company_name': str(row.get('company_name', '')),
+                'category': cat,
+                'sector': str(row.get('sector', '')),
+                'industry': str(row.get('industry', '')),
+                'dna_score': dna_score,
+                'conviction': conviction,
+                'path': path,
+                'dna_reasons': ' | '.join(reasons) if reasons else '',
+                'n_reasons': len(reasons),
+                'market_state': str(row.get('market_state', '')),
+                'patterns': str(row.get('patterns', '')),
+                'master_score': _safe_dna(row_dict, 'master_score'),
+                'trend_quality': _safe_dna(row_dict, 'trend_quality'),
+                'breakout_score': _safe_dna(row_dict, 'breakout_score'),
+                'position_score': _safe_dna(row_dict, 'position_score'),
+                'volume_score': _safe_dna(row_dict, 'volume_score'),
+                'momentum_score': _safe_dna(row_dict, 'momentum_score'),
+                'from_high_pct': _safe_dna(row_dict, 'from_high_pct', -99),
+                'from_low_pct': _safe_dna(row_dict, 'from_low_pct'),
+                'entry_price': round(entry_price, 2),
+            }
+            detail_row.update(fwd_data)
+            all_rows.append(detail_row)
+
+        # ── Backfill category averages for this entry week ──
+        cat_avgs = {}
+        for c, h_dict in cat_returns.items():
+            cat_avgs[c] = {}
+            for h_key, vals in h_dict.items():
+                cat_avgs[c][h_key] = float(np.mean(vals)) if vals else None
+
+        # Update rows from this week with cat averages and alpha
+        start_idx = len(all_rows) - sum(1 for r in all_rows if r['entry_week'] == entry_label)
+        for i in range(start_idx, len(all_rows)):
+            r = all_rows[i]
+            if r['entry_week'] != entry_label:
+                continue
+            c = r['category']
+            for h_name in ['4w', '8w', '13w']:
+                key = f'ret_{h_name}'
+                cat_avg = cat_avgs.get(c, {}).get(key)
+                r[f'cat_avg_{key}'] = round(cat_avg, 2) if cat_avg is not None else None
+                if r.get(key) is not None and cat_avg is not None:
+                    r[f'alpha_{h_name}'] = round(r[key] - cat_avg, 2)
+                else:
+                    r[f'alpha_{h_name}'] = None
+
+    if not all_rows:
+        return None
+
+    detail_df = pd.DataFrame(all_rows)
+
+    # ── Winner flags ──
+    if 'ret_4w' in detail_df.columns:
+        detail_df['winner_4w'] = detail_df['ret_4w'].apply(lambda x: 1 if x is not None and x > 10 else 0)
+    if 'ret_8w' in detail_df.columns:
+        detail_df['winner_8w'] = detail_df['ret_8w'].apply(lambda x: 1 if x is not None and x > 15 else 0)
+    if 'ret_13w' in detail_df.columns:
+        detail_df['winner_13w'] = detail_df['ret_13w'].apply(lambda x: 1 if x is not None and x > 25 else 0)
+
+    if progress_callback:
+        progress_callback(1.0, "DNA Backtest complete!")
+
+    return detail_df, dates
+
+
+# ============================================
+# UI: DNA BACKTEST TAB
+# ============================================
+
+def render_dna_backtest_tab(uploaded_files):
+    """🧬 DNA Backtest — Validate DNA scoring with actual forward returns."""
+    st.markdown("### 🧬 DNA Backtest — Validate Scoring with Real Returns")
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#0d1117,#161b22); border-radius:10px;
+                padding:16px; border:1px solid #30363d; margin-bottom:16px;">
+        <div style="font-size:0.85rem; color:#8b949e;">
+            <b>What this does:</b> Runs your DNA scoring system on EVERY ticker for EVERY past week,
+            then checks what ACTUALLY happened to prices 1-13 weeks later.<br>
+            <b>No lookahead bias</b> — each week scored using only that week's data.
+            <b>Forward returns</b> from real price changes across CSVs.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Mode Selection ──
+    mode_col, filter_col = st.columns([1, 2])
+    with mode_col:
+        bt_mode = st.radio("**Backtest Mode**", ['🌐 All Tickers', '📋 Specific Tickers', '📂 Category-Wise'],
+                           horizontal=False, key='dna_bt_mode')
+
+    tickers_filter = None
+    categories_filter = None
+
+    with filter_col:
+        if '📋' in bt_mode:
+            ticker_input = st.text_area("**Paste tickers** (comma or newline separated)",
+                                        height=100, key='dna_bt_tickers',
+                                        placeholder="RELIANCE, TCS, INFY\nor one per line...")
+            if ticker_input.strip():
+                raw = [t.strip() for t in ticker_input.replace(',', '\n').split('\n') if t.strip()]
+                tickers_filter = [t for t in raw if t]
+                st.caption(f"🎯 {len(tickers_filter)} tickers selected")
+        elif '📂' in bt_mode:
+            categories_filter = st.multiselect(
+                "**Select categories**",
+                ['Large Cap', 'Mega Cap', 'Mid Cap', 'Small Cap', 'Micro Cap'],
+                default=['Large Cap', 'Mid Cap'],
+                key='dna_bt_cats'
+            )
+
+    # ── Determine effective mode ──
+    if '📋' in bt_mode:
+        eff_mode = 'tickers'
+    elif '📂' in bt_mode:
+        eff_mode = 'category'
+    else:
+        eff_mode = 'all'
+
+    # ── Cache ──
+    bt_cache_key = (
+        'dna_bt',
+        tuple(sorted((f.name, f.size) for f in uploaded_files)),
+        eff_mode,
+        tuple(tickers_filter) if tickers_filter else (),
+        tuple(categories_filter) if categories_filter else (),
+    )
+    cached_result = st.session_state.get('_dna_bt_result')
+    cached_key = st.session_state.get('_dna_bt_key')
+
+    if cached_result is not None and cached_key == bt_cache_key:
+        detail_df, bt_dates = cached_result
+    else:
+        detail_df = None
+
+    # ── Run Button ──
+    n_files = len(uploaded_files)
+    col_run, col_info = st.columns([1, 3])
+    with col_run:
+        run_btn = st.button("🚀 Run DNA Backtest", type="primary", use_container_width=True, key='dna_bt_run')
+    with col_info:
+        if detail_df is None:
+            st.caption(f"📁 {n_files} CSVs loaded. Click Run to start.")
+        else:
+            n_rows = len(detail_df)
+            n_scored = len(detail_df[detail_df['dna_score'] > 0])
+            st.caption(f"✅ {n_rows:,} total rows · {n_scored:,} DNA-scored picks · {n_files} CSVs")
+
+    if run_btn:
+        if eff_mode == 'tickers' and not tickers_filter:
+            st.error("Paste at least one ticker to backtest.")
+            return
+        if eff_mode == 'category' and not categories_filter:
+            st.error("Select at least one category.")
+            return
+
+        progress_bar = st.progress(0, text="Initializing DNA Backtest...")
+
+        def _progress(pct, text):
+            progress_bar.progress(min(pct, 1.0), text=text)
+
+        with st.spinner("Running DNA backtest across all weeks..."):
+            result = _run_dna_backtest(
+                uploaded_files, mode=eff_mode,
+                tickers_filter=set(tickers_filter) if tickers_filter else None,
+                categories_filter=set(categories_filter) if categories_filter else None,
+                progress_callback=_progress,
+            )
+
+        progress_bar.empty()
+
+        if result is None:
+            st.error(f"❌ Not enough data. Need ≥3 weekly CSVs. You have {n_files}.")
+            return
+
+        detail_df, bt_dates = result
+        st.session_state['_dna_bt_result'] = (detail_df, bt_dates)
+        st.session_state['_dna_bt_key'] = bt_cache_key
+        st.rerun()
+
+    if detail_df is None:
+        return
+
+    # ── Filter to DNA-scored rows (score > 0) for analysis ──
+    scored_df = detail_df[detail_df['dna_score'] > 0].copy()
+    all_universe = detail_df.copy()
+
+    if scored_df.empty:
+        st.warning("No tickers received a DNA score > 0 in any week.")
+        return
+
+    # ── Horizon columns available ──
+    avail_horizons = []
+    for h in ['ret_1w', 'ret_2w', 'ret_4w', 'ret_8w', 'ret_13w']:
+        if h in scored_df.columns and scored_df[h].notna().sum() > 0:
+            avail_horizons.append(h)
+
+    if not avail_horizons:
+        st.warning("No forward return data available. Need more CSVs for forward price matching.")
+        return
+
+    # ══════════════════════════════════════════════
+    # SECTION 1: CONVICTION PERFORMANCE MATRIX
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 📊 Section 1: Conviction Performance Matrix")
+
+    def _conviction_stats(sub_df, label):
+        """Compute stats for a conviction group."""
+        row = {'Group': label, 'Picks': len(sub_df)}
+        for h in avail_horizons:
+            vals = sub_df[h].dropna()
+            h_short = h.replace('ret_', '')
+            if len(vals) > 0:
+                row[f'Avg {h_short}'] = round(vals.mean(), 2)
+                row[f'Hit% {h_short}'] = round((vals > 0).sum() / len(vals) * 100, 1)
+            else:
+                row[f'Avg {h_short}'] = None
+                row[f'Hit% {h_short}'] = None
+        return row
+
+    conviction_rows = []
+    for cv in ['HIGH', 'MEDIUM', 'LOW', 'MINIMAL']:
+        cv_df = scored_df[scored_df['conviction'] == cv]
+        if len(cv_df) > 0:
+            conviction_rows.append(_conviction_stats(cv_df, f"🔴 {cv}" if cv == 'HIGH' else f"🟡 {cv}" if cv == 'MEDIUM' else f"🟢 {cv}" if cv == 'LOW' else f"⚪ {cv}"))
+    conviction_rows.append(_conviction_stats(scored_df, '🧬 ALL DNA>0'))
+    conviction_rows.append(_conviction_stats(all_universe, '📊 Universe'))
+
+    conv_matrix = pd.DataFrame(conviction_rows)
+    st.dataframe(conv_matrix, use_container_width=True, hide_index=True)
+
+    # ── Key Insight Cards ──
+    high_df = scored_df[scored_df['conviction'] == 'HIGH']
+    best_horizon = avail_horizons[-1]  # longest available
+    bh_short = best_horizon.replace('ret_', '')
+
+    cards_html = '<div style="display:flex; gap:12px; flex-wrap:wrap; margin:12px 0;">'
+    if len(high_df) > 0 and best_horizon in high_df.columns:
+        hv = high_df[best_horizon].dropna()
+        uv = all_universe[best_horizon].dropna()
+        h_avg = hv.mean() if len(hv) > 0 else 0
+        u_avg = uv.mean() if len(uv) > 0 else 0
+        alpha = h_avg - u_avg
+        hit = (hv > 0).sum() / max(len(hv), 1) * 100
+        a_color = '#3fb950' if alpha > 0 else '#f85149'
+        cards_html += f"""
+        <div style="background:#161b22; border:1px solid {a_color}; border-radius:10px; padding:14px; flex:1; min-width:200px;">
+            <div style="color:{a_color}; font-weight:700; font-size:1.1rem;">HIGH Conviction Alpha ({bh_short})</div>
+            <div style="color:#e6edf3; font-size:1.5rem; font-weight:800;">{alpha:+.2f}%</div>
+            <div style="color:#8b949e; font-size:0.8rem;">Avg: {h_avg:+.2f}% vs Universe {u_avg:+.2f}% · Hit Rate: {hit:.0f}% · {len(hv)} picks</div>
+        </div>"""
+
+    if len(scored_df) > 0 and 'ret_4w' in avail_horizons:
+        s4 = scored_df['ret_4w'].dropna()
+        u4 = all_universe['ret_4w'].dropna()
+        s_avg = s4.mean() if len(s4) > 0 else 0
+        u_avg2 = u4.mean() if len(u4) > 0 else 0
+        a4 = s_avg - u_avg2
+        a4_color = '#3fb950' if a4 > 0 else '#f85149'
+        cards_html += f"""
+        <div style="background:#161b22; border:1px solid {a4_color}; border-radius:10px; padding:14px; flex:1; min-width:200px;">
+            <div style="color:{a4_color}; font-weight:700; font-size:1.1rem;">All DNA Alpha (4w)</div>
+            <div style="color:#e6edf3; font-size:1.5rem; font-weight:800;">{a4:+.2f}%</div>
+            <div style="color:#8b949e; font-size:0.8rem;">DNA avg: {s_avg:+.2f}% vs Universe {u_avg2:+.2f}% · {len(s4)} obs</div>
+        </div>"""
+
+    n_entry_weeks = scored_df['entry_week'].nunique()
+    cards_html += f"""
+    <div style="background:#161b22; border:1px solid #30363d; border-radius:10px; padding:14px; flex:1; min-width:200px;">
+        <div style="color:#58a6ff; font-weight:700; font-size:1.1rem;">Coverage</div>
+        <div style="color:#e6edf3; font-size:1.5rem; font-weight:800;">{n_entry_weeks} weeks</div>
+        <div style="color:#8b949e; font-size:0.8rem;">{len(scored_df):,} DNA picks · {len(all_universe):,} universe rows</div>
+    </div>"""
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════
+    # SECTION 2: SIGNAL ATTRIBUTION
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 🎯 Section 2: Signal Attribution — Which DNA Signals Predict Winners?")
+
+    # Parse all reasons and compute per-signal stats
+    ref_horizon = 'ret_4w' if 'ret_4w' in avail_horizons else avail_horizons[-1]
+    ref_label = ref_horizon.replace('ret_', '')
+
+    signal_stats = {}
+    for _, row in scored_df.iterrows():
+        reasons_str = str(row.get('dna_reasons', ''))
+        if not reasons_str or reasons_str == 'nan':
+            continue
+        ret_val = row.get(ref_horizon)
+        if ret_val is None or (isinstance(ret_val, float) and np.isnan(ret_val)):
+            continue
+        signals = [s.strip() for s in reasons_str.split('|') if s.strip()]
+        for sig in signals:
+            if sig not in signal_stats:
+                signal_stats[sig] = {'returns': [], 'count': 0}
+            signal_stats[sig]['returns'].append(ret_val)
+            signal_stats[sig]['count'] += 1
+
+    if signal_stats:
+        # Universe baseline for this horizon
+        uni_ret = all_universe[ref_horizon].dropna()
+        uni_avg = uni_ret.mean() if len(uni_ret) > 0 else 0
+
+        sig_rows = []
+        for sig, data in signal_stats.items():
+            if data['count'] < 3:  # minimum observations
+                continue
+            rets = data['returns']
+            avg_r = np.mean(rets)
+            hit_r = sum(1 for r in rets if r > 0) / len(rets) * 100
+            sig_rows.append({
+                'Signal': sig,
+                f'Avg Ret ({ref_label})': round(avg_r, 2),
+                f'Hit Rate ({ref_label})': round(hit_r, 1),
+                'Alpha vs Universe': round(avg_r - uni_avg, 2),
+                'Count': data['count'],
+                'Predictive Power': round((avg_r - uni_avg) * np.log2(max(data['count'], 2)), 2),
+            })
+
+        if sig_rows:
+            sig_df = pd.DataFrame(sig_rows).sort_values('Predictive Power', ascending=False)
+            st.dataframe(sig_df, use_container_width=True, hide_index=True)
+            st.caption(f"Predictive Power = Alpha × log₂(Count). Higher = more reliable edge. Reference horizon: {ref_label}.")
+        else:
+            st.info("Not enough signal observations (min 3 per signal).")
+    else:
+        st.info("No signal data to analyze.")
+
+    # ══════════════════════════════════════════════
+    # SECTION 3: PATH PERFORMANCE
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 🛤️ Section 3: DNA Path Performance")
+
+    path_rows = []
+    for path_name in scored_df['path'].unique():
+        if not path_name or path_name == 'nan':
+            continue
+        p_df = scored_df[scored_df['path'] == path_name]
+        row_data = {'Path': path_name, 'Picks': len(p_df)}
+        for h in avail_horizons:
+            vals = p_df[h].dropna()
+            h_short = h.replace('ret_', '')
+            row_data[f'Avg {h_short}'] = round(vals.mean(), 2) if len(vals) > 0 else None
+            row_data[f'Hit% {h_short}'] = round((vals > 0).sum() / max(len(vals), 1) * 100, 1) if len(vals) > 0 else None
+        # Which categories use this path
+        cats = p_df['category'].value_counts()
+        row_data['Categories'] = ', '.join(f"{c}({n})" for c, n in cats.head(3).items())
+        path_rows.append(row_data)
+
+    if path_rows:
+        path_df = pd.DataFrame(path_rows).sort_values('Picks', ascending=False)
+        st.dataframe(path_df, use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════
+    # SECTION 4: CATEGORY BREAKDOWN
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 📂 Section 4: Category Breakdown")
+
+    cat_rows = []
+    for cat_name in ['Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']:
+        c_scored = scored_df[scored_df['category'] == cat_name]
+        c_uni = all_universe[all_universe['category'] == cat_name]
+        if len(c_scored) == 0 and len(c_uni) == 0:
+            continue
+
+        row_data = {
+            'Category': cat_name,
+            'DNA Picks': len(c_scored),
+            'Universe': len(c_uni),
+            'HIGH': len(c_scored[c_scored['conviction'] == 'HIGH']),
+            'MED': len(c_scored[c_scored['conviction'] == 'MEDIUM']),
+            'LOW': len(c_scored[c_scored['conviction'] == 'LOW']),
+        }
+
+        for h in avail_horizons:
+            h_short = h.replace('ret_', '')
+            sv = c_scored[h].dropna()
+            uv = c_uni[h].dropna()
+            s_avg = sv.mean() if len(sv) > 0 else None
+            u_avg = uv.mean() if len(uv) > 0 else None
+            row_data[f'DNA {h_short}'] = round(s_avg, 2) if s_avg is not None else None
+            row_data[f'Univ {h_short}'] = round(u_avg, 2) if u_avg is not None else None
+            if s_avg is not None and u_avg is not None:
+                row_data[f'Alpha {h_short}'] = round(s_avg - u_avg, 2)
+            else:
+                row_data[f'Alpha {h_short}'] = None
+
+        cat_rows.append(row_data)
+
+    if cat_rows:
+        cat_df = pd.DataFrame(cat_rows)
+        st.dataframe(cat_df, use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════
+    # SECTION 5: TIME SERIES — WEEKLY DNA PERFORMANCE
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 📈 Section 5: Weekly DNA Performance Over Time")
+
+    ts_horizon = 'ret_4w' if 'ret_4w' in avail_horizons else avail_horizons[-1]
+    ts_label = ts_horizon.replace('ret_', '')
+
+    weekly_perf = []
+    for week in sorted(scored_df['entry_week'].unique()):
+        w_scored = scored_df[scored_df['entry_week'] == week]
+        w_uni = all_universe[all_universe['entry_week'] == week]
+        sv = w_scored[ts_horizon].dropna()
+        uv = w_uni[ts_horizon].dropna()
+        s_avg = sv.mean() if len(sv) > 0 else None
+        u_avg = uv.mean() if len(uv) > 0 else None
+        high_count = len(w_scored[w_scored['conviction'] == 'HIGH'])
+        weekly_perf.append({
+            'Week': week,
+            f'DNA Avg ({ts_label})': round(s_avg, 2) if s_avg is not None else None,
+            f'Universe Avg ({ts_label})': round(u_avg, 2) if u_avg is not None else None,
+            'DNA Picks': len(w_scored),
+            'HIGH Conv': high_count,
+            'Avg DNA Score': round(w_scored['dna_score'].mean(), 1),
+        })
+
+    if weekly_perf:
+        ts_df = pd.DataFrame(weekly_perf)
+        st.dataframe(ts_df, use_container_width=True, hide_index=True)
+
+        # Cumulative equity chart
+        dna_cum = 100.0
+        uni_cum = 100.0
+        chart_data = []
+        for wp in weekly_perf:
+            d_ret = wp.get(f'DNA Avg ({ts_label})')
+            u_ret = wp.get(f'Universe Avg ({ts_label})')
+            if d_ret is not None:
+                dna_cum *= (1 + d_ret / 100)
+            if u_ret is not None:
+                uni_cum *= (1 + u_ret / 100)
+            chart_data.append({
+                'Week': wp['Week'],
+                'DNA Equity': round(dna_cum, 2),
+                'Universe Equity': round(uni_cum, 2),
+            })
+
+        chart_df = pd.DataFrame(chart_data).set_index('Week')
+        st.line_chart(chart_df)
+        st.caption(f"Cumulative equity (base=100) using {ts_label} forward returns each entry week.")
+
+    # ══════════════════════════════════════════════
+    # SECTION 6: TOP & BOTTOM PICKS DETAIL
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 🏆 Section 6: Top & Bottom DNA Picks")
+
+    detail_horizon = 'ret_4w' if 'ret_4w' in avail_horizons else avail_horizons[-1]
+    dh_label = detail_horizon.replace('ret_', '')
+
+    # Only rows with valid return for this horizon
+    valid_scored = scored_df[scored_df[detail_horizon].notna()].copy()
+
+    if len(valid_scored) > 0:
+        show_cols = ['entry_week', 'ticker', 'company_name', 'category', 'conviction',
+                     'dna_score', 'path', 'dna_reasons', 'entry_price']
+        for h in avail_horizons:
+            show_cols.append(h)
+        show_cols = [c for c in show_cols if c in valid_scored.columns]
+
+        with st.expander(f"🟢 Top 30 Best DNA Picks (by {dh_label} return)", expanded=False):
+            top_df = valid_scored.nlargest(30, detail_horizon)[show_cols]
+            st.dataframe(top_df, use_container_width=True, hide_index=True)
+
+        with st.expander(f"🔴 Bottom 30 Worst DNA Picks (by {dh_label} return)", expanded=False):
+            bot_df = valid_scored.nsmallest(30, detail_horizon)[show_cols]
+            st.dataframe(bot_df, use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════
+    # SECTION 7: DOWNLOADS
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 📥 Section 7: Download Results for Claude Analysis")
+
+    dl_cols = st.columns(3)
+
+    # Download 1: Full Detail CSV
+    with dl_cols[0]:
+        csv_full = detail_df.to_csv(index=False)
+        st.download_button(
+            "📄 Full Detail CSV",
+            csv_full, "dna_backtest_full_detail.csv", "text/csv",
+            use_container_width=True, key='dl_dna_full',
+        )
+        st.caption(f"{len(detail_df):,} rows · All tickers × all weeks")
+
+    # Download 2: Signal Attribution CSV
+    with dl_cols[1]:
+        if signal_stats:
+            sig_dl_rows = []
+            uni_avg_dl = all_universe[ref_horizon].dropna().mean() if ref_horizon in all_universe.columns else 0
+            for sig, data in signal_stats.items():
+                rets = data['returns']
+                sig_dl_rows.append({
+                    'signal': sig,
+                    'count': data['count'],
+                    f'avg_ret_{ref_label}': round(np.mean(rets), 2),
+                    f'hit_rate_{ref_label}': round(sum(1 for r in rets if r > 0) / len(rets) * 100, 1),
+                    f'alpha_vs_universe': round(np.mean(rets) - uni_avg_dl, 2),
+                    f'median_ret_{ref_label}': round(np.median(rets), 2),
+                    f'std_ret_{ref_label}': round(np.std(rets), 2) if len(rets) > 1 else 0,
+                })
+            sig_dl_df = pd.DataFrame(sig_dl_rows).sort_values(f'alpha_vs_universe', ascending=False)
+            csv_sig = sig_dl_df.to_csv(index=False)
+            st.download_button(
+                "📊 Signal Attribution CSV",
+                csv_sig, "dna_backtest_signals.csv", "text/csv",
+                use_container_width=True, key='dl_dna_sig',
+            )
+            st.caption(f"{len(sig_dl_rows)} signals analyzed")
+        else:
+            st.button("📊 Signal Attribution CSV", disabled=True, use_container_width=True, key='dl_dna_sig_dis')
+            st.caption("No signal data")
+
+    # Download 3: Conviction Summary CSV
+    with dl_cols[2]:
+        csv_conv = conv_matrix.to_csv(index=False)
+        st.download_button(
+            "📈 Conviction Summary CSV",
+            csv_conv, "dna_backtest_conviction.csv", "text/csv",
+            use_container_width=True, key='dl_dna_conv',
+        )
+        st.caption("Conviction × Horizon matrix")
+
+    st.markdown("""
+    <div style="background:#161b22; border-radius:8px; padding:12px; border:1px solid #30363d; margin-top:12px;">
+        <div style="font-size:0.82rem; color:#8b949e;">
+            💡 <b>Tip:</b> Download the <b>Full Detail CSV</b> and upload to Claude with prompts like:<br>
+            • "Which conviction level has the best hit rate at 4w?"<br>
+            • "Show me every time PULLBACK_CONFLUENCE fired — what happened next?"<br>
+            • "Which category-conviction combo produces the most alpha?"<br>
+            • "Find the optimal DNA score threshold for each category"
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 # UI: ABOUT TAB
 # ============================================
 
@@ -10051,9 +10801,9 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_movers, tab_pattern, tab_dna_wl, tab_export, tab_about = st.tabs([
+    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_dna_bt, tab_movers, tab_pattern, tab_dna_wl, tab_export, tab_about = st.tabs([
         "📡 Market Pulse", "🏆 Rankings", "🔍 Search & Analyze",
-        "📊 Backtest", "🔥 Top Movers", "🔬 Pattern Analyser", "🎯 DNA Watchlist", "📤 Export", "ℹ️ About"
+        "📊 Backtest", "🧬 DNA Backtest", "🔥 Top Movers", "🔬 Pattern Analyser", "🎯 DNA Watchlist", "📤 Export", "ℹ️ About"
     ])
 
     with tab_pulse:
@@ -10067,6 +10817,9 @@ def main():
 
     with tab_backtest:
         render_backtest_tab(uploaded_files)
+
+    with tab_dna_bt:
+        render_dna_backtest_tab(uploaded_files)
 
     with tab_movers:
         render_top_movers_tab(filtered_df, histories)
