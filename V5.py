@@ -8692,6 +8692,8 @@ def _dna_score_large(row):
     ms = _safe_dna(row, 'master_score')
     rk = _safe_dna(row, 'rank', 9999)
     fh = _safe_dna(row, 'from_high_pct', -99)
+    tq = _safe_dna(row, 'trend_quality')
+    brk = _safe_dna(row, 'breakout_score')
     pats = _get_patterns_dna(row)
 
     if pos >= 55: score += 20; reasons.append('High Position')
@@ -8705,6 +8707,11 @@ def _dna_score_large(row):
     if fl >= 49: score += 12; reasons.append('Strong From Low')
     elif fl >= 36: score += 6
 
+    # trend_quality — +54% separation, was missing entirely
+    if tq >= 82: score += 10; reasons.append('Strong TQ (54% sep)')
+    elif tq >= 60: score += 6; reasons.append('Good TQ')
+    elif tq >= 40: score += 2
+
     if rk <= 400: score += 10; reasons.append('Top Rank')
     elif rk <= 750: score += 6
 
@@ -8714,20 +8721,31 @@ def _dna_score_large(row):
     if fh >= -12: score += 8; reasons.append('Near 52W High')
     elif fh >= -18: score += 4
 
+    # breakout_score — +33% separation, was missing
+    if brk >= 74: score += 8; reasons.append('High Breakout (33% sep)')
+    elif brk >= 51: score += 4
+
     for p in pats:
-        if 'LIQUID LEADER' in p: score += 6; reasons.append('Liquid Leader')
+        if 'MARKET LEADER' in p: score += 7; reasons.append('Market Leader (3.0x)')
+        elif 'LIQUID LEADER' in p: score += 6; reasons.append('Liquid Leader')
         elif 'CAT LEADER' in p: score += 5; reasons.append('Cat Leader')
         elif 'VOL EXPLOSION' in p: score += 5; reasons.append('Vol Explosion')
-        elif 'STEALTH' in p: score += 6; reasons.append('Stealth (BT+12%)')
-        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP (BT#1)')
+        elif 'STEALTH' in p: score += 6; reasons.append('Stealth')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP')
         elif 'PYRAMID' in p: score += 4; reasons.append('Pyramid')
         elif '52W HIGH' in p: score += 4; reasons.append('52W High Approach')
         elif 'GOLDEN CROSS' in p: score += 4; reasons.append('Golden Cross')
-        elif 'CAPITULATION' in p: score += 6; reasons.append('Capitulation (BT#2)')
+        elif 'VALUE MOMENTUM' in p: score += 5; reasons.append('Value Momentum (9.6x)')
+        elif 'PREMIUM MOMENTUM' in p: score += 5; reasons.append('Premium Momentum (3.3x)')
+        elif 'MOMENTUM WAVE' in p: score += 4; reasons.append('Momentum Wave (3.6x)')
+        elif 'INSTITUTIONAL TSUNAMI' in p: pass  # 1.81x near-neutral
+        elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional (3.6x)')
 
+    # States — PULLBACK 6.20x, STRONG_UPTREND 4.94x, UPTREND 2.41x, ROTATION 1.06x
     state = str(row.get('market_state', '')).strip()
-    if state == 'UPTREND': score += 4
-    elif state == 'ROTATION': score += 2
+    if state == 'PULLBACK': score += 5; reasons.append('Pullback State (6.2x)')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (4.9x)')
+    elif state == 'UPTREND': score += 4
 
     return min(score, 100), reasons
 
@@ -8742,23 +8760,28 @@ def _dna_score_mega(row):
     tq = _safe_dna(row, 'trend_quality')
     brk = _safe_dna(row, 'breakout_score')
     rvol_s = _safe_dna(row, 'rvol_score')
+    pos = _safe_dna(row, 'position_score')
+    rk = _safe_dna(row, 'rank', 9999)
     pats = _get_patterns_dna(row)
 
-    if vol >= 69: score += 18; reasons.append('Very High Volume')
-    elif vol >= 59: score += 12; reasons.append('High Volume')
-    elif vol >= 49: score += 5
+    # position_score — +43% separation, was missing
+    if pos >= 50: score += 14; reasons.append('High Position (43% sep)')
+    elif pos >= 35: score += 8; reasons.append('Good Position')
+    elif pos >= 25: score += 3
 
     if fh >= -7: score += 16; reasons.append('Very Near High')
     elif fh >= -15: score += 10; reasons.append('Near High')
     elif fh >= -24: score += 4
 
-    if pt <= 30: score += 16; reasons.append('Low Tension (Mega DNA)')
-    elif pt <= 41: score += 10; reasons.append('Moderate-Low Tension')
-    elif pt <= 57: score += 4
+    # position_tension — FIXED: winners avg 52.2 > NW avg 40.2 (higher = better)
+    if pt >= 65: score += 14; reasons.append('High Tension (winners higher)')
+    elif pt >= 45: score += 8; reasons.append('Good Tension')
+    elif pt >= 30: score += 3
 
-    if fl <= 20: score += 12; reasons.append('Low From Low (Stable)')
-    elif fl <= 26: score += 8
-    elif fl <= 38: score += 3
+    # from_low_pct — FIXED: winners avg 43.9 > NW avg 27.4 (higher = better)
+    if fl >= 45: score += 12; reasons.append('Strong From-Low (61% sep)')
+    elif fl >= 28: score += 7; reasons.append('Good From-Low')
+    elif fl >= 15: score += 3
 
     if tq >= 82: score += 8; reasons.append('Strong Trend')
     elif tq >= 60: score += 4
@@ -8768,20 +8791,29 @@ def _dna_score_mega(row):
 
     if rvol_s >= 45: score += 6; reasons.append('High Rvol')
 
+    # rank — -40% separation (lower = better), was missing
+    if rk <= 300: score += 8; reasons.append('Top Rank (40% sep)')
+    elif rk <= 600: score += 4
+
     for p in pats:
         if 'PREMIUM MOMENTUM' in p: score += 8; reasons.append('Premium Momentum')
-        elif 'INSTITUTIONAL' in p: score += 8; reasons.append('Institutional')
-        elif 'VOL EXPLOSION' in p: score += 6; reasons.append('Vol Explosion')
-        elif '52W HIGH' in p: score += 5; reasons.append('52W High Approach')
-        elif 'PULLBACK SUPPORT' in p: score += 5; reasons.append('Pullback Support')
-        elif 'STEALTH' in p: score += 6; reasons.append('Stealth (BT+12%)')
-        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP (BT#1)')
-        elif 'CAPITULATION' in p: score += 5; reasons.append('Capitulation (BT#2)')
+        elif 'INSTITUTIONAL TSUNAMI' in p: score += 6; reasons.append('Inst. Tsunami (11.2x)')
+        elif 'INSTITUTIONAL' in p: score += 8; reasons.append('Institutional (17.9x)')
+        elif 'VOL EXPLOSION' in p: score += 6; reasons.append('Vol Explosion (6.4x)')
+        elif '52W HIGH' in p: score += 5; reasons.append('52W High (2.4x)')
+        elif 'PULLBACK SUPPORT' in p: score += 5; reasons.append('Pullback Support (2.2x)')
+        elif 'STEALTH' in p: score += 6; reasons.append('Stealth (11.9x)')
+        elif 'QUALITY LEADER' in p: score += 7; reasons.append('Quality Leader')
+        elif 'CAT LEADER' in p: score += 4; reasons.append('Cat Leader (2.6x)')
+        elif 'GOLDEN CROSS' in p: score += 4; reasons.append('Golden Cross (2.8x)')
 
+    # States — PULLBACK 5.58x, STRONG_UPTREND 4.65x, UPTREND 2.05x
+    # SIDEWAYS 0.72x (was +3, now 0), DOWNTREND 0.52x
     state = str(row.get('market_state', '')).strip()
-    if state == 'UPTREND': score += 5
-    elif state == 'SIDEWAYS': score += 3
-    if state in ('DOWNTREND', 'STRONG_DOWNTREND'): score -= 10
+    if state == 'PULLBACK': score += 5; reasons.append('Pullback State (5.6x)')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (4.7x)')
+    elif state == 'UPTREND': score += 5
+    if state in ('DOWNTREND', 'STRONG_DOWNTREND'): score -= 8
 
     return min(score, 100), reasons
 
