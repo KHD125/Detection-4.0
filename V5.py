@@ -8692,8 +8692,6 @@ def _dna_score_large(row):
     ms = _safe_dna(row, 'master_score')
     rk = _safe_dna(row, 'rank', 9999)
     fh = _safe_dna(row, 'from_high_pct', -99)
-    tq = _safe_dna(row, 'trend_quality')
-    brk = _safe_dna(row, 'breakout_score')
     pats = _get_patterns_dna(row)
 
     if pos >= 55: score += 20; reasons.append('High Position')
@@ -8707,11 +8705,6 @@ def _dna_score_large(row):
     if fl >= 49: score += 12; reasons.append('Strong From Low')
     elif fl >= 36: score += 6
 
-    # trend_quality — +54% separation, was missing entirely
-    if tq >= 82: score += 10; reasons.append('Strong TQ (54% sep)')
-    elif tq >= 60: score += 6; reasons.append('Good TQ')
-    elif tq >= 40: score += 2
-
     if rk <= 400: score += 10; reasons.append('Top Rank')
     elif rk <= 750: score += 6
 
@@ -8721,9 +8714,9 @@ def _dna_score_large(row):
     if fh >= -12: score += 8; reasons.append('Near 52W High')
     elif fh >= -18: score += 4
 
-    # breakout_score — +33% separation, was missing
-    if brk >= 74: score += 8; reasons.append('High Breakout (33% sep)')
-    elif brk >= 51: score += 4
+    # NOTE: trend_quality (+54% sep) and breakout_score (+33% sep) verified as real signals
+    # but NOT added — they fire for 32-52% of non-winners (broad metrics), hurting precision
+    # by -2.5pp to -6.2pp. Patterns below are SURGICAL (3x+ ratios, low NW frequency).
 
     for p in pats:
         if 'MARKET LEADER' in p: score += 7; reasons.append('Market Leader (3.0x)')
@@ -8740,12 +8733,14 @@ def _dna_score_large(row):
         elif 'MOMENTUM WAVE' in p: score += 4; reasons.append('Momentum Wave (3.6x)')
         elif 'INSTITUTIONAL TSUNAMI' in p: pass  # 1.81x near-neutral
         elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional (3.6x)')
+    # CAPITULATION removed — 0 occurrences in Large Cap winners
 
-    # States — PULLBACK 6.20x, STRONG_UPTREND 4.94x, UPTREND 2.41x, ROTATION 1.06x
+    # States — PULLBACK 6.20x, STRONG_UPTREND 4.94x, UPTREND 2.41x
     state = str(row.get('market_state', '')).strip()
     if state == 'PULLBACK': score += 5; reasons.append('Pullback State (6.2x)')
     elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (4.9x)')
     elif state == 'UPTREND': score += 4
+    # ROTATION removed — 1.06x ratio (barely above neutral)
 
     return min(score, 100), reasons
 
@@ -8968,53 +8963,75 @@ def _dna_score_small(row):
 
 
 def _dna_score_micro(row):
-    """Micro Cap DNA scorer — Coiled Spring model."""
+    """Micro Cap DNA scorer."""
     score, reasons = 0, []
     vol = _safe_dna(row, 'volume_score')
-    mf = _safe_dna(row, 'money_flow_mm')
     pt = _safe_dna(row, 'position_tension')
     pos = _safe_dna(row, 'position_score')
-    acc = _safe_dna(row, 'acceleration_score')
-    rvol_s = _safe_dna(row, 'rvol_score')
     tq = _safe_dna(row, 'trend_quality')
+    fl = _safe_dna(row, 'from_low_pct')
+    rk = _safe_dna(row, 'rank', 9999)
+    brk = _safe_dna(row, 'breakout_score')
+    rvol_s = _safe_dna(row, 'rvol_score')
     pats = _get_patterns_dna(row)
     state = str(row.get('market_state', '')).strip()
 
-    if vol <= 15: score += 18; reasons.append('Very Low Volume (Coiled)')
-    elif vol <= 27: score += 12; reasons.append('Low Volume')
-    elif vol <= 34: score += 4
-
-    if mf <= 2: score += 16; reasons.append('Minimal Money Flow')
-    elif mf <= 10: score += 10; reasons.append('Low Money Flow')
-    elif mf <= 31: score += 3
-
-    if pt >= 400: score += 16; reasons.append('Extreme Tension')
+    # position_tension — +337% sep, ≥150 at 6.48x, ≥85 at 2.86x
+    if pt >= 400: score += 16; reasons.append('Extreme Tension (337% sep)')
     elif pt >= 150: score += 10; reasons.append('High Tension')
     elif pt >= 85: score += 4
 
-    if pos >= 62: score += 10; reasons.append('High Position')
+    # from_low_pct — +700% sep, ≥49 at 3.09x, ≥30 at 2.22x. Was MISSING
+    if fl >= 49: score += 14; reasons.append('Strong From-Low (700% sep)')
+    elif fl >= 30: score += 8; reasons.append('Good From-Low')
+
+    # position_score — +78% sep, ≥62 at 4.42x
+    if pos >= 62: score += 10; reasons.append('High Position (78% sep)')
     elif pos >= 35: score += 6; reasons.append('Good Position')
     elif pos >= 29: score += 2
 
-    if rvol_s <= 15: score += 6; reasons.append('Low Rvol (Under Radar)')
+    # rank — -42% sep, ≤500 at 3.38x, ≤800 at 2.39x. Was MISSING
+    if rk <= 500: score += 10; reasons.append('Top Rank (42% sep)')
+    elif rk <= 800: score += 6
 
-    if acc <= 45: score += 4; reasons.append('Low Acceleration')
-
-    if tq >= 77: score += 6; reasons.append('Rising TQ')
+    # trend_quality — +94% sep, ≥77 at 3.86x
+    if tq >= 77: score += 6; reasons.append('Strong TQ (94% sep)')
     elif tq >= 43: score += 3
 
-    for p in pats:
-        if 'VALUE MOMENTUM' in p: score += 12; reasons.append('Value Momentum (16x!)')
-        elif 'INFORMATION DECAY' in p: score += 8; reasons.append('Info Decay Arb (3.9x)')
-        elif 'STEALTH' in p: score += 7; reasons.append('Stealth (BT+12%)')
-        elif 'GOLDEN CROSS' in p: score += 5; reasons.append('Golden Cross')
-        elif 'MARKET LEADER' in p: score += 4; reasons.append('Market Leader')
-        elif 'CAPITULATION' in p: score += 5; reasons.append('Capitulation (BT#2)')
-        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP (BT#1)')
+    # breakout_score — +41% sep, ≥74 at 6.06x, ≥51 at 3.52x. Was MISSING
+    if brk >= 74: score += 6; reasons.append('High Breakout (6.06x)')
+    elif brk >= 51: score += 4; reasons.append('Good Breakout (3.52x)')
 
-    if state == 'ROTATION': score += 8; reasons.append('Rotation State')
-    elif state == 'DOWNTREND': score += 3; reasons.append('Downtrend (Potential Coil)')
-    elif state == 'STRONG_DOWNTREND': score += 2
+    # volume_score — -8.8% sep, ≤15 at 1.70x only. Reduced from +18
+    if vol <= 15: score += 6; reasons.append('Very Low Volume')
+
+    # rvol_score — -14% sep, ≤15 at 1.30x. Weak signal, reduced
+    if rvol_s <= 15: score += 3; reasons.append('Low Rvol')
+
+    # money_flow_mm REMOVED — ≤2 fires 79.6% W vs 76.8% NW (1.04x = random)
+    # acceleration_score REMOVED — fires 26.7% W vs 31.2% NW (0.86x anti-winner)
+
+    for p in pats:
+        if 'VALUE MOMENTUM' in p: score += 12; reasons.append('Value Momentum (8.2x)')
+        elif 'INFORMATION DECAY' in p: score += 8; reasons.append('Info Decay (4.5x)')
+        elif 'STEALTH' in p: score += 7; reasons.append('Stealth (3.2x)')
+        elif 'GOLDEN CROSS' in p: score += 5; reasons.append('Golden Cross (4.9x)')
+        elif 'MARKET LEADER' in p: score += 4; reasons.append('Market Leader (4.5x)')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP (4.3x)')
+        elif 'CAT LEADER' in p: score += 5; reasons.append('Cat Leader (3.1x)')
+        elif 'PREMIUM MOMENTUM' in p: score += 5; reasons.append('Premium Momentum (4.3x)')
+        elif 'MOMENTUM WAVE' in p: score += 4; reasons.append('Momentum Wave (3.1x)')
+        elif 'INSTITUTIONAL TSUNAMI' in p: score += 4; reasons.append('Inst. Tsunami (2.8x)')
+        elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional (2.4x)')
+    # CAPITULATION removed — 0x ratio (0 winners have it)
+
+    # States — PULLBACK 8.92x, STRONG_UPTREND 5.03x, UPTREND 2.13x
+    if state == 'PULLBACK': score += 5; reasons.append('Pullback State (8.9x)')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (5.0x)')
+    elif state == 'UPTREND': score += 4
+    elif state == 'ROTATION': score += 3  # Reduced from +8 — only 1.28x ratio
+    # DOWNTREND removed — 0.57x anti-winner
+    # STRONG_DOWNTREND removed — 0.21x anti-winner
 
     return min(score, 100), reasons
 
