@@ -7825,13 +7825,19 @@ def render_pattern_analyser_tab(uploaded_files):
         pa_filter_sects = st.multiselect("🏭 Sectors", _all_sects, default=[], key='pa_flt_sect',
                                          placeholder="All Sectors")
     with flt_c3:
-        pa_filter_tickers = st.text_input("🔍 Specific Tickers (comma-separated)", value='', key='pa_flt_tk',
-                                          placeholder="e.g. 500325, 532540")
+        pa_filter_tickers = st.text_area("🔍 Specific Tickers", value='', key='pa_flt_tk', height=68,
+                                         placeholder="Paste tickers — one per line or comma-separated\ne.g. 500325, 532540")
 
-    # Parse ticker filter
+    # Recency window slider
+    pa_recency_w = st.slider("⏱️ Recency Window (weeks)", min_value=4, max_value=min(20, len(dates) - 1),
+                              value=8, step=1, key='pa_recency_w',
+                              help="Compare the last N week-pairs (recent) vs the rest (older)")
+
+    # Parse ticker filter — accept comma, newline, or mixed
     _filter_tk_set = set()
     if pa_filter_tickers.strip():
-        _filter_tk_set = {t.strip() for t in pa_filter_tickers.split(',') if t.strip()}
+        import re as _re_tk
+        _filter_tk_set = {t.strip() for t in _re_tk.split(r'[,\n\r]+', pa_filter_tickers) if t.strip()}
 
     # Apply filters to weekly_data copies
     _filter_active = bool(pa_filter_cats) or bool(pa_filter_sects) or bool(_filter_tk_set)
@@ -7867,7 +7873,7 @@ def render_pattern_analyser_tab(uploaded_files):
 
     # Include filter params in cache key
     _flt_key = (tuple(sorted(pa_filter_cats)), tuple(sorted(pa_filter_sects)), tuple(sorted(_filter_tk_set)))
-    pa_cache_key = ('PA', tuple(sorted((f.name, f.size) for f in uploaded_files)), _flt_key)
+    pa_cache_key = ('PA', tuple(sorted((f.name, f.size) for f in uploaded_files)), _flt_key, pa_recency_w)
     cached = st.session_state.get('_pa_result')
     cached_key = st.session_state.get('_pa_key')
     pa_data = cached if (cached is not None and cached_key == pa_cache_key) else None
@@ -7885,7 +7891,7 @@ def render_pattern_analyser_tab(uploaded_files):
 
     if run_btn:
         prog = st.progress(0, text="Building pattern analysis...")
-        pa_data = _build_pattern_analysis(pa_weekly, pa_dates, prog)
+        pa_data = _build_pattern_analysis(pa_weekly, pa_dates, prog, recency_weeks=pa_recency_w)
         st.session_state['_pa_result'] = pa_data
         st.session_state['_pa_key'] = pa_cache_key
         prog.progress(1.0, text="Analysis complete!")
@@ -7907,7 +7913,8 @@ def render_pattern_analyser_tab(uploaded_files):
             if not stats:
                 buf.write("(no data)\n\n")
                 return
-            header = "Name,N,Avg_Return_%,Median_Return_%,Win_Rate_%,Sig,p_value,Recent_8w_Avg,Older_Avg,Trend"
+            _rw = pa_data.get('recency_weeks', 8)
+            header = f"Name,N,Avg_Return_%,Median_Return_%,Win_Rate_%,Sig,p_value,Recent_{_rw}w_Avg,Older_Avg,Trend"
             if extra_cols:
                 header += ',' + ','.join(extra_cols)
             buf.write(header + "\n")
@@ -8027,9 +8034,9 @@ def render_pattern_analyser_tab(uploaded_files):
 
 # ---------- Pattern Analyser: data builder ----------
 
-def _build_pattern_analysis(weekly_data, dates, progress_bar):
+def _build_pattern_analysis(weekly_data, dates, progress_bar, recency_weeks=8):
     """Build comprehensive pattern analysis from consecutive week pairs.
-    Includes statistical significance (t-test) and recency split (recent 8w vs older).
+    Includes statistical significance (t-test) and recency split.
     Returns are stored as (fwd_return, pair_index) tuples for recency tracking.
     """
     from collections import defaultdict
@@ -8233,9 +8240,8 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
         """Summarize returns with significance testing and recency split.
         rets_dict values are lists of (fwd_return, pair_index) tuples.
         t-test: H0 = mean return is 0. Manual implementation (no scipy needed).
-        Recency: last 8 week-pairs vs older.
         """
-        recent_cutoff = max(0, n_pairs - 8)  # pair indices >= this are "recent"
+        recent_cutoff = max(0, n_pairs - recency_weeks)  # pair indices >= this are "recent"
         out = []
         for key, pairs in rets_dict.items():
             if len(pairs) >= min_n:
@@ -8305,6 +8311,7 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
 
     return dict(
         n_obs=len(results), n_weeks=len(dates) - 1,
+        recency_weeks=recency_weeks,
         date_range=(dates[0].strftime('%Y-%m-%d'), dates[-1].strftime('%Y-%m-%d')),
         pat_stats=_summarize(pat_rets, 10),
         combo_stats=_summarize(combo_rets, 10),
@@ -8407,7 +8414,7 @@ def _render_pa_pattern_performance(pa_data):
         <th style="padding:8px 10px;text-align:right;">Med Return</th>
         <th style="padding:8px 10px;text-align:right;">Win Rate</th>
         <th style="padding:8px 10px;text-align:center;">Sig</th>
-        <th style="padding:8px 10px;text-align:right;">Recent 8w</th>
+        <th style="padding:8px 10px;text-align:right;">Recent {pa_data.get('recency_weeks', 8)}w</th>
         <th style="padding:8px 10px;text-align:right;">Older</th>
         <th style="padding:8px 10px;text-align:center;">Trend</th>
     </tr></thead><tbody>{rows_html}</tbody></table></div>
