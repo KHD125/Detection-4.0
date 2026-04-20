@@ -8968,8 +8968,9 @@ def _dna_score_small(row):
         elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional')
 
     state = str(row.get('market_state', '')).strip()
-    if state in ('UPTREND', 'STRONG_UPTREND'): score += 4
-    elif state == 'PULLBACK': score += 4
+    if state == 'PULLBACK': score += 5; reasons.append('Pullback State')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend')
+    elif state == 'UPTREND': score += 4
 
     # PULLBACK Confluence — PULLBACK (5.2x) + multiple criteria = strongest setup
     if state == 'PULLBACK' and len(reasons) >= 5:
