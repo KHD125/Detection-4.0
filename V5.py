@@ -6362,7 +6362,8 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
 # head-to-head comparison, and strategy correlation.
 # Uses price-based forward returns — no lookahead bias.
 
-def _run_strategy_backtest(uploaded_files, progress_callback=None):
+def _run_strategy_backtest(uploaded_files, progress_callback=None,
+                           filter_cats=None, filter_sects=None, filter_tickers=None):
     """
     Walk-forward strategy backtest v11.0.
 
@@ -6371,6 +6372,10 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
       2. Compute trajectory scores at that point
       3. Apply selection strategies including DNA scoring
       4. Measure ACTUAL forward returns at 1w/4w/8w/13w horizons
+
+    filter_cats / filter_sects: lists of category/sector strings to include.
+    filter_tickers: set of ticker strings to include.
+    When any filter is provided, each weekly DataFrame is restricted before processing.
 
     Returns dict with results per strategy, or None if insufficient data.
     """
@@ -6402,6 +6407,28 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
     n_weeks = len(dates)
     if n_weeks < 4:  # Need 2 history + 1 test + 1 forward minimum
         return None
+
+    # ── Apply scope filters (category / sector / ticker) ──
+    _has_filter = bool(filter_cats) or bool(filter_sects) or bool(filter_tickers)
+    if _has_filter:
+        for d in list(weekly_data.keys()):
+            df_f = weekly_data[d]
+            mask = pd.Series(True, index=df_f.index)
+            if filter_cats:
+                mask &= df_f['category'].astype(str).str.strip().isin(filter_cats)
+            if filter_sects:
+                mask &= df_f['sector'].astype(str).str.strip().isin(filter_sects)
+            if filter_tickers:
+                mask &= df_f['ticker'].astype(str).str.strip().isin(filter_tickers)
+            filtered = df_f[mask]
+            if len(filtered) > 0:
+                weekly_data[d] = filtered
+            else:
+                del weekly_data[d]
+        dates = sorted(weekly_data.keys())
+        n_weeks = len(dates)
+        if n_weeks < 4:
+            return None
 
     min_history = 2  # Minimum weeks of data before first test (trajectory needs ≥2 points)
 
@@ -7027,8 +7054,65 @@ def render_backtest_tab(uploaded_files):
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Filter Bar: Category / Sector / Tickers ──
+    st.markdown("""
+    <div style="background:#161b22; border-radius:8px; padding:10px 16px; margin-bottom:12px;
+                border:1px solid #30363d;">
+        <span style="color:#8b949e; font-size:0.82rem; font-weight:600;">🎛️ BACKTEST SCOPE</span>
+    </div>
+    """, unsafe_allow_html=True)
+    # Parse latest CSV for filter dropdown options
+    _bt_latest_df = None
+    for ufile in sorted(uploaded_files, key=lambda f: f.name, reverse=True):
+        try:
+            ufile.seek(0)
+            _bt_latest_df = pd.read_csv(ufile)
+            break
+        except Exception:
+            pass
+    if _bt_latest_df is not None and 'category' in _bt_latest_df.columns:
+        _bt_all_cats = sorted([str(c).strip() for c in _bt_latest_df['category'].dropna().unique()
+                               if str(c).strip() and str(c).strip() != 'nan'])
+    else:
+        _bt_all_cats = []
+    if _bt_latest_df is not None and 'sector' in _bt_latest_df.columns:
+        _bt_all_sects = sorted([str(v).strip() for v in _bt_latest_df['sector'].dropna().unique()
+                                if str(v).strip() and str(v).strip() != 'nan'])
+    else:
+        _bt_all_sects = []
+
+    bt_fc1, bt_fc2, bt_fc3 = st.columns([2, 2, 3])
+    with bt_fc1:
+        bt_filter_cats = st.multiselect("📂 Categories", _bt_all_cats, default=[], key='bt_flt_cat',
+                                        placeholder="All Categories")
+    with bt_fc2:
+        bt_filter_sects = st.multiselect("🏭 Sectors", _bt_all_sects, default=[], key='bt_flt_sect',
+                                         placeholder="All Sectors")
+    with bt_fc3:
+        bt_filter_tickers = st.text_area("🔍 Specific Tickers", value='', key='bt_flt_tk', height=68,
+                                         placeholder="Paste tickers — one per line or comma-separated")
+
+    # Parse ticker filter
+    _bt_tk_set = set()
+    if bt_filter_tickers.strip():
+        import re as _re_bt
+        _bt_tk_set = {t.strip() for t in _re_bt.split(r'[,\n\r]+', bt_filter_tickers) if t.strip()}
+
+    _bt_filter_active = bool(bt_filter_cats) or bool(bt_filter_sects) or bool(_bt_tk_set)
+    if _bt_filter_active:
+        _bt_filter_desc = []
+        if bt_filter_cats:
+            _bt_filter_desc.append(f"Categories: {', '.join(bt_filter_cats)}")
+        if bt_filter_sects:
+            _bt_filter_desc.append(f"Sectors: {', '.join(bt_filter_sects)}")
+        if _bt_tk_set:
+            _bt_filter_desc.append(f"Tickers: {', '.join(sorted(_bt_tk_set))}")
+        st.caption(f"🎛️ Filter active: {' | '.join(_bt_filter_desc)}")
+
+    _bt_flt_key = (tuple(sorted(bt_filter_cats)), tuple(sorted(bt_filter_sects)), tuple(sorted(_bt_tk_set)))
+
     # Check cache
-    bt_cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
+    bt_cache_key = (tuple(sorted((f.name, f.size) for f in uploaded_files)), _bt_flt_key)
     cached = st.session_state.get('_bt_result')
     cached_key = st.session_state.get('_bt_key')
 
@@ -7044,10 +7128,11 @@ def render_backtest_tab(uploaded_files):
     with col_run:
         run_btn = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
     with col_info:
+        _flt_tag = " (filtered)" if _bt_filter_active else ""
         if bt_results is None:
-            st.caption(f"📁 {n_files} CSVs loaded → up to **{n_possible_windows}** test windows (2 for history, 1 forward = {n_files}−3)")
+            st.caption(f"📁 {n_files} CSVs loaded → up to **{n_possible_windows}** test windows{_flt_tag}")
         else:
-            st.caption(f"✅ Backtest loaded ({n_files} CSVs, {n_possible_windows} windows). Click Run to refresh.")
+            st.caption(f"✅ Backtest loaded ({n_files} CSVs, {n_possible_windows} windows){_flt_tag}. Click Run to refresh.")
 
     if run_btn:
         progress_bar = st.progress(0, text="Initializing backtest...")
@@ -7056,7 +7141,9 @@ def render_backtest_tab(uploaded_files):
             progress_bar.progress(min(pct, 1.0), text=text)
 
         with st.spinner("Running walk-forward backtest..."):
-            result = _run_strategy_backtest(uploaded_files, progress_callback=_progress)
+            result = _run_strategy_backtest(uploaded_files, progress_callback=_progress,
+                                            filter_cats=bt_filter_cats, filter_sects=bt_filter_sects,
+                                            filter_tickers=_bt_tk_set)
 
         progress_bar.empty()
 
