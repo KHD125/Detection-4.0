@@ -8894,8 +8894,8 @@ def _dna_score_small(row):
     if pt >= 94: score += 8; reasons.append('High Tension')
     elif pt >= 83: score += 4
 
-    if fl >= 69: score += 6; reasons.append('Strong Recovery')
-    elif fl >= 54: score += 3
+    if fl >= 69: score += 8; reasons.append('Strong Recovery')
+    elif fl >= 54: score += 4
 
     for p in pats:
         if 'VELOCITY SQUEEZE' in p: score += 7; reasons.append('Velocity Squeeze')
@@ -8903,15 +8903,20 @@ def _dna_score_small(row):
         elif 'MARKET LEADER' in p: score += 5; reasons.append('Market Leader')
         elif 'CAT LEADER' in p: score += 5; reasons.append('Cat Leader')
         elif 'PULLBACK SUPPORT' in p: score += 5; reasons.append('Pullback Support')
-        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP (BT#1)')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP')
         elif 'RUNAWAY GAP' in p: score += 6; reasons.append('Runaway Gap')
         elif 'PREMIUM MOMENTUM' in p: score += 4; reasons.append('Premium Momentum')
-        elif 'STEALTH' in p: score += 6; reasons.append('Stealth (BT+12%)')
-        elif 'CAPITULATION' in p: score += 6; reasons.append('Capitulation (BT#2)')
+        elif 'STEALTH' in p: score += 6; reasons.append('Stealth')
+        elif '52W HIGH' in p: score += 5; reasons.append('52W High Approach')
+        elif 'GOLDEN CROSS' in p: score += 5; reasons.append('Golden Cross')
+        elif 'VALUE MOMENTUM' in p: score += 5; reasons.append('Value Momentum')
+        elif 'LIQUID LEADER' in p: score += 5; reasons.append('Liquid Leader')
+        elif 'INSTITUTIONAL TSUNAMI' in p: score += 4; reasons.append('Inst. Tsunami')
+        elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional')
 
     state = str(row.get('market_state', '')).strip()
     if state in ('UPTREND', 'STRONG_UPTREND'): score += 4
-    elif state == 'PULLBACK': score += 2
+    elif state == 'PULLBACK': score += 4
 
     return min(score, 100), reasons
 
