@@ -8795,6 +8795,7 @@ def _dna_score_mid(row):
     tq = _safe_dna(row, 'trend_quality')
     rk = _safe_dna(row, 'rank', 9999)
     fh = _safe_dna(row, 'from_high_pct', -99)
+    fl = _safe_dna(row, 'from_low_pct')
     pt = _safe_dna(row, 'position_tension')
     mom = _safe_dna(row, 'momentum_score')
     pats = _get_patterns_dna(row)
@@ -8826,6 +8827,11 @@ def _dna_score_mid(row):
     if fh >= -8: score += 6; reasons.append('Near High')
     elif fh >= -18: score += 3
 
+    # from_low_pct — #1 signal, +294% separation, was completely missing
+    if fl >= 120: score += 8; reasons.append('Strong From-Low')
+    elif fl >= 60: score += 5; reasons.append('Good From-Low')
+    elif fl >= 25: score += 2
+
     if mom >= 67: score += 6; reasons.append('High Momentum')
     elif mom >= 56: score += 3
 
@@ -8839,18 +8845,26 @@ def _dna_score_mid(row):
         elif 'PREMIUM MOMENTUM' in p: score += 5; reasons.append('Premium Momentum')
         elif 'GOLDEN CROSS' in p: score += 4; reasons.append('Golden Cross')
         elif 'PULLBACK SUPPORT' in p: score += 4; reasons.append('Pullback Support')
-        elif 'STEALTH' in p: score += 6; reasons.append('Stealth (BT+12%)')
-        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP (BT#1)')
-        elif 'CAPITULATION' in p: score += 7; reasons.append('Capitulation (BT#2)')
+        elif 'STEALTH' in p: score += 6; reasons.append('Stealth')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP')
+        elif '52W HIGH' in p: score += 5; reasons.append('52W High (6.6x)')
+        elif 'VALUE MOMENTUM' in p: score += 5; reasons.append('Value Momentum (31x)')
+        elif 'MOMENTUM WAVE' in p: score += 4; reasons.append('Momentum Wave (4x)')
+        elif 'RUNAWAY GAP' in p: score += 5; reasons.append('Runaway Gap (7.9x)')
+        elif 'INSTITUTIONAL TSUNAMI' in p: pass  # 1.18x near-neutral, skip
+        elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional (2.4x)')
+        elif 'ROTATION LEADER' in p: score += 3; reasons.append('Rotation Leader (2.8x)')
 
-    if state in ('UPTREND', 'STRONG_UPTREND'): score += 4
-    elif state == 'PULLBACK' and pos >= 40: score += 3
-    elif state in ('DOWNTREND', 'STRONG_DOWNTREND') and pos >= 30:
-        score += 5; reasons.append('Contrarian State')
+    # States — data: PULLBACK 6.78x, STRONG_UPTREND 5.62x, UPTREND 2.06x
+    # DOWNTREND 0.43x & STRONG_DOWNTREND 0.29x are ANTI-winner states
+    if state == 'PULLBACK' and pos >= 40: score += 5; reasons.append('Pullback State (6.8x)')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (5.6x)')
+    elif state == 'UPTREND': score += 4
 
+    # Contrarian: 1.65x edge (modest) — reduced from +13 total to +3 total
     path = 'Momentum' if is_momentum else ('Contrarian' if is_contrarian else 'Neutral')
     if is_momentum: score += 2
-    if is_contrarian: score += 8; reasons.append('Contrarian Setup (BT#3)')
+    if is_contrarian: score += 3; reasons.append('Contrarian Setup (1.65x)')
 
     return min(score, 100), reasons, path
 
