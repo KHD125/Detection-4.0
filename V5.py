@@ -7045,9 +7045,9 @@ def render_backtest_tab(uploaded_files):
         run_btn = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
     with col_info:
         if bt_results is None:
-            st.caption(f"📁 {n_files} CSVs loaded → up to **{n_possible_windows}** test windows")
+            st.caption(f"📁 {n_files} CSVs loaded → up to **{n_possible_windows}** test windows (2 for history, 1 forward = {n_files}−3)")
         else:
-            st.caption(f"✅ Backtest loaded ({n_files} CSVs). Click Run to refresh.")
+            st.caption(f"✅ Backtest loaded ({n_files} CSVs, {n_possible_windows} windows). Click Run to refresh.")
 
     if run_btn:
         progress_bar = st.progress(0, text="Initializing backtest...")
