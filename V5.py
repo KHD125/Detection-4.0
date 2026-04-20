@@ -10147,8 +10147,33 @@ def render_dna_backtest_tab(uploaded_files):
                 'Universe Equity': round(uni_cum, 2),
             })
 
-        chart_df = pd.DataFrame(chart_data).set_index('Week')
-        st.line_chart(chart_df)
+        chart_df = pd.DataFrame(chart_data)
+
+        # Build HTML bar chart (no altair dependency)
+        max_eq = max(max(r['DNA Equity'] for r in chart_data), max(r['Universe Equity'] for r in chart_data), 101)
+        min_eq = min(min(r['DNA Equity'] for r in chart_data), min(r['Universe Equity'] for r in chart_data), 99)
+        eq_range = max(max_eq - min_eq, 1)
+        chart_html = '<div style="background:#0d1117; border-radius:8px; padding:12px; border:1px solid #30363d;">'
+        chart_html += '<div style="display:flex; gap:4px; align-items:flex-end; height:180px;">'
+        for cd in chart_data:
+            dna_h = max(10, int((cd['DNA Equity'] - min_eq) / eq_range * 160))
+            uni_h = max(10, int((cd['Universe Equity'] - min_eq) / eq_range * 160))
+            chart_html += f'''<div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:2px;">
+                <div style="width:40%; background:#3fb950; height:{dna_h}px; border-radius:2px 2px 0 0;" title="DNA {cd['DNA Equity']}"></div>
+                <div style="width:40%; background:#58a6ff; height:{uni_h}px; border-radius:2px 2px 0 0; margin-top:-{dna_h + 2}px; margin-left:50%;" title="Univ {cd['Universe Equity']}"></div>
+            </div>'''
+        chart_html += '</div>'
+        final_dna = chart_data[-1]['DNA Equity']
+        final_uni = chart_data[-1]['Universe Equity']
+        d_color = '#3fb950' if final_dna >= final_uni else '#f85149'
+        chart_html += f'<div style="display:flex; justify-content:space-between; margin-top:8px; font-size:0.75rem; color:#8b949e;">'
+        chart_html += f'<span>{chart_data[0]["Week"]}</span><span>{chart_data[-1]["Week"]}</span></div>'
+        chart_html += f'<div style="margin-top:6px; font-size:0.82rem;">'
+        chart_html += f'<span style="color:#3fb950;">■</span> <span style="color:#e6edf3;">DNA: {final_dna:.1f}</span> &nbsp; '
+        chart_html += f'<span style="color:#58a6ff;">■</span> <span style="color:#e6edf3;">Universe: {final_uni:.1f}</span> &nbsp; '
+        chart_html += f'<span style="color:{d_color}; font-weight:700;">Δ {final_dna - final_uni:+.1f}</span></div>'
+        chart_html += '</div>'
+        st.markdown(chart_html, unsafe_allow_html=True)
         st.caption(f"Cumulative equity (base=100) using {ts_label} forward returns each entry week.")
 
     # ══════════════════════════════════════════════
