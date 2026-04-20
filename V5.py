@@ -6355,22 +6355,22 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
 
 
 # ============================================
-# STRATEGY BACKTEST ENGINE (v8.0)
+# STRATEGY BACKTEST ENGINE (v11.0 — ALL TIME BEST)
 # ============================================
-# Walk-forward backtest that proves which selection strategy
-# generates the best ACTUAL returns using your CSV data.
-# Tests 8 strategies from "buy everything" to "max filter".
+# Walk-forward backtest with MULTI-HORIZON returns (1w/4w/8w/13w),
+# 19 strategies + 3 DNA strategies, per-strategy ticker lists,
+# head-to-head comparison, and strategy correlation.
 # Uses price-based forward returns — no lookahead bias.
 
 def _run_strategy_backtest(uploaded_files, progress_callback=None):
     """
-    Walk-forward strategy backtest.
+    Walk-forward strategy backtest v11.0.
 
     For each week N (where N >= min_history):
       1. Build histories using ONLY weeks 1..N (no future data)
       2. Compute trajectory scores at that point
-      3. Apply 8 different selection strategies
-      4. Measure ACTUAL forward returns from week N+1 prices
+      3. Apply selection strategies including DNA scoring
+      4. Measure ACTUAL forward returns at 1w/4w/8w/13w horizons
 
     Returns dict with results per strategy, or None if insufficient data.
     """
@@ -6388,6 +6388,12 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
                 df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
                 df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
                 df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+                for nc in ['position_score', 'volume_score', 'momentum_score', 'acceleration_score',
+                           'breakout_score', 'rvol_score', 'trend_quality', 'from_high_pct', 'from_low_pct',
+                           'position_tension', 'money_flow_mm', 'momentum_harmony',
+                           'ret_1d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y', 'rvol', 'vmi']:
+                    if nc in df.columns:
+                        df[nc] = pd.to_numeric(df[nc], errors='coerce')
                 weekly_data[date] = df
         except Exception as e:
             logger.warning(f"Backtest: Failed to load {ufile.name}: {e}")
@@ -6398,6 +6404,59 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         return None
 
     min_history = 2  # Minimum weeks of data before first test (trajectory needs ≥2 points)
+
+    # ── Build price matrix for multi-horizon lookups ──
+    price_matrix = {}  # {ticker: {date_idx: price}}
+    for d_idx, d in enumerate(dates):
+        df = weekly_data[d]
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            p = float(row['price']) if pd.notna(row.get('price')) and float(row.get('price', 0)) > 0 else 0
+            if p > 0:
+                if t not in price_matrix:
+                    price_matrix[t] = {}
+                price_matrix[t][d_idx] = p
+
+    # ── Multi-horizon forward return computation ──
+    horizons_weeks = {'1w': 1, '4w': 4, '8w': 8, '13w': 13}
+
+    def _find_nearest_idx(entry_idx, weeks_ahead):
+        target = entry_idx + weeks_ahead
+        if target >= n_weeks:
+            return None
+        best_idx, best_dist = None, 999
+        for c in range(max(entry_idx + 1, target - 1), min(n_weeks, target + 2)):
+            dist = abs(c - target)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = c
+        return best_idx
+
+    def _compute_multi_horizon_returns(tickers, entry_idx):
+        """Compute avg returns at each horizon for a list of tickers."""
+        result = {}
+        for h_name, h_weeks in horizons_weeks.items():
+            fwd_idx = _find_nearest_idx(entry_idx, h_weeks)
+            if fwd_idx is None:
+                result[f'avg_ret_{h_name}'] = None
+                result[f'hit_rate_{h_name}'] = None
+                result[f'n_valid_{h_name}'] = 0
+                continue
+            rets = []
+            for t in tickers:
+                ep = price_matrix.get(t, {}).get(entry_idx, 0)
+                fp = price_matrix.get(t, {}).get(fwd_idx, 0)
+                if ep > 0 and fp > 0:
+                    rets.append((fp / ep - 1) * 100)
+            if rets:
+                result[f'avg_ret_{h_name}'] = float(np.mean(rets))
+                result[f'hit_rate_{h_name}'] = sum(1 for r in rets if r > 0) / len(rets) * 100
+                result[f'n_valid_{h_name}'] = len(rets)
+            else:
+                result[f'avg_ret_{h_name}'] = None
+                result[f'hit_rate_{h_name}'] = None
+                result[f'n_valid_{h_name}'] = 0
+        return result
 
     strategy_names = [
         'S1: Universe Avg',
@@ -6418,11 +6477,12 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         'S14: Bounce Recovery',
         'S15: Quality GARP',
         'S16: Pattern Flip Alpha',
-        'S17: Stealth Alpha',
-        'S18: Near-High Breakout',
         'S19: Winner DNA Momentum',
         'S20: Winner DNA Contrarian',
         'S21: Winner DNA Composite',
+        'D1: DNA HIGH Conviction',
+        'D2: DNA MEDIUM+ Conviction',
+        'D3: DNA All Scored',
     ]
     all_results = {name: [] for name in strategy_names}
 
@@ -6743,28 +6803,6 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
                             s16_tickers.append(t)
                             break
 
-        # ── S17: Stealth Alpha (Stealth+Rank≤100: +0.10%, 48% WR in bear market) ──
-        # Under-the-radar stocks with STEALTH pattern + strong rank.
-        # Stealth = accumulation without price movement — leads to breakouts.
-        s17_tickers = []
-        for _, row in df.iterrows():
-            t = str(row['ticker']).strip()
-            pats_str = str(row.get('patterns', ''))
-            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
-            if 'STEALTH' in pats_str and rk <= 100 and t in forward_rets:
-                s17_tickers.append(t)
-
-        # ── S18: Near-High Breakout (Near High+Breakout≥70: -0.13%, 45.6% WR) ──
-        # Stocks within 10% of 52-week high + strong breakout score.
-        # Large-N screen (4335 obs) — relative strength filter.
-        s18_tickers = []
-        for _, row in df.iterrows():
-            t = str(row['ticker']).strip()
-            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
-            brk_val = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
-            if fh > -10 and brk_val >= 70 and t in forward_rets:
-                s18_tickers.append(t)
-
         # ── S19: Winner DNA — Momentum Path ──
         # From deep analysis of 200 best 6-month winners: trending leaders with
         # high TQ/Score/Breakout, near highs, UPTREND state, leadership patterns.
@@ -6852,7 +6890,21 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         s21_scored.sort(key=lambda x: x[1], reverse=True)
         s21_tickers = _sector_cap([t for t, _ in s21_scored], 3)[:20]
 
-        # ── Measure forward returns for each strategy ──
+        # ── DNA Strategies — score every ticker with actual DNA system ──
+        d1_tickers, d2_tickers, d3_tickers = [], [], []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            if t not in forward_rets:
+                continue
+            dna_result = _score_row_dna(row.to_dict())
+            if dna_result and dna_result['dna_score'] > 0:
+                d3_tickers.append(t)
+                if dna_result['conviction'] in ('HIGH', 'MEDIUM'):
+                    d2_tickers.append(t)
+                if dna_result['conviction'] == 'HIGH':
+                    d1_tickers.append(t)
+
+        # ── Measure forward returns for each strategy (multi-horizon) ──
         strategy_picks = {
             'S1: Universe Avg': s1_tickers,
             'S2: Top 10 WAVE Rank': s2_tickers,
@@ -6871,20 +6923,23 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             'S14: Bounce Recovery': s14_tickers,
             'S15: Quality GARP': s15_tickers,
             'S16: Pattern Flip Alpha': s16_tickers,
-            'S17: Stealth Alpha': s17_tickers,
-            'S18: Near-High Breakout': s18_tickers,
             'S19: Winner DNA Momentum': s19_tickers,
             'S20: Winner DNA Contrarian': s20_tickers,
             'S21: Winner DNA Composite': s21_tickers,
+            'D1: DNA HIGH Conviction': d1_tickers,
+            'D2: DNA MEDIUM+ Conviction': d2_tickers,
+            'D3: DNA All Scored': d3_tickers,
         }
 
         week_label = date.strftime('%Y-%m-%d')
 
         for sname, tickers in strategy_picks.items():
+            # 1-week return (backward compatible)
             valid_rets = [forward_rets[t] for t in tickers if t in forward_rets]
             avg_ret = float(np.mean(valid_rets)) if valid_rets else 0.0
             med_ret = float(np.median(valid_rets)) if valid_rets else 0.0
-            all_results[sname].append({
+
+            entry = {
                 'week': week_label,
                 'forward_week': forward_date.strftime('%Y-%m-%d'),
                 'avg_return': avg_ret,
@@ -6893,7 +6948,14 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
                 'n_positive': sum(1 for r in valid_rets if r > 0),
                 'best': max(valid_rets) if valid_rets else 0,
                 'worst': min(valid_rets) if valid_rets else 0,
-            })
+                'tickers': tickers[:],  # store ticker list for correlation
+            }
+
+            # Multi-horizon returns
+            mh = _compute_multi_horizon_returns(tickers, week_idx)
+            entry.update(mh)
+
+            all_results[sname].append(entry)
 
         # ── S9: Conviction-Weighted (special — weighted average return) ──
         s9_valid = [(forward_rets[t], s9_candidates[t].get('conviction', 50))
@@ -6907,7 +6969,8 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         else:
             s9_avg, s9_med, s9_n = 0.0, 0.0, 0
             s9_rets = []
-        all_results['S9: Conviction-Weighted'].append({
+        s9_tickers_list = [t for t in s9_candidates if t in forward_rets]
+        s9_entry = {
             'week': week_label,
             'forward_week': forward_date.strftime('%Y-%m-%d'),
             'avg_return': s9_avg,
@@ -6916,9 +6979,12 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             'n_positive': sum(1 for r in s9_rets if r > 0),
             'best': max(s9_rets) if s9_rets else 0,
             'worst': min(s9_rets) if s9_rets else 0,
-        })
+            'tickers': s9_tickers_list,
+        }
+        s9_entry.update(_compute_multi_horizon_returns(s9_tickers_list, week_idx))
+        all_results['S9: Conviction-Weighted'].append(s9_entry)
 
-        # ── S12: Max Alpha (alpha_score-weighted, like S9 but using alpha_score) ──
+        # ── S12: Max Alpha (alpha_score-weighted override) ──
         s12_valid = [(forward_rets[t], s12_weights.get(t, 50))
                      for t in s12_tickers if t in forward_rets]
         if s12_valid:
@@ -6930,18 +6996,13 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         else:
             s12_avg, s12_med, s12_n = 0.0, 0.0, 0
             s12_rets = []
-        # Override the equal-weighted S12 entry with alpha-weighted version
         if all_results['S12: Max Alpha'] and all_results['S12: Max Alpha'][-1]['week'] == week_label:
-            all_results['S12: Max Alpha'][-1] = {
-                'week': week_label,
-                'forward_week': forward_date.strftime('%Y-%m-%d'),
-                'avg_return': s12_avg,
-                'median_return': s12_med,
-                'n_stocks': s12_n,
-                'n_positive': sum(1 for r in s12_rets if r > 0),
-                'best': max(s12_rets) if s12_rets else 0,
-                'worst': min(s12_rets) if s12_rets else 0,
-            }
+            all_results['S12: Max Alpha'][-1]['avg_return'] = s12_avg
+            all_results['S12: Max Alpha'][-1]['median_return'] = s12_med
+            all_results['S12: Max Alpha'][-1]['n_stocks'] = s12_n
+            all_results['S12: Max Alpha'][-1]['n_positive'] = sum(1 for r in s12_rets if r > 0)
+            all_results['S12: Max Alpha'][-1]['best'] = max(s12_rets) if s12_rets else 0
+            all_results['S12: Max Alpha'][-1]['worst'] = min(s12_rets) if s12_rets else 0
 
     if progress_callback:
         progress_callback(1.0, "Backtest complete!")
@@ -6954,13 +7015,13 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
 # ============================================
 
 def render_backtest_tab(uploaded_files):
-    """Render strategy backtest validation tab"""
+    """Render strategy backtest validation tab — v11.0 Multi-Horizon Advanced"""
     st.markdown("### 📊 Strategy Backtest — Walk-Forward Validation")
     st.markdown("""
     <div style="background:#161b22; border-radius:10px; padding:16px; border:1px solid #30363d; margin-bottom:16px;">
         <div style="font-size:0.85rem; color:#8b949e;">
             <b>What this does:</b> For each week, it computes scores using ONLY past data,
-            then checks what ACTUALLY happened to the selected stocks next week.
+            then checks what ACTUALLY happened at <b>multiple horizons</b> (1w / 4w / 8w / 13w).
             No lookahead bias — pure walk-forward validation using real price returns.
         </div>
     </div>
@@ -6977,7 +7038,7 @@ def render_backtest_tab(uploaded_files):
         bt_results = None
 
     n_files = len(uploaded_files)
-    n_possible_windows = max(n_files - 3, 0)  # 2 for history + 1 forward
+    n_possible_windows = max(n_files - 3, 0)
 
     col_run, col_info = st.columns([1, 3])
     with col_run:
@@ -7011,25 +7072,26 @@ def render_backtest_tab(uploaded_files):
     if bt_results is None:
         return
 
-    # ── Build Summary Statistics ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 1: Multi-Horizon Summary Statistics
+    # ═══════════════════════════════════════════════════
+    horizons = ['1w', '4w', '8w', '13w']
     summary_rows = []
     for sname, weeks in bt_results.items():
         if not weeks:
             continue
-        returns = [w['avg_return'] for w in weeks]
-        n_weeks_tested = len(returns)
-        avg_weekly = np.mean(returns)
-        cumulative = np.prod([1 + r / 100 for r in returns]) * 100 - 100
-        win_rate = sum(1 for r in returns if r > 0) / max(n_weeks_tested, 1) * 100
+        returns_1w = [w['avg_return'] for w in weeks]
+        n_weeks_tested = len(returns_1w)
+        avg_weekly = np.mean(returns_1w)
+        cumulative = np.prod([1 + r / 100 for r in returns_1w]) * 100 - 100
+        win_rate_1w = sum(1 for r in returns_1w if r > 0) / max(n_weeks_tested, 1) * 100
         avg_stocks = np.mean([w['n_stocks'] for w in weeks])
-        std_ret = np.std(returns) if len(returns) > 1 else 0.001
-        sharpe = avg_weekly / max(std_ret, 0.001) * np.sqrt(52)  # Annualized
-        worst_week = min(returns)
-        best_week = max(returns)
+        std_ret = np.std(returns_1w) if len(returns_1w) > 1 else 0.001
+        sharpe = avg_weekly / max(std_ret, 0.001) * np.sqrt(52)
 
-        # Max Drawdown — peak-to-trough of cumulative equity curve
+        # Max Drawdown from 1w equity curve
         equity = [100.0]
-        for r in returns:
+        for r in returns_1w:
             equity.append(equity[-1] * (1 + r / 100))
         peak = equity[0]
         max_dd = 0.0
@@ -7040,18 +7102,25 @@ def render_backtest_tab(uploaded_files):
             if dd < max_dd:
                 max_dd = dd
 
-        summary_rows.append({
+        row_data = {
             'Strategy': sname,
-            'Weeks Tested': n_weeks_tested,
-            'Avg Stocks/Wk': round(avg_stocks, 0),
-            'Avg Wk Return %': round(avg_weekly, 2),
-            'Cumulative %': round(cumulative, 2),
-            'Win Rate %': round(win_rate, 1),
-            'Sharpe (Ann.)': round(sharpe, 2),
+            'Weeks': n_weeks_tested,
+            'Avg Stocks': round(avg_stocks, 0),
+            'Avg 1w %': round(avg_weekly, 2),
+            'Cum 1w %': round(cumulative, 2),
+            'WR 1w %': round(win_rate_1w, 1),
+            'Sharpe': round(sharpe, 2),
             'Max DD %': round(max_dd, 2),
-            'Best Wk %': round(best_week, 2),
-            'Worst Wk %': round(worst_week, 2),
-        })
+        }
+
+        # Multi-horizon averages
+        for h in horizons[1:]:  # 4w, 8w, 13w
+            h_rets = [w.get(f'avg_ret_{h}') for w in weeks if w.get(f'avg_ret_{h}') is not None]
+            h_hrs = [w.get(f'hit_rate_{h}') for w in weeks if w.get(f'hit_rate_{h}') is not None]
+            row_data[f'Avg {h} %'] = round(np.mean(h_rets), 2) if h_rets else None
+            row_data[f'WR {h} %'] = round(np.mean(h_hrs), 1) if h_hrs else None
+
+        summary_rows.append(row_data)
 
     if not summary_rows:
         st.warning("No test windows available. Need more week coverage.")
@@ -7059,34 +7128,27 @@ def render_backtest_tab(uploaded_files):
 
     summary_df = pd.DataFrame(summary_rows)
 
-    # ── Compute Alpha vs Universe & Recommendations ──
-    universe_cum = summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Cumulative %']
+    # ── Compute Alpha vs Universe ──
+    universe_cum = summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Cum 1w %']
     universe_val = float(universe_cum.iloc[0]) if len(universe_cum) > 0 else 0
+    summary_df['Alpha %'] = round(summary_df['Cum 1w %'] - universe_val, 2)
 
-    summary_df['Alpha %'] = round(summary_df['Cumulative %'] - universe_val, 2)
-
-    # Assign recommendations based on data-driven analysis
+    # ── Assign Ratings ──
     def _get_recommendation(row):
         name = row['Strategy']
         alpha = row['Alpha %']
-        win = row['Win Rate %']
-        dd = row['Max DD %']
-        avg_stocks = row['Avg Stocks/Wk']
+        win = row['WR 1w %']
         if name == 'S1: Universe Avg':
             return '📊 Baseline'
-        # Best alpha overall
-        if alpha == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Alpha %'].max():
+        non_uni = summary_df[summary_df['Strategy'] != 'S1: Universe Avg']
+        if alpha == non_uni['Alpha %'].max():
             return '⭐ BEST ALPHA'
-        # Best win rate
-        if win == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Win Rate %'].max() and win > 50:
+        if win == non_uni['WR 1w %'].max() and win > 50:
             return '🎯 TOP WIN RATE'
-        # Best drawdown protection
-        if dd == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Max DD %'].max() and alpha > 0:
+        if row['Max DD %'] == non_uni['Max DD %'].max() and alpha > 0:
             return '🛡️ SAFEST'
-        # Danger zone — worse than universe
         if alpha < -2:
             return '⚠️ HIGH RISK'
-        # Modest alpha
         if alpha > 3:
             return '✅ Good Alpha'
         if alpha > 0:
@@ -7095,60 +7157,61 @@ def render_backtest_tab(uploaded_files):
 
     summary_df['Rating'] = summary_df.apply(_get_recommendation, axis=1)
 
-    # Reorder columns for clarity
-    col_order = ['Strategy', 'Rating', 'Weeks Tested', 'Avg Stocks/Wk',
-                 'Avg Wk Return %', 'Cumulative %', 'Alpha %', 'Win Rate %',
-                 'Sharpe (Ann.)', 'Max DD %', 'Best Wk %', 'Worst Wk %']
-    summary_df = summary_df[col_order]
-
     best_strat = summary_df.loc[summary_df['Alpha %'].idxmax()]
     worst_strat = summary_df.loc[summary_df['Alpha %'].idxmin()]
     best_name = best_strat['Strategy']
-    best_cum = best_strat['Cumulative %']
+    best_cum = best_strat['Cum 1w %']
     best_alpha = best_strat['Alpha %']
-    best_win = best_strat['Win Rate %']
+    best_win = best_strat['WR 1w %']
 
-    # Find strategy with best win rate, safest (best max DD), and best broad
     non_uni = summary_df[summary_df['Strategy'] != 'S1: Universe Avg']
-    safest_row = non_uni.loc[non_uni['Max DD %'].idxmax()]  # Max DD is negative, so max = least negative
-    top_wr_row = non_uni.loc[non_uni['Win Rate %'].idxmax()]
-    # Best broad = high alpha among strategies with avg stocks > 50
-    broad_df = non_uni[non_uni['Avg Stocks/Wk'] > 50]
+    safest_row = non_uni.loc[non_uni['Max DD %'].idxmax()]
+    top_wr_row = non_uni.loc[non_uni['WR 1w %'].idxmax()]
+    broad_df = non_uni[non_uni['Avg Stocks'] > 50]
     best_broad_row = broad_df.loc[broad_df['Alpha %'].idxmax()] if len(broad_df) > 0 else None
 
-    # ── Key Finding: Top 3 Recommendations ──
-    reco_cards = ''
+    # Multi-horizon best: best avg 13w return (long-term alpha)
+    if 'Avg 13w %' in summary_df.columns:
+        long_df = non_uni.dropna(subset=['Avg 13w %'])
+        best_long_row = long_df.loc[long_df['Avg 13w %'].idxmax()] if len(long_df) > 0 else None
+    else:
+        best_long_row = None
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 2: Top Recommendation Cards
+    # ═══════════════════════════════════════════════════
     recommendations = []
-
-    # Card 1: Best Alpha
     recommendations.append({
-        'icon': '⭐', 'label': 'BEST ALPHA',
+        'icon': '⭐', 'label': 'BEST 1-WEEK ALPHA',
         'name': best_name, 'color': '#3fb950',
-        'detail': f"Alpha: +{best_alpha:.1f}% | Cumulative: {best_cum:+.1f}% | Win Rate: {best_win:.0f}%",
-        'note': f"{int(best_strat['Avg Stocks/Wk'])} stocks/wk — focused portfolio"
+        'detail': f"Alpha: +{best_alpha:.1f}% | Cum: {best_cum:+.1f}% | WR: {best_win:.0f}%",
+        'note': f"{int(best_strat['Avg Stocks'])} stocks/wk"
     })
-
-    # Card 2: Best Broad Strategy
+    if best_long_row is not None and best_long_row['Strategy'] != best_name:
+        recommendations.append({
+            'icon': '🏆', 'label': 'BEST 13-WEEK',
+            'name': best_long_row['Strategy'], 'color': '#bc8cff',
+            'detail': f"Avg 13w: {best_long_row['Avg 13w %']:+.1f}% | WR 13w: {best_long_row.get('WR 13w %', 0):.0f}%",
+            'note': 'Long-term conviction hold'
+        })
     if best_broad_row is not None:
         recommendations.append({
             'icon': '🛡️', 'label': 'BEST BROAD',
             'name': best_broad_row['Strategy'], 'color': '#58a6ff',
-            'detail': f"Alpha: +{best_broad_row['Alpha %']:.1f}% | Win Rate: {best_broad_row['Win Rate %']:.0f}% | {int(best_broad_row['Avg Stocks/Wk'])} stocks",
-            'note': 'Maximum diversification with alpha'
+            'detail': f"Alpha: +{best_broad_row['Alpha %']:.1f}% | WR: {best_broad_row['WR 1w %']:.0f}% | {int(best_broad_row['Avg Stocks'])} stocks",
+            'note': 'Maximum diversification'
         })
-
-    # Card 3: Safest Strategy
     recommendations.append({
         'icon': '🔰', 'label': 'SAFEST',
         'name': safest_row['Strategy'], 'color': '#ffa657',
-        'detail': f"Max DD: {safest_row['Max DD %']:.1f}% | Alpha: +{safest_row['Alpha %']:.1f}% | Win Rate: {safest_row['Win Rate %']:.0f}%",
-        'note': 'Lowest drawdown — capital preservation'
+        'detail': f"Max DD: {safest_row['Max DD %']:.1f}% | Alpha: +{safest_row['Alpha %']:.1f}%",
+        'note': 'Capital preservation'
     })
 
     reco_html = '<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">'
     for r in recommendations:
         reco_html += f"""
-        <div style="flex:1; min-width:220px; background:linear-gradient(135deg, #0d1117, #161b22);
+        <div style="flex:1; min-width:200px; background:linear-gradient(135deg, #0d1117, #161b22);
                     border-radius:12px; padding:16px; border:2px solid {r['color']};">
             <div style="font-size:0.75rem; font-weight:800; color:{r['color']}; letter-spacing:1px;">
                 {r['icon']} {r['label']}
@@ -7161,7 +7224,7 @@ def render_backtest_tab(uploaded_files):
         </div>"""
     reco_html += '</div>'
 
-    n_test_weeks = summary_rows[0]['Weeks Tested']
+    n_test_weeks = summary_rows[0]['Weeks']
     market_verdict = 'BEAR MARKET' if universe_val < -5 else ('BULL MARKET' if universe_val > 5 else 'SIDEWAYS MARKET')
     market_color = '#ff7b72' if universe_val < -5 else ('#3fb950' if universe_val > 5 else '#ffa657')
 
@@ -7169,113 +7232,146 @@ def render_backtest_tab(uploaded_files):
     <div style="background:linear-gradient(135deg, #0d1117, #161b22); border-radius:12px;
                 padding:20px; border:2px solid #30363d; margin-bottom:10px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-            <div style="font-size:1.2rem; font-weight:800; color:#e6edf3;">📊 BACKTEST RESULTS</div>
+            <div style="font-size:1.2rem; font-weight:800; color:#e6edf3;">📊 BACKTEST RESULTS v11.0</div>
             <div style="display:flex; gap:16px;">
                 <span style="font-size:0.8rem; color:#8b949e;">
-                    {n_test_weeks} test windows · Universe: <span style="color:{market_color}; font-weight:700;">{universe_val:+.1f}% ({market_verdict})</span>
+                    {n_test_weeks} windows · Universe: <span style="color:{market_color}; font-weight:700;">{universe_val:+.1f}% ({market_verdict})</span>
                 </span>
             </div>
         </div>
-        <div style="font-size:0.85rem; color:#8b949e; margin-bottom:14px;">Top strategy recommendations ranked by data-driven backtest performance:</div>
+        <div style="font-size:0.85rem; color:#8b949e; margin-bottom:14px;">
+            Multi-horizon validation (1w / 4w / 8w / 13w) — top recommendations:
+        </div>
         {reco_html}
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Strategy Performance Table ──
-    st.markdown("#### 📋 Strategy Comparison")
+    # ═══════════════════════════════════════════════════
+    # SECTION 3: Multi-Horizon Performance Table
+    # ═══════════════════════════════════════════════════
+    st.markdown("#### 📋 Multi-Horizon Strategy Comparison")
 
-    # Color the key columns
-    def _highlight_returns(val):
-        if isinstance(val, (int, float)):
-            if val > 0:
-                return 'color: #3fb950; font-weight: 700'
-            elif val < 0:
-                return 'color: #ff7b72; font-weight: 700'
-        return ''
+    horizon_tab_1w, horizon_tab_4w, horizon_tab_8w, horizon_tab_13w = st.tabs(
+        ["⚡ 1-Week", "📅 4-Week", "📈 8-Week", "🏆 13-Week"]
+    )
 
-    styled_df = summary_df.style.applymap(
-        _highlight_returns,
-        subset=['Avg Wk Return %', 'Cumulative %', 'Alpha %', 'Max DD %', 'Best Wk %', 'Worst Wk %']
-    ).format({
-        'Avg Wk Return %': '{:+.2f}',
-        'Cumulative %': '{:+.2f}',
-        'Alpha %': '{:+.2f}',
-        'Win Rate %': '{:.0f}',
-        'Sharpe (Ann.)': '{:.2f}',
-        'Max DD %': '{:.2f}',
-        'Best Wk %': '{:+.2f}',
-        'Worst Wk %': '{:+.2f}',
-        'Avg Stocks/Wk': '{:.0f}',
-    })
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    def _display_horizon_table(tab_obj, h_label, ret_col, wr_col, is_1w=False):
+        with tab_obj:
+            if is_1w:
+                cols_display = ['Strategy', 'Rating', 'Weeks', 'Avg Stocks',
+                                'Avg 1w %', 'Cum 1w %', 'Alpha %', 'WR 1w %',
+                                'Sharpe', 'Max DD %']
+            else:
+                cols_display = ['Strategy', 'Rating', 'Weeks', 'Avg Stocks',
+                                ret_col, wr_col, 'Alpha %', 'Avg 1w %', 'WR 1w %']
+            avail_cols = [c for c in cols_display if c in summary_df.columns]
+            display_df = summary_df[avail_cols].copy()
 
-    # ── Strategy Insights (data-driven) ──
+            def _hl_rets(val):
+                if isinstance(val, (int, float)):
+                    if val > 0:
+                        return 'color: #3fb950; font-weight: 700'
+                    elif val < 0:
+                        return 'color: #ff7b72; font-weight: 700'
+                return ''
+
+            fmt_dict = {}
+            for c in avail_cols:
+                if '%' in c and c not in ('WR 1w %', 'WR 4w %', 'WR 8w %', 'WR 13w %'):
+                    fmt_dict[c] = '{:+.2f}'
+                elif 'WR' in c:
+                    fmt_dict[c] = '{:.0f}'
+                elif c == 'Sharpe':
+                    fmt_dict[c] = '{:.2f}'
+                elif c == 'Avg Stocks':
+                    fmt_dict[c] = '{:.0f}'
+
+            ret_subset = [c for c in avail_cols if '%' in c and c not in ('WR 1w %', 'WR 4w %', 'WR 8w %', 'WR 13w %')]
+            styled = display_df.style.map(_hl_rets, subset=ret_subset).format(fmt_dict, na_rep='—')
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    _display_horizon_table(horizon_tab_1w, '1w', 'Avg 1w %', 'WR 1w %', is_1w=True)
+    _display_horizon_table(horizon_tab_4w, '4w', 'Avg 4w %', 'WR 4w %')
+    _display_horizon_table(horizon_tab_8w, '8w', 'Avg 8w %', 'WR 8w %')
+    _display_horizon_table(horizon_tab_13w, '13w', 'Avg 13w %', 'WR 13w %')
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 4: Strategy Insights (Data-Driven)
+    # ═══════════════════════════════════════════════════
     with st.expander("🔬 Strategy Insights (Data-Driven Analysis)", expanded=True):
-        # Find key patterns from actual data
         insights = []
 
-        # Insight 1: Concentration risk — compare S2b vs S3b
+        # Insight: Concentration — S2b vs S3b
         s2b_row = summary_df[summary_df['Strategy'].str.contains('S2b')]
         s3b_row = summary_df[summary_df['Strategy'].str.contains('S3b')]
         if len(s2b_row) > 0 and len(s3b_row) > 0:
-            s2b_cum = float(s2b_row['Cumulative %'].iloc[0])
-            s3b_cum = float(s3b_row['Cumulative %'].iloc[0])
+            s2b_cum = float(s2b_row['Cum 1w %'].iloc[0])
+            s3b_cum = float(s3b_row['Cum 1w %'].iloc[0])
             spread = s3b_cum - s2b_cum
             if abs(spread) > 3:
                 if spread > 0:
-                    insights.append(('⚡', 'Concentration Risk', f'Top 20 T-Score ({s3b_cum:+.1f}%) beat Top 10 T-Score ({s2b_cum:+.1f}%) by **{spread:+.1f}%**. Broader baskets absorb single-stock blow-ups better.', '#ffa657'))
+                    insights.append(('⚡', 'Concentration Risk', f'Top 20 T-Score ({s3b_cum:+.1f}%) beat Top 10 ({s2b_cum:+.1f}%) by **{spread:+.1f}%**.', '#ffa657'))
                 else:
-                    insights.append(('⚡', 'Concentration Pays', f'Top 10 T-Score ({s2b_cum:+.1f}%) beat Top 20 ({s3b_cum:+.1f}%) by **{abs(spread):.1f}%**. Concentrated picks are working.', '#3fb950'))
+                    insights.append(('⚡', 'Concentration Pays', f'Top 10 T-Score ({s2b_cum:+.1f}%) beat Top 20 ({s3b_cum:+.1f}%) by **{abs(spread):.1f}%**.', '#3fb950'))
 
-        # Insight 2: T-Score vs WAVE Rank
-        s2_row = summary_df[summary_df['Strategy'] == 'S2: Top 10 WAVE Rank']
-        s3_row = summary_df[summary_df['Strategy'] == 'S3: Top 20 WAVE Rank']
-        if len(s2_row) > 0 and len(s2b_row) > 0:
-            wave_best = max(float(s2_row['Cumulative %'].iloc[0]), float(s3_row['Cumulative %'].iloc[0])) if len(s3_row) > 0 else float(s2_row['Cumulative %'].iloc[0])
-            tscore_best = max(float(s2b_row['Cumulative %'].iloc[0]), float(s3b_row['Cumulative %'].iloc[0])) if len(s3b_row) > 0 else float(s2b_row['Cumulative %'].iloc[0])
+        # Insight: T-Score vs WAVE Rank
+        s2_r = summary_df[summary_df['Strategy'] == 'S2: Top 10 WAVE Rank']
+        s3_r = summary_df[summary_df['Strategy'] == 'S3: Top 20 WAVE Rank']
+        if len(s2_r) > 0 and len(s2b_row) > 0:
+            wave_best = max(float(s2_r['Cum 1w %'].iloc[0]), float(s3_r['Cum 1w %'].iloc[0])) if len(s3_r) > 0 else float(s2_r['Cum 1w %'].iloc[0])
+            tscore_best = max(float(s2b_row['Cum 1w %'].iloc[0]), float(s3b_row['Cum 1w %'].iloc[0])) if len(s3b_row) > 0 else float(s2b_row['Cum 1w %'].iloc[0])
             gap = tscore_best - wave_best
             if abs(gap) > 2:
                 if gap > 0:
-                    insights.append(('🧠', 'T-Score Ranking Superior', f'Best T-Score strategy ({tscore_best:+.1f}%) outperformed best WAVE Rank strategy ({wave_best:+.1f}%) by **{gap:+.1f}%**. Trajectory Engine scoring adds real value.', '#3fb950'))
+                    insights.append(('🧠', 'T-Score Superior', f'Best T-Score ({tscore_best:+.1f}%) outperformed best WAVE Rank ({wave_best:+.1f}%) by **{gap:+.1f}%**.', '#3fb950'))
                 else:
-                    insights.append(('🧠', 'WAVE Rank Still Competitive', f'Best WAVE Rank ({wave_best:+.1f}%) beat best T-Score ({tscore_best:+.1f}%) by **{abs(gap):.1f}%**.', '#58a6ff'))
+                    insights.append(('🧠', 'WAVE Rank Competitive', f'Best WAVE Rank ({wave_best:+.1f}%) beat best T-Score ({tscore_best:+.1f}%) by **{abs(gap):.1f}%**.', '#58a6ff'))
 
-        # Insight 3: Conviction signal effectiveness
+        # Insight: Conviction effectiveness
         s7_data = summary_df[summary_df['Strategy'].str.contains('S7')]
         if len(s7_data) > 0:
-            s7_wr = float(s7_data['Win Rate %'].iloc[0])
-            s7_dd = float(s7_data['Max DD %'].iloc[0])
-            uni_wr = float(summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Win Rate %'].iloc[0])
+            s7_wr = float(s7_data['WR 1w %'].iloc[0])
+            uni_wr = float(summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'WR 1w %'].iloc[0])
             if s7_wr > uni_wr:
-                insights.append(('🎯', 'Conviction Signal Works', f'Conviction ≥ 65 achieved **{s7_wr:.0f}% win rate** (vs universe {uni_wr:.0f}%), with the **best Max DD ({s7_dd:.1f}%)**. Conviction is the most protective filter.', '#3fb950'))
+                insights.append(('🎯', 'Conviction Works', f'Conviction ≥ 65 achieved **{s7_wr:.0f}% win rate** (vs universe {uni_wr:.0f}%).', '#3fb950'))
 
-        # Insight 4: Regime-Adaptive performance
+        # Insight: DNA strategies vs traditional
+        dna_strats = summary_df[summary_df['Strategy'].str.startswith('D')]
+        if len(dna_strats) > 0:
+            best_dna = dna_strats.loc[dna_strats['Alpha %'].idxmax()]
+            dna_name = best_dna['Strategy']
+            dna_alpha = best_dna['Alpha %']
+            dna_4w = best_dna.get('Avg 4w %')
+            detail = f'Best DNA strategy: **{dna_name}** with **{dna_alpha:+.1f}% alpha**.'
+            if dna_4w is not None:
+                detail += f' 4-week avg: **{dna_4w:+.1f}%**.'
+            col = '#3fb950' if dna_alpha > 0 else '#ff7b72'
+            insights.append(('🧬', 'DNA Scoring Performance', detail, col))
+
+        # Insight: Multi-horizon consistency — which strategy is best at ALL horizons?
+        if 'Avg 13w %' in summary_df.columns:
+            consistent = non_uni.dropna(subset=['Avg 4w %', 'Avg 8w %', 'Avg 13w %'])
+            if len(consistent) > 0:
+                consistent = consistent.copy()
+                consistent['_mh_score'] = (
+                    consistent['Alpha %'].fillna(0)
+                    + consistent['Avg 4w %'].fillna(0) * 0.5
+                    + consistent['Avg 8w %'].fillna(0) * 0.3
+                    + consistent['Avg 13w %'].fillna(0) * 0.2
+                )
+                top_mh = consistent.loc[consistent['_mh_score'].idxmax()]
+                insights.append(('🌟', 'Most Consistent Across Horizons',
+                    f"**{top_mh['Strategy']}** — 1w: {top_mh['Avg 1w %']:+.1f}%, 4w: {top_mh['Avg 4w %']:+.1f}%, "
+                    f"8w: {top_mh['Avg 8w %']:+.1f}%, 13w: {top_mh['Avg 13w %']:+.1f}%.",
+                    '#bc8cff'))
+
+        # Insight: Regime-Adaptive
         s10_data = summary_df[summary_df['Strategy'].str.contains('S10')]
         if len(s10_data) > 0:
-            s10_wr = float(s10_data['Win Rate %'].iloc[0])
+            s10_wr = float(s10_data['WR 1w %'].iloc[0])
             s10_alpha = float(s10_data['Alpha %'].iloc[0])
             if s10_wr >= 50:
-                insights.append(('🔄', 'Regime Detection Effective', f'Regime-Adaptive achieved **{s10_wr:.0f}% win rate** (highest) with **{s10_alpha:+.1f}% alpha**. Switching between bull/bear modes adds value.', '#bc8cff'))
-
-        # Insight 5: No Decay filter check
-        s5_data = summary_df[summary_df['Strategy'].str.contains('S5:')]
-        s6_data = summary_df[summary_df['Strategy'].str.contains('S6:')]
-        if len(s5_data) > 0 and len(s6_data) > 0:
-            s5_cum = float(s5_data['Cumulative %'].iloc[0])
-            s6_cum = float(s6_data['Cumulative %'].iloc[0])
-            diff = s6_cum - s5_cum
-            if diff < -0.5:
-                insights.append(('🔍', 'Decay Filter Drag', f'Adding No-Decay filter made results **{abs(diff):.1f}% worse** ({s6_cum:+.1f}% vs {s5_cum:+.1f}%). In downtrends, this filter removes bounce candidates.', '#ff7b72'))
-            elif diff > 0.5:
-                insights.append(('🔍', 'Decay Filter Helps', f'No-Decay filter improved results by **{diff:.1f}%** ({s6_cum:+.1f}% vs {s5_cum:+.1f}%).', '#3fb950'))
-
-        # Insight 6: Full Signal overfiltering check
-        s8_data = summary_df[summary_df['Strategy'].str.contains('S8:')]
-        if len(s8_data) > 0:
-            s8_alpha = float(s8_data['Alpha %'].iloc[0])
-            s8_stocks = float(s8_data['Avg Stocks/Wk'].iloc[0])
-            if s8_alpha < 2 and s8_stocks < 100:
-                insights.append(('⚙️', 'Full Signal Overfilters', f'Full Signal (S8) has only **{s8_alpha:+.1f}% alpha** with ~{s8_stocks:.0f} stocks. Stacking T-Score + Conviction + No Decay + WAVE filters together cancels out alpha.', '#ff7b72'))
+                insights.append(('🔄', 'Regime Detection', f'Regime-Adaptive: **{s10_wr:.0f}% WR** with **{s10_alpha:+.1f}% alpha**.', '#bc8cff'))
 
         if insights:
             for icon, title, detail, color in insights:
@@ -7289,7 +7385,9 @@ def render_backtest_tab(uploaded_files):
         else:
             st.info("Not enough data variance to generate insights. Add more CSV weeks.")
 
-    # ── Risk Warning for dangerous strategies ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 5: Risk Warning
+    # ═══════════════════════════════════════════════════
     worst_name = worst_strat['Strategy']
     worst_alpha = worst_strat['Alpha %']
     worst_dd = worst_strat['Max DD %']
@@ -7299,17 +7397,17 @@ def render_backtest_tab(uploaded_files):
                     border:1px solid #6e3630; margin-bottom:16px;">
             <span style="color:#ff7b72; font-weight:700;">⚠️ RISK WARNING:</span>
             <span style="color:#c9d1d9; font-size:0.85rem;">
-                <b>{worst_name}</b> underperformed the universe by <b>{worst_alpha:.1f}%</b>
-                with a max drawdown of <b>{worst_dd:.1f}%</b>.
-                Concentrated portfolios with few stocks carry severe single-stock blow-up risk.
+                <b>{worst_name}</b> underperformed by <b>{worst_alpha:.1f}%</b>
+                with max DD <b>{worst_dd:.1f}%</b>.
             </span>
         </div>
         """, unsafe_allow_html=True)
 
-    # ── Cumulative Return Chart ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 6: Cumulative Return Chart (plotly)
+    # ═══════════════════════════════════════════════════
     st.markdown("#### 📈 Cumulative Return Over Time")
 
-    fig = go.Figure()
     strat_colors = {
         'S1: Universe Avg': '#484f58',
         'S2: Top 10 WAVE Rank': '#8b949e',
@@ -7325,18 +7423,28 @@ def render_backtest_tab(uploaded_files):
         'S10: Regime-Adaptive': '#bc8cff',
         'S11: Momentum-Quality': '#56d364',
         'S12: Max Alpha': '#e3b341',
+        'S13: Capitulation Contrarian': '#ff7b72',
+        'S14: Bounce Recovery': '#a5d6ff',
+        'S15: Quality GARP': '#7ee787',
+        'S16: Pattern Flip Alpha': '#ffa198',
+        'S19: Winner DNA Momentum': '#d2a8ff',
+        'S20: Winner DNA Contrarian': '#f0883e',
+        'S21: Winner DNA Composite': '#FFD700',
+        'D1: DNA HIGH Conviction': '#56d364',
+        'D2: DNA MEDIUM+ Conviction': '#79c0ff',
+        'D3: DNA All Scored': '#d2a8ff',
     }
 
-    # Highlight: best alpha, best broad, and safest strategies
     highlight_names = {best_name, safest_row['Strategy'], 'S1: Universe Avg'}
     if best_broad_row is not None:
         highlight_names.add(best_broad_row['Strategy'])
 
+    fig = go.Figure()
     for sname, weeks in bt_results.items():
         if not weeks:
             continue
         cum_vals = []
-        cum = 100  # Start at 100
+        cum = 100
         x_dates = []
         for w in weeks:
             cum = cum * (1 + w['avg_return'] / 100)
@@ -7371,22 +7479,129 @@ def render_backtest_tab(uploaded_files):
     fig.add_hline(y=100, line_dash='dot', line_color='#484f58', opacity=0.5)
     st.plotly_chart(fig, use_container_width=True, key='bt_cumulative_chart')
 
-    # ── Weekly Breakdown ──
-    with st.expander("📅 Weekly Breakdown", expanded=False):
-        # Create a combined table: rows = weeks, columns = strategies
-        if bt_results:
-            first_strat = list(bt_results.keys())[0]
-            week_labels = [w['week'] for w in bt_results[first_strat]]
+    # ═══════════════════════════════════════════════════
+    # SECTION 7: Head-to-Head Comparison
+    # ═══════════════════════════════════════════════════
+    with st.expander("⚔️ Head-to-Head Strategy Comparison", expanded=False):
+        all_strat_names = [s for s in bt_results.keys() if bt_results[s]]
+        col_a, col_b = st.columns(2)
+        with col_a:
+            strat_a = st.selectbox("Strategy A", all_strat_names,
+                                   index=min(1, len(all_strat_names) - 1), key='h2h_a')
+        with col_b:
+            default_b = min(6, len(all_strat_names) - 1)
+            strat_b = st.selectbox("Strategy B", all_strat_names,
+                                   index=default_b, key='h2h_b')
 
-            breakdown_data = {'Decision Week': week_labels}
-            for sname in bt_results:
-                breakdown_data[sname] = [f"{w['avg_return']:+.2f}% ({w['n_stocks']})"
-                                         for w in bt_results[sname]]
+        if strat_a and strat_b and strat_a != strat_b:
+            weeks_a = bt_results[strat_a]
+            weeks_b = bt_results[strat_b]
+            n_common = min(len(weeks_a), len(weeks_b))
 
-            breakdown_df = pd.DataFrame(breakdown_data)
-            st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
+            h2h_rows = []
+            a_wins, b_wins = 0, 0
+            for i in range(n_common):
+                ra = weeks_a[i]['avg_return']
+                rb = weeks_b[i]['avg_return']
+                winner = strat_a if ra > rb else (strat_b if rb > ra else 'Tie')
+                if ra > rb:
+                    a_wins += 1
+                elif rb > ra:
+                    b_wins += 1
+                h2h_rows.append({
+                    'Week': weeks_a[i]['week'],
+                    f'{strat_a} %': f'{ra:+.2f}',
+                    f'{strat_b} %': f'{rb:+.2f}',
+                    'Spread %': f'{ra - rb:+.2f}',
+                    'Winner': winner,
+                })
 
-    # ── Excess Return vs Universe ──
+            st.markdown(f"""
+            <div style="display:flex; gap:20px; margin-bottom:12px;">
+                <div style="background:#161b22; border-radius:8px; padding:12px 20px; border:1px solid #30363d;">
+                    <span style="color:#3fb950; font-weight:700;">{strat_a}</span> wins
+                    <span style="font-size:1.2rem; font-weight:800; color:#e6edf3;"> {a_wins}</span> weeks
+                </div>
+                <div style="background:#161b22; border-radius:8px; padding:12px 20px; border:1px solid #30363d;">
+                    <span style="color:#58a6ff; font-weight:700;">{strat_b}</span> wins
+                    <span style="font-size:1.2rem; font-weight:800; color:#e6edf3;"> {b_wins}</span> weeks
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Multi-horizon comparison
+            mh_compare = []
+            for h in horizons:
+                a_vals = [w.get(f'avg_ret_{h}') for w in weeks_a if w.get(f'avg_ret_{h}') is not None]
+                b_vals = [w.get(f'avg_ret_{h}') for w in weeks_b if w.get(f'avg_ret_{h}') is not None]
+                a_hr = [w.get(f'hit_rate_{h}') for w in weeks_a if w.get(f'hit_rate_{h}') is not None]
+                b_hr = [w.get(f'hit_rate_{h}') for w in weeks_b if w.get(f'hit_rate_{h}') is not None]
+                mh_compare.append({
+                    'Horizon': h,
+                    f'{strat_a} Avg %': f"{np.mean(a_vals):+.2f}" if a_vals else '—',
+                    f'{strat_b} Avg %': f"{np.mean(b_vals):+.2f}" if b_vals else '—',
+                    f'{strat_a} WR %': f"{np.mean(a_hr):.0f}" if a_hr else '—',
+                    f'{strat_b} WR %': f"{np.mean(b_hr):.0f}" if b_hr else '—',
+                })
+            st.markdown("**Multi-Horizon Comparison:**")
+            st.dataframe(pd.DataFrame(mh_compare), use_container_width=True, hide_index=True)
+
+            st.markdown("**Week-by-Week:**")
+            st.dataframe(pd.DataFrame(h2h_rows), use_container_width=True, hide_index=True)
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 8: Strategy Correlation Matrix
+    # ═══════════════════════════════════════════════════
+    with st.expander("🔗 Strategy Overlap (Correlation)", expanded=False):
+        st.markdown("""
+        <div style="font-size:0.82rem; color:#8b949e; margin-bottom:10px;">
+            Shows how often strategies pick the <b>same stocks</b> — high overlap means
+            little diversification benefit from combining them.
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Build overlap matrix from the last available week's ticker lists
+        overlap_strats = [s for s in bt_results if bt_results[s] and 'tickers' in bt_results[s][-1]]
+        if len(overlap_strats) >= 2:
+            last_tickers = {}
+            for s in overlap_strats:
+                last_week = bt_results[s][-1]
+                last_tickers[s] = set(last_week.get('tickers', []))
+
+            overlap_data = []
+            for s_row in overlap_strats:
+                row_vals = {}
+                for s_col in overlap_strats:
+                    a_set = last_tickers[s_row]
+                    b_set = last_tickers[s_col]
+                    union = len(a_set | b_set)
+                    if union > 0:
+                        jaccard = len(a_set & b_set) / union * 100
+                    else:
+                        jaccard = 0
+                    row_vals[s_col] = round(jaccard, 0)
+                overlap_data.append(row_vals)
+
+            overlap_df = pd.DataFrame(overlap_data, index=overlap_strats)
+
+            def _color_overlap(val):
+                if isinstance(val, (int, float)):
+                    if val >= 80:
+                        return 'background-color: #3fb950; color: #0d1117; font-weight:700'
+                    elif val >= 40:
+                        return 'background-color: #1a3a1f; color: #3fb950'
+                    elif val > 0:
+                        return 'color: #8b949e'
+                return ''
+
+            styled_overlap = overlap_df.style.map(_color_overlap).format('{:.0f}%')
+            st.dataframe(styled_overlap, use_container_width=True)
+        else:
+            st.info("Need backtest data with ticker lists to compute overlap.")
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 9: Excess Return vs Universe (Alpha Chart)
+    # ═══════════════════════════════════════════════════
     st.markdown("#### 🎯 Excess Return vs Universe (Alpha)")
 
     fig2 = go.Figure()
@@ -7399,11 +7614,9 @@ def render_backtest_tab(uploaded_files):
         x_dates = [w['forward_week'] for w in weeks]
         avg_excess = np.mean(excess) if excess else 0
 
-        colors = ['#3fb950' if e >= 0 else '#ff7b72' for e in excess]
-
         fig2.add_trace(go.Bar(
             x=x_dates, y=excess,
-            name=f"{sname} (avg: {avg_excess:+.2f}%)",
+            name=f"{sname} ({avg_excess:+.2f}%)",
             marker_color=strat_colors.get(sname, '#8b949e'),
             opacity=0.7,
             visible=True if sname == best_name else 'legendonly',
@@ -7418,116 +7631,112 @@ def render_backtest_tab(uploaded_files):
         margin=dict(l=40, r=20, t=30, b=40),
         legend=dict(orientation='h', yanchor='bottom', y=-0.4, xanchor='center', x=0.5,
                     font=dict(size=10)),
-        yaxis=dict(title='Excess Return vs Universe %', gridcolor='#21262d', zeroline=True,
+        yaxis=dict(title='Excess Return %', gridcolor='#21262d', zeroline=True,
                    zerolinecolor='#484f58'),
         xaxis=dict(title='Week', gridcolor='#21262d'),
         barmode='group',
     )
     st.plotly_chart(fig2, use_container_width=True, key='bt_alpha_chart')
 
-    # ── Strategy Descriptions ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 10: Weekly Breakdown
+    # ═══════════════════════════════════════════════════
+    with st.expander("📅 Weekly Breakdown", expanded=False):
+        if bt_results:
+            first_strat = list(bt_results.keys())[0]
+            week_labels = [w['week'] for w in bt_results[first_strat]]
+            breakdown_data = {'Decision Week': week_labels}
+            for sname in bt_results:
+                breakdown_data[sname] = [f"{w['avg_return']:+.2f}% ({w['n_stocks']})"
+                                         for w in bt_results[sname]]
+            st.dataframe(pd.DataFrame(breakdown_data), use_container_width=True, hide_index=True)
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 11: Strategy Definitions
+    # ═══════════════════════════════════════════════════
     with st.expander("📖 Strategy Definitions", expanded=False):
         st.markdown("""
-        | Strategy | Selection Rule | Tests |
-        |----------|---------------|-------|
-        | **S1: Universe Avg** | Buy all stocks equally | Baseline — market average |
-        | **S2: Top 10 WAVE Rank** | 10 lowest WAVE rank numbers | Does raw ranking predict? |
-        | **S3: Top 20 WAVE Rank** | 20 lowest WAVE rank numbers | Does broader selection reduce risk? |
-        | **S4: Persistent Top 50** | Top ~2.5% for 4+ consecutive weeks | Does persistence add value? |
-        | **S2b: Top 10 T-Score** | Top 10 by Trajectory Score (sector-capped ≤2/sector) | Does T-Score beat raw rank? |
-        | **S3b: Top 20 T-Score** | Top 20 by Trajectory Score (sector-capped ≤3/sector) | Broader T-Score basket with diversification |
-        | **S5: T-Score ≥ 70** | Full Trajectory Engine score ≥ 70 | Does the 8-component system work? |
-        | **S6: T-Score ≥ 70 + No Decay** | S5 + no momentum decay trap | Does trap detection help? |
-        | **S7: Conviction ≥ 65** | Multi-signal conviction score ≥ 65 | Does conviction predict returns? |
-        | **S8: Full Signal** | T-Score ≥ 70 + Conviction ≥ 65 + No Decay + WAVE Confirmed/Strong | Does max filtering produce best results? |
-        | **S9: Conviction-Weighted** | T-Score ≥ 60, conviction ≥ 40, weighted by conviction score | Does weighting by conviction add alpha? |
-        | **S10: Regime-Adaptive** | Bull: Top T-Score + no decay; Bear: Conviction ≥ 65 + persistent + no decay | Does regime adaptation help? |
-        | **S11: Momentum-Quality** | ret_1y ≥ 25% + from_low ≥ 50% + Conviction ≥ 50 + no decay, sector-capped | Do 12-month momentum + low-distance signals add alpha? |
-        | **S12: Max Alpha** | Top 20 by Alpha Score (≥40), alpha-weighted returns, sector-capped ≤2/sector | Does a pure forward-predictor score maximize future returns? |
-        | **S13: Capitulation Contrarian** | Stocks with 💣 CAPITULATION pattern (extreme selling exhaustion) | Backtest-proven: +2.99% avg, 60% WR. Mean reversion signal. |
-        | **S14: Bounce Recovery** | BOUNCE/PULLBACK market state + Score ≥ 50 | BOUNCE is the #1 market state: +3.56% avg, 54.2% WR. |
-        | **S15: Quality GARP** | QUALITY LEADER or GARP pattern + Score ≥ 65 | Quality + fundamentals: +0.98% avg (Quality), +1.00% avg (GARP). |
-        | **S16: Pattern Flip Alpha** | CAPITULATION or VOL EXPLOSION+Score≥60 NEWLY appeared this week | Fresh pattern signal: NEW Capitulation +3.06%, 60.8% WR. |
-        | **S17: Stealth Alpha** | 🤫 STEALTH pattern + Rank ≤ 100 | Stealth accumulation in top ranks: +0.10% in bear market, 48% WR. |
-        | **S18: Near-High Breakout** | Within 10% of 52w high + Breakout score ≥ 70 | Relative strength: largest N screen (4335 obs), 45.6% WR. |
-        | **S19: Winner DNA Momentum** | TQ≥50 + Score≥50 + Brk≥40 + Pos≥40 + Rank≤800 + Near High>-25% + UPTREND/PULLBACK + Leadership pattern + No Micro/Hidden Gem | Momentum path from deep 200-winner analysis. Trending leaders archetype. |
-        | **S20: Winner DNA Contrarian** | DOWNTREND + Rank≤1000 + From High -40% to -15% + Reversal pattern (VOL EXPLOSION/RANGE COMPRESS/CAPITULATION/PULLBACK SUPPORT) + No Micro/Hidden Gem | Contrarian path from 200-winner analysis. Mean-reversion archetype. |
-        | **S21: Winner DNA Composite** | Top 20 by Winner DNA Score (RF-weighted: position, TQ, from-high, rank, volume, score, breakout + pattern bonuses). Sector-capped 3/sector. | ML-derived composite score (RF AUC=0.928). Both paths combined. |
-
-        **Forward Return:** Actual price change from current week to next week. Computed from price data, not ret_7d.
-
-        **Walk-Forward:** At each test point, only data available UP TO that week is used. No future information leaks into the scoring.
-        
-        **Sector Cap (S2b/S3b):** Max 2-3 stocks per sector prevents concentration risk from destroying returns in sector-specific crashes.
-        
-        **Conviction-Weighted (S9):** Instead of equal-weight, each stock's return is weighted by its conviction score. High-conviction picks get more capital.
-        
-        **Regime-Adaptive (S10):** Automatically switches between aggressive (momentum-focused) in bull markets and defensive (conviction+persistence) in bear markets based on median T-Score.
-        
-        **Momentum-Quality (S11):** Filters for stocks with strong 12-month returns (≥25%), far from 52-week low (≥50%), minimum conviction (≥50), and no momentum decay. Sector-capped at 3/sector. Tests whether long-term momentum + structural uptrend confirmation adds alpha.
-        
-        **Max Alpha (S12):** Uses Alpha Score — a purpose-built forward-return predictor combining ONLY factors with proven next-week alpha: near-high proximity (+0.55%/wk), breakout quality (+0.44%/wk), persistence (+3.91%/wk), position strength (+0.34%/wk), market state (BOUNCE +1.17%/wk), no-decay, wave fusion, and early rally stage. Returns are alpha-score-weighted (higher alpha_score = more capital). Sector-capped at 2/sector for diversification.
-        
-        **Winner DNA Momentum (S19):** Derived from forensic analysis of the 200 stocks with the highest 6-month returns. These winners had significantly higher trend quality (+10.5, p<0.001), position score (+9.2), breakout score (+6.6), and were closer to highs (+5.6pp). S19 captures the "momentum leadership" archetype: already strong stocks (Score≥50, TQ≥50, Rank≤800) in UPTREND/PULLBACK with leadership patterns (CAT/MARKET/LIQUID LEADER, 52W HIGH APPROACH, PREMIUM MOMENTUM, RUNAWAY GAP). Excludes Micro Cap (-25.7% under-represented in winners) and HIDDEN GEM (0% in winners).
-        
-        **Winner DNA Contrarian (S20):** The second winner archetype from the same analysis — beaten-down stocks that staged massive comebacks. Examples: MTARTECH (+198%, Rank 1401, DOWNTREND), 513599 (+131%, Rank 887, DOWNTREND). S20 captures these contrarian plays: DOWNTREND state with Rank≤1000, From High -40% to -15% (beaten but not dead), and reversal signals (VOL EXPLOSION 1.6x enriched, RANGE COMPRESS 4.3x combo enrichment, CAPITULATION, PULLBACK SUPPORT 2.1x enriched).
-        
-        **Winner DNA Composite (S21):** Uses a Winner DNA Score derived from Random Forest feature importances (AUC=0.928) from the 200-winner analysis. The RF identified money_flow, position_score, trend_quality, from_high_pct, rank, volume_score, master_score, and breakout_score as the strongest discriminators. Pattern bonuses from chi-squared enrichment: RUNAWAY GAP (+9.7x enriched), 52W HIGH APPROACH (+3.6x), MARKET/CAT LEADER (+1.8x/1.5x). Top 20 by DNA score, sector-capped at 3/sector.
+        | Strategy | Selection Rule |
+        |----------|---------------|
+        | **S1: Universe Avg** | Buy all stocks equally — baseline |
+        | **S2: Top 10 WAVE Rank** | 10 lowest WAVE rank numbers |
+        | **S3: Top 20 WAVE Rank** | 20 lowest WAVE rank numbers |
+        | **S4: Persistent Top 50** | Top ~2.5% for 4+ consecutive weeks |
+        | **S2b: Top 10 T-Score** | Top 10 by Trajectory Score (sector-capped ≤2/sector) |
+        | **S3b: Top 20 T-Score** | Top 20 by Trajectory Score (sector-capped ≤3/sector) |
+        | **S5: T-Score ≥ 70** | Full Trajectory Engine score ≥ 70 |
+        | **S6: T-Score ≥ 70 + No Decay** | S5 + no momentum decay trap |
+        | **S7: Conviction ≥ 65** | Multi-signal conviction score ≥ 65 |
+        | **S8: Full Signal** | T-Score ≥ 70 + Conviction ≥ 65 + No Decay + WAVE Confirmed/Strong |
+        | **S9: Conviction-Weighted** | T-Score ≥ 60, conviction ≥ 40, weighted by conviction score |
+        | **S10: Regime-Adaptive** | Bull: Top T-Score; Bear: Conviction ≥ 65 + persistent |
+        | **S11: Momentum-Quality** | ret_1y ≥ 25% + from_low ≥ 50% + Conviction ≥ 50, sector-capped |
+        | **S12: Max Alpha** | Top 20 by Alpha Score (≥40), alpha-weighted, sector-capped |
+        | **S13: Capitulation Contrarian** | Stocks with CAPITULATION pattern (mean reversion) |
+        | **S14: Bounce Recovery** | BOUNCE/PULLBACK state + Score ≥ 50 |
+        | **S15: Quality GARP** | QUALITY LEADER or GARP pattern + Score ≥ 65 |
+        | **S16: Pattern Flip Alpha** | NEW Capitulation or VOL EXPLOSION this week |
+        | **S19: Winner DNA Momentum** | Trending leaders: TQ≥50, Score≥50, UPTREND, leadership patterns |
+        | **S20: Winner DNA Contrarian** | Beaten-down reversals: DOWNTREND, -40% to -15%, reversal patterns |
+        | **S21: Winner DNA Composite** | Top 20 by RF-derived DNA Score (AUC=0.928), sector-capped |
+        | **D1: DNA HIGH Conviction** | All tickers scored HIGH by the 5-cap DNA system |
+        | **D2: DNA MEDIUM+ Conviction** | All tickers scored MEDIUM or HIGH by DNA system |
+        | **D3: DNA All Scored** | Every ticker with a positive DNA score |
         """)
 
-    # ── Download Backtest Results ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 12: Downloads (Multi-Horizon)
+    # ═══════════════════════════════════════════════════
     st.markdown("#### 📥 Download Results")
     dl1, dl2, dl3 = st.columns(3)
 
     with dl1:
-        # Summary CSV — drop Rating column for clean data export
         export_df = summary_df.drop(columns=['Rating'], errors='ignore')
-        summary_csv = export_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="📋 Summary Table (CSV)",
-            data=summary_csv,
-            file_name="backtest_summary.csv",
+            label="📋 Summary (CSV)",
+            data=export_df.to_csv(index=False).encode('utf-8'),
+            file_name="backtest_summary_v11.csv",
             mime="text/csv",
             use_container_width=True,
             key='bt_dl_summary',
         )
 
     with dl2:
-        # Weekly breakdown CSV — one row per strategy × week
         weekly_rows = []
         for sname, weeks in bt_results.items():
             for w in weeks:
-                weekly_rows.append({
+                row_dl = {
                     'Strategy': sname,
                     'Decision_Week': w['week'],
                     'Forward_Week': w['forward_week'],
-                    'Avg_Return_%': round(w['avg_return'], 4),
+                    'Avg_Return_1w_%': round(w['avg_return'], 4),
                     'Median_Return_%': round(w['median_return'], 4),
                     'N_Stocks': w['n_stocks'],
                     'N_Positive': w['n_positive'],
                     'Best_%': round(w['best'], 4),
                     'Worst_%': round(w['worst'], 4),
-                })
-        weekly_csv = pd.DataFrame(weekly_rows).to_csv(index=False).encode('utf-8')
+                }
+                for h in horizons:
+                    row_dl[f'Avg_Ret_{h}_%'] = round(w.get(f'avg_ret_{h}', 0) or 0, 4)
+                    row_dl[f'Hit_Rate_{h}_%'] = round(w.get(f'hit_rate_{h}', 0) or 0, 1)
+                weekly_rows.append(row_dl)
         st.download_button(
-            label="📅 Weekly Breakdown (CSV)",
-            data=weekly_csv,
-            file_name="backtest_weekly.csv",
+            label="📅 Weekly Multi-Horizon (CSV)",
+            data=pd.DataFrame(weekly_rows).to_csv(index=False).encode('utf-8'),
+            file_name="backtest_weekly_multihorizon.csv",
             mime="text/csv",
             use_container_width=True,
             key='bt_dl_weekly',
         )
 
     with dl3:
-        # Full combined report — summary + blank row + weekly detail
         import io
         buf = io.StringIO()
-        buf.write("=== BACKTEST SUMMARY ===\n")
+        buf.write("=== BACKTEST SUMMARY v11.0 (Multi-Horizon) ===\n")
         summary_df.to_csv(buf, index=False)
         buf.write("\n\n=== WEEKLY DETAIL (per strategy per week) ===\n")
         pd.DataFrame(weekly_rows).to_csv(buf, index=False)
 
-        # Excess returns section
         universe_rets_dl = [w['avg_return'] for w in bt_results.get('S1: Universe Avg', [])]
         excess_rows = []
         for sname, weeks in bt_results.items():
@@ -7545,11 +7754,10 @@ def render_backtest_tab(uploaded_files):
             buf.write("\n\n=== EXCESS RETURNS (Alpha vs Universe) ===\n")
             pd.DataFrame(excess_rows).to_csv(buf, index=False)
 
-        full_csv = buf.getvalue().encode('utf-8')
         st.download_button(
             label="📊 Full Report (CSV)",
-            data=full_csv,
-            file_name="backtest_full_report.csv",
+            data=buf.getvalue().encode('utf-8'),
+            file_name="backtest_full_report_v11.csv",
             mime="text/csv",
             use_container_width=True,
             key='bt_dl_full',
