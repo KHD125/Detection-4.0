@@ -7805,7 +7805,69 @@ def render_pattern_analyser_tab(uploaded_files):
         st.warning("Need at least 3 weekly CSVs for pattern analysis.")
         return
 
-    pa_cache_key = ('PA', tuple(sorted((f.name, f.size) for f in uploaded_files)))
+    # ── Filter Bar: Category / Sector / Tickers ──
+    st.markdown("""
+    <div style="background:#161b22; border-radius:8px; padding:10px 16px; margin-bottom:12px;
+                border:1px solid #30363d;">
+        <span style="color:#8b949e; font-size:0.82rem; font-weight:600;">🎛️ ANALYSIS SCOPE</span>
+    </div>
+    """, unsafe_allow_html=True)
+    # Collect all categories and sectors from latest CSV
+    _latest_df = weekly_data[dates[-1]]
+    _all_cats = sorted([str(c).strip() for c in _latest_df['category'].dropna().unique() if str(c).strip() and str(c).strip() != 'nan'])
+    _all_sects = sorted([str(v).strip() for v in _latest_df['sector'].dropna().unique() if str(v).strip() and str(v).strip() != 'nan'])
+
+    flt_c1, flt_c2, flt_c3 = st.columns([2, 2, 3])
+    with flt_c1:
+        pa_filter_cats = st.multiselect("📂 Categories", _all_cats, default=[], key='pa_flt_cat',
+                                        placeholder="All Categories")
+    with flt_c2:
+        pa_filter_sects = st.multiselect("🏭 Sectors", _all_sects, default=[], key='pa_flt_sect',
+                                         placeholder="All Sectors")
+    with flt_c3:
+        pa_filter_tickers = st.text_input("🔍 Specific Tickers (comma-separated)", value='', key='pa_flt_tk',
+                                          placeholder="e.g. 500325, 532540")
+
+    # Parse ticker filter
+    _filter_tk_set = set()
+    if pa_filter_tickers.strip():
+        _filter_tk_set = {t.strip() for t in pa_filter_tickers.split(',') if t.strip()}
+
+    # Apply filters to weekly_data copies
+    _filter_active = bool(pa_filter_cats) or bool(pa_filter_sects) or bool(_filter_tk_set)
+    if _filter_active:
+        filtered_data = {}
+        for d, df in weekly_data.items():
+            mask = pd.Series(True, index=df.index)
+            if pa_filter_cats:
+                mask &= df['category'].astype(str).str.strip().isin(pa_filter_cats)
+            if pa_filter_sects:
+                mask &= df['sector'].astype(str).str.strip().isin(pa_filter_sects)
+            if _filter_tk_set:
+                mask &= df['ticker'].astype(str).str.strip().isin(_filter_tk_set)
+            filtered = df[mask]
+            if len(filtered) > 0:
+                filtered_data[d] = filtered
+        pa_weekly = filtered_data
+        pa_dates = sorted(pa_weekly.keys())
+        if len(pa_dates) < 3:
+            st.warning("Filter too restrictive — need ≥3 weeks with matching stocks.")
+            return
+        _filter_desc = []
+        if pa_filter_cats:
+            _filter_desc.append(f"Categories: {', '.join(pa_filter_cats)}")
+        if pa_filter_sects:
+            _filter_desc.append(f"Sectors: {', '.join(pa_filter_sects)}")
+        if _filter_tk_set:
+            _filter_desc.append(f"Tickers: {', '.join(sorted(_filter_tk_set))}")
+        st.caption(f"🎛️ Filter active: {' | '.join(_filter_desc)}")
+    else:
+        pa_weekly = weekly_data
+        pa_dates = dates
+
+    # Include filter params in cache key
+    _flt_key = (tuple(sorted(pa_filter_cats)), tuple(sorted(pa_filter_sects)), tuple(sorted(_filter_tk_set)))
+    pa_cache_key = ('PA', tuple(sorted((f.name, f.size) for f in uploaded_files)), _flt_key)
     cached = st.session_state.get('_pa_result')
     cached_key = st.session_state.get('_pa_key')
     pa_data = cached if (cached is not None and cached_key == pa_cache_key) else None
@@ -7815,13 +7877,15 @@ def render_pattern_analyser_tab(uploaded_files):
         run_btn = st.button("🔬 Run Analysis", type="primary", use_container_width=True, key='pa_run')
     with col_info:
         if pa_data is None:
-            st.caption(f"📁 {len(dates)} weekly CSVs → {len(dates)-1} forward-return windows")
+            _n_wk = len(pa_dates)
+            st.caption(f"📁 {_n_wk} weekly CSVs → {_n_wk - 1} forward-return windows"
+                       + (" (filtered)" if _filter_active else ""))
         else:
             st.caption(f"✅ Loaded ({pa_data['n_obs']:,} observations). Click to refresh.")
 
     if run_btn:
         prog = st.progress(0, text="Building pattern analysis...")
-        pa_data = _build_pattern_analysis(weekly_data, dates, prog)
+        pa_data = _build_pattern_analysis(pa_weekly, pa_dates, prog)
         st.session_state['_pa_result'] = pa_data
         st.session_state['_pa_key'] = pa_cache_key
         prog.progress(1.0, text="Analysis complete!")
@@ -7843,12 +7907,18 @@ def render_pattern_analyser_tab(uploaded_files):
             if not stats:
                 buf.write("(no data)\n\n")
                 return
-            header = "Name,N,Avg_Return_%,Median_Return_%,Win_Rate_%"
+            header = "Name,N,Avg_Return_%,Median_Return_%,Win_Rate_%,Sig,p_value,Recent_8w_Avg,Older_Avg,Trend"
             if extra_cols:
                 header += ',' + ','.join(extra_cols)
             buf.write(header + "\n")
             for s in stats:
-                line = f"{s['name']},{s['n']},{s['avg']:.3f},{s['med']:.3f},{s['wr']:.1f}"
+                avg_r = s.get('avg_recent')
+                avg_o = s.get('avg_older')
+                r_str = f"{avg_r:.3f}" if avg_r is not None else ""
+                o_str = f"{avg_o:.3f}" if avg_o is not None else ""
+                p_str = f"{s['p_val']:.4f}" if 'p_val' in s else ""
+                line = (f"{s['name']},{s['n']},{s['avg']:.3f},{s['med']:.3f},{s['wr']:.1f},"
+                        f"{s.get('sig','–')},{p_str},{r_str},{o_str},{s.get('trend','–')}")
                 buf.write(line + "\n")
             buf.write("\n")
 
@@ -7958,8 +8028,12 @@ def render_pattern_analyser_tab(uploaded_files):
 # ---------- Pattern Analyser: data builder ----------
 
 def _build_pattern_analysis(weekly_data, dates, progress_bar):
-    """Build comprehensive pattern analysis from consecutive week pairs."""
+    """Build comprehensive pattern analysis from consecutive week pairs.
+    Includes statistical significance (t-test) and recency split (recent 8w vs older).
+    Returns are stored as (fwd_return, pair_index) tuples for recency tracking.
+    """
     from collections import defaultdict
+    import math
 
     results = []
     pat_rets = defaultdict(list)
@@ -8022,34 +8096,34 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
             ))
 
             for p in pats_list:
-                pat_rets[p].append(fwd)
+                pat_rets[p].append((fwd, i))
                 if state:
-                    pat_state_rets[p][state].append(fwd)
+                    pat_state_rets[p][state].append((fwd, i))
 
             if n_pats >= 2:
-                combo_rets[' + '.join(sorted(pats_list)[:4])].append(fwd)
+                combo_rets[' + '.join(sorted(pats_list)[:4])].append((fwd, i))
 
             if state:
-                state_rets[state].append(fwd)
+                state_rets[state].append((fwd, i))
 
             sb = '70+' if ms >= 70 else '60-70' if ms >= 60 else '50-60' if ms >= 50 else '40-50' if ms >= 40 else '0-40'
-            score_bucket_rets[sb].append(fwd)
+            score_bucket_rets[sb].append((fwd, i))
 
             rb = 'Top 10' if rk <= 10 else 'Top 50' if rk <= 50 else 'Top 100' if rk <= 100 else 'Top 500' if rk <= 500 else '500+'
-            rank_bucket_rets[rb].append(fwd)
+            rank_bucket_rets[rb].append((fwd, i))
 
             if cat:
-                cat_rets[cat].append(fwd)
-                cat_score_rets[cat][sb].append(fwd)
+                cat_rets[cat].append((fwd, i))
+                cat_score_rets[cat][sb].append((fwd, i))
             if sect:
-                sector_rets[sect].append(fwd)
-            month_rets[month_str].append(fwd)
+                sector_rets[sect].append((fwd, i))
+            month_rets[month_str].append((fwd, i))
 
             if prev_pats_map:
                 prev_set = set(pp.strip() for pp in prev_pats_map.get(tk, '').split('|')
                                if pp.strip() and pp.strip() != 'nan')
                 for np_name in (set(pats_list) - prev_set):
-                    new_pat_rets[np_name].append(fwd)
+                    new_pat_rets[np_name].append((fwd, i))
 
     # Multi-factor screens
     rdf = pd.DataFrame(results) if results else pd.DataFrame()
@@ -8156,21 +8230,63 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
         )
 
     def _summarize(rets_dict, min_n=10):
+        """Summarize returns with significance testing and recency split.
+        rets_dict values are lists of (fwd_return, pair_index) tuples.
+        t-test: H0 = mean return is 0. Manual implementation (no scipy needed).
+        Recency: last 8 week-pairs vs older.
+        """
+        recent_cutoff = max(0, n_pairs - 8)  # pair indices >= this are "recent"
         out = []
-        for key, rets in rets_dict.items():
-            if len(rets) >= min_n:
+        for key, pairs in rets_dict.items():
+            if len(pairs) >= min_n:
+                rets = [r for r, _ in pairs]
+                n = len(rets)
+                avg = float(np.mean(rets))
+                std = float(np.std(rets, ddof=1)) if n > 1 else 0.0
+                med = float(np.median(rets))
+                wr = float(sum(1 for r in rets if r > 0) / n * 100)
+
+                # ── t-test (one-sample, H0: mean=0) ──
+                if n >= 3 and std > 1e-12:
+                    t_stat = avg / (std / math.sqrt(n))
+                    # Two-tailed p-value approximation (Abramowitz & Stegun 26.7.5)
+                    df_t = n - 1
+                    x = abs(t_stat)
+                    # Adjusted normal approximation — accurate for all df
+                    _t2 = x * x
+                    _z = x * (1.0 - 1.0 / (4.0 * df_t)) / math.sqrt(1.0 + _t2 / (2.0 * df_t))
+                    p_val = 2.0 * (1.0 - 0.5 * (1.0 + math.erf(_z / math.sqrt(2.0))))
+                    p_val = max(0.0, min(1.0, p_val))
+                else:
+                    t_stat = 0.0
+                    p_val = 1.0
+
+                sig = '***' if p_val < 0.01 else '**' if p_val < 0.05 else '*' if p_val < 0.10 else '–'
+
+                # ── Recency split ──
+                recent_rets = [r for r, idx in pairs if idx >= recent_cutoff]
+                older_rets = [r for r, idx in pairs if idx < recent_cutoff]
+                avg_recent = float(np.mean(recent_rets)) if len(recent_rets) >= 3 else None
+                avg_older = float(np.mean(older_rets)) if len(older_rets) >= 3 else None
+                if avg_recent is not None and avg_older is not None:
+                    diff = avg_recent - avg_older
+                    trend = '↑' if diff > 0.3 else '↓' if diff < -0.3 else '→'
+                else:
+                    trend = '–'
+
                 out.append(dict(
-                    name=key, n=len(rets), avg=float(np.mean(rets)),
-                    med=float(np.median(rets)),
-                    wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
+                    name=key, n=n, avg=avg, med=med, wr=wr,
+                    t_stat=round(t_stat, 2), p_val=round(p_val, 4), sig=sig,
+                    avg_recent=avg_recent, avg_older=avg_older, trend=trend,
                 ))
         return sorted(out, key=lambda x: -x['avg'])
 
     pat_state_matrix = {}
     for pat, sd in pat_state_rets.items():
         pat_state_matrix[pat] = {}
-        for st_name, rets in sd.items():
-            if len(rets) >= 5:
+        for st_name, pairs in sd.items():
+            if len(pairs) >= 5:
+                rets = [r for r, _ in pairs]
                 pat_state_matrix[pat][st_name] = dict(
                     n=len(rets), avg=float(np.mean(rets)),
                     wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
@@ -8179,8 +8295,9 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
     cat_score_matrix = {}
     for cat, sd in cat_score_rets.items():
         cat_score_matrix[cat] = {}
-        for sl, rets in sd.items():
-            if len(rets) >= 10:
+        for sl, pairs in sd.items():
+            if len(pairs) >= 10:
+                rets = [r for r, _ in pairs]
                 cat_score_matrix[cat][sl] = dict(
                     n=len(rets), avg=float(np.mean(rets)),
                     wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
@@ -8251,14 +8368,32 @@ def _render_pa_pattern_performance(pa_data):
     rows_html = ""
     for i, s in enumerate(pat_stats):
         bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        # Significance badge
+        sig = s.get('sig', '–')
+        sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+        # Recency columns
+        avg_r = s.get('avg_recent')
+        avg_o = s.get('avg_older')
+        trend = s.get('trend', '–')
+        trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
+        recent_str = f"{avg_r:+.2f}%" if avg_r is not None else "–"
+        older_str = f"{avg_o:+.2f}%" if avg_o is not None else "–"
+        recent_color = _pa_color(avg_r) if avg_r is not None else '#484f58'
+        older_color = _pa_color(avg_o) if avg_o is not None else '#484f58'
+        # N color
+        n_color = '#3fb950' if s['n'] >= 50 else '#d29922' if s['n'] >= 20 else '#ff7b72'
         rows_html += (
             f'<tr style="background:{bg};">'
             f'<td style="padding:6px 10px;color:#c9d1d9;">{i+1}</td>'
             f'<td style="padding:6px 10px;color:#e6edf3;">{s["name"]}</td>'
-            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{n_color};">{s["n"]:,}</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["med"])};">{s["med"]:+.2f}%</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};font-weight:600;">{s["wr"]:.1f}%</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{sig_color};font-weight:700;">{sig}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{recent_color};">{recent_str}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{older_color};">{older_str}</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{trend_color};font-size:1rem;">{trend}</td>'
             f'</tr>'
         )
     st.markdown(f"""
@@ -8271,7 +8406,22 @@ def _render_pa_pattern_performance(pa_data):
         <th style="padding:8px 10px;text-align:right;">Avg Return</th>
         <th style="padding:8px 10px;text-align:right;">Med Return</th>
         <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+        <th style="padding:8px 10px;text-align:center;">Sig</th>
+        <th style="padding:8px 10px;text-align:right;">Recent 8w</th>
+        <th style="padding:8px 10px;text-align:right;">Older</th>
+        <th style="padding:8px 10px;text-align:center;">Trend</th>
     </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+    <div style="background:#161b22;border-radius:8px;padding:10px;margin-top:8px;border:1px solid #30363d;">
+        <div style="font-size:0.75rem;color:#8b949e;">
+            <b>Sig:</b> *** p&lt;0.01 &nbsp; ** p&lt;0.05 &nbsp; * p&lt;0.10 &nbsp; – not significant &nbsp;&nbsp;
+            <b>Trend:</b> ↑ improving &nbsp; ↓ deteriorating &nbsp; → stable &nbsp;&nbsp;
+            <b>N:</b> <span style="color:#3fb950;">≥50</span> /
+            <span style="color:#d29922;">20-49</span> /
+            <span style="color:#ff7b72;">&lt;20</span>
+        </div>
+    </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
@@ -8392,14 +8542,21 @@ def _render_pa_pattern_flips(pa_data):
     for i, s in enumerate(flip_stats):
         bg = '#161b22' if i % 2 == 0 else '#0d1117'
         ind = "🟢" if s['avg'] >= 0.5 else "🔵" if s['avg'] >= 0 else "🟡" if s['avg'] >= -0.5 else "🔴"
+        sig = s.get('sig', '–')
+        sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+        trend = s.get('trend', '–')
+        trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
+        n_color = '#3fb950' if s['n'] >= 50 else '#d29922' if s['n'] >= 20 else '#ff7b72'
         rows_html += (
             f'<tr style="background:{bg};">'
             f'<td style="padding:6px 10px;color:#c9d1d9;">{ind}</td>'
             f'<td style="padding:6px 10px;color:#e6edf3;">NEW {s["name"]}</td>'
-            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{n_color};">{s["n"]:,}</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["med"])};">{s["med"]:+.2f}%</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};font-weight:600;">{s["wr"]:.1f}%</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{sig_color};font-weight:700;">{sig}</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{trend_color};font-size:1rem;">{trend}</td>'
             f'</tr>'
         )
     st.markdown(f"""
@@ -8412,6 +8569,8 @@ def _render_pa_pattern_flips(pa_data):
         <th style="padding:8px 10px;text-align:right;">Avg Return</th>
         <th style="padding:8px 10px;text-align:right;">Med Return</th>
         <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+        <th style="padding:8px 10px;text-align:center;">Sig</th>
+        <th style="padding:8px 10px;text-align:center;">Trend</th>
     </tr></thead><tbody>{rows_html}</tbody></table></div>
     """, unsafe_allow_html=True)
 
@@ -8485,12 +8644,19 @@ def _render_pa_combo_explorer(pa_data):
         rows_html = ""
         for i, s in enumerate(data):
             bg = '#161b22' if i % 2 == 0 else '#0d1117'
+            sig = s.get('sig', '–')
+            sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+            trend = s.get('trend', '–')
+            trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
+            n_color = '#3fb950' if s['n'] >= 50 else '#d29922' if s['n'] >= 20 else '#ff7b72'
             rows_html += (
                 f'<tr style="background:{bg};">'
                 f'<td style="padding:6px 10px;color:#e6edf3;max-width:400px;overflow:hidden;text-overflow:ellipsis;">{s["name"]}</td>'
-                f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]}</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:{n_color};">{s["n"]}</td>'
                 f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
                 f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};">{s["wr"]:.1f}%</td>'
+                f'<td style="padding:6px 10px;text-align:center;color:{sig_color};font-weight:700;">{sig}</td>'
+                f'<td style="padding:6px 10px;text-align:center;color:{trend_color};font-size:1rem;">{trend}</td>'
                 f'</tr>'
             )
         st.markdown(f"""
@@ -8501,6 +8667,8 @@ def _render_pa_combo_explorer(pa_data):
             <th style="padding:8px 10px;text-align:right;">N</th>
             <th style="padding:8px 10px;text-align:right;">Avg Return</th>
             <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+            <th style="padding:8px 10px;text-align:center;">Sig</th>
+            <th style="padding:8px 10px;text-align:center;">Trend</th>
         </tr></thead><tbody>{rows_html}</tbody></table></div>
         """, unsafe_allow_html=True)
 
@@ -8591,11 +8759,17 @@ def _render_pa_category_sector(pa_data):
         for s in sorted(pa_data.get('score_stats', []),
                         key=lambda x: ['70+', '60-70', '50-60', '40-50', '0-40'].index(x['name'])
                         if x['name'] in ['70+', '60-70', '50-60', '40-50', '0-40'] else 99):
+            sig = s.get('sig', '–')
+            sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+            trend = s.get('trend', '–')
+            trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #21262d;">'
                 f'<span style="color:#e6edf3;">Score {s["name"]}</span>'
                 f'<span><span style="color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</span>'
                 f' <span style="color:{_pa_wr_color(s["wr"])};">WR:{s["wr"]:.0f}%</span>'
+                f' <span style="color:{sig_color};font-weight:700;">{sig}</span>'
+                f' <span style="color:{trend_color};">{trend}</span>'
                 f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
                 unsafe_allow_html=True,
             )
@@ -8604,11 +8778,17 @@ def _render_pa_category_sector(pa_data):
         for s in sorted(pa_data.get('rank_stats', []),
                         key=lambda x: ['Top 10', 'Top 50', 'Top 100', 'Top 500', '500+'].index(x['name'])
                         if x['name'] in ['Top 10', 'Top 50', 'Top 100', 'Top 500', '500+'] else 99):
+            sig = s.get('sig', '–')
+            sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+            trend = s.get('trend', '–')
+            trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #21262d;">'
                 f'<span style="color:#e6edf3;">{s["name"]}</span>'
                 f'<span><span style="color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</span>'
                 f' <span style="color:{_pa_wr_color(s["wr"])};">WR:{s["wr"]:.0f}%</span>'
+                f' <span style="color:{sig_color};font-weight:700;">{sig}</span>'
+                f' <span style="color:{trend_color};">{trend}</span>'
                 f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
                 unsafe_allow_html=True,
             )
