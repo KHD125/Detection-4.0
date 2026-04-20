@@ -3782,6 +3782,8 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
         change = prev - curr            # Positive = improved
         prices = h.get('prices', [])
         latest_price = prices[-1] if prices and prices[-1] > 0 else 0
+        prev_price = prices[-(weeks + 1)] if len(prices) >= weeks + 1 and prices[-(weeks + 1)] > 0 else 0
+        price_return = ((latest_price / prev_price - 1) * 100) if (latest_price > 0 and prev_price > 0) else None
         movers.append({
             'ticker': ticker,
             'company_name': h['company_name'],
@@ -3790,6 +3792,7 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
             'current_rank': curr,
             'rank_change': change,
             'price': latest_price,
+            'price_return': price_return,
         })
 
     mover_df = pd.DataFrame(movers)
@@ -6054,14 +6057,20 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
     # ── Summary stats ────────────────────────────────────────────
     def _stats(df_mv):
         if df_mv.empty:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0.0
         rc = df_mv['rank_change']
-        return len(df_mv), int(rc.mean()), int(rc.median()), int(rc.iloc[0])
+        pr = df_mv['price_return'].dropna()
+        avg_pr = float(pr.mean()) if len(pr) > 0 else 0.0
+        return len(df_mv), int(rc.mean()), int(rc.median()), int(rc.iloc[0]), avg_pr
 
-    g_cnt, g_avg, g_med, g_best = _stats(gainers)
-    d_cnt, d_avg, d_med, d_worst = _stats(decliners)
+    g_cnt, g_avg, g_med, g_best, g_ret = _stats(gainers)
+    d_cnt, d_avg, d_med, d_worst, d_ret = _stats(decliners)
+    _g_ret_sign = '+' if g_ret > 0 else ''
+    _d_ret_sign = '+' if d_ret > 0 else ''
+    _g_ret_color = '#3fb950' if g_ret > 0 else ('#f85149' if g_ret < 0 else '#8b949e')
+    _d_ret_color = '#3fb950' if d_ret > 0 else ('#f85149' if d_ret < 0 else '#8b949e')
     st.markdown(f"""
-    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px;">
+    <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:14px;">
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
         <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">{g_cnt}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Climbers</div></div>
@@ -6072,6 +6081,9 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
         <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">+{g_best}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Best Climb</div></div>
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:{_g_ret_color};font-weight:700;font-size:1.1rem;">{_g_ret_sign}{g_ret:.1f}%</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Avg Return</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
         <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_cnt}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Decliners</div></div>
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
@@ -6080,6 +6092,9 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
         <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_worst}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Worst Drop</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:{_d_ret_color};font-weight:700;font-size:1.1rem;">{_d_ret_sign}{d_ret:.1f}%</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Avg Return</div></div>
     </div>""", unsafe_allow_html=True)
 
     # ── Pattern Flips + New Entries/Exits ─────────────────────────
@@ -6173,6 +6188,7 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             '<span style="flex:1;">Stock</span>'
             '<span class="mv-sector" style="min-width:72px;text-align:left;">Sector</span>'
             '<span style="min-width:56px;text-align:right;">Price</span>'
+            '<span style="min-width:56px;text-align:right;">Return</span>'
             '<span style="min-width:80px;text-align:center;">Prev → Now</span>'
             '<span style="min-width:32px;text-align:center;">Grd</span>'
             '<span style="min-width:36px;text-align:right;">Score</span></div>')
@@ -6202,6 +6218,16 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             ticker_esc = _safe(str(m.get('ticker', '')))
             comp_esc = _safe(str(m.get('company_name', '') if pd.notna(m.get('company_name')) else '')[:22])
 
+            pr_raw = m.get('price_return')
+            if pr_raw is not None and not (isinstance(pr_raw, float) and np.isnan(pr_raw)):
+                pr_val = float(pr_raw)
+                pr_color = '#3fb950' if pr_val > 0 else ('#f85149' if pr_val < 0 else '#8b949e')
+                pr_sign = '+' if pr_val > 0 else ''
+                pr_str = f'{pr_sign}{pr_val:.1f}%'
+            else:
+                pr_color = '#6e7681'
+                pr_str = '—'
+
             rows_html.append(
                 f'<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
                 f'background:{stripe};border-bottom:1px solid #21262d;">'
@@ -6216,6 +6242,8 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'white-space:nowrap;text-overflow:ellipsis;">{sector_short}</span>'
                 f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:56px;'
                 f'text-align:right;font-variant-numeric:tabular-nums;">{price_str}</span>'
+                f'<span style="color:{pr_color};font-weight:700;font-size:0.82rem;min-width:56px;'
+                f'text-align:right;font-variant-numeric:tabular-nums;">{pr_str}</span>'
                 f'<span style="color:#8b949e;font-size:0.8rem;min-width:80px;text-align:center;'
                 f'font-variant-numeric:tabular-nums;">{prev_r} → {curr_r}</span>'
                 f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:32px;'
