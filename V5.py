@@ -3784,15 +3784,20 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
         latest_price = prices[-1] if prices and prices[-1] > 0 else 0
         prev_price = prices[-(weeks + 1)] if len(prices) >= weeks + 1 and prices[-(weeks + 1)] > 0 else 0
         price_return = ((latest_price / prev_price - 1) * 100) if (latest_price > 0 and prev_price > 0) else None
+        # Market state from latest week
+        ms_list = h.get('market_states', [])
+        latest_ms = ms_list[-1] if ms_list else ''
         movers.append({
             'ticker': ticker,
             'company_name': h['company_name'],
             'category': h['category'],
+            'sector': h.get('sector', ''),
             'prev_rank': prev,
             'current_rank': curr,
             'rank_change': change,
             'price': latest_price,
             'price_return': price_return,
+            'market_state': latest_ms,
         })
 
     mover_df = pd.DataFrame(movers)
@@ -3802,6 +3807,71 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
     gainers   = mover_df.nlargest(n, 'rank_change')
     decliners = mover_df.nsmallest(n, 'rank_change')
     return gainers, decliners
+
+
+def get_consistent_movers(histories: dict, n: int = 50, weeks: int = 4,
+                          tickers: set = None) -> pd.DataFrame:
+    """Find stocks that climbed (rank improved) in every single week of the window.
+
+    Unlike top movers (which measure net change), this finds *consistency* —
+    stocks whose rank improved week-over-week in *every* week of the window.
+
+    Returns a DataFrame sorted by total rank gain (most consistent first),
+    with columns matching get_top_movers output + ``streak`` (= weeks).
+    """
+    if weeks < 2:
+        return pd.DataFrame()
+
+    results = []
+    for ticker, h in histories.items():
+        if tickers is not None and ticker not in tickers:
+            continue
+        rk = h['ranks']
+        if len(rk) < weeks + 1:
+            continue
+
+        # Check every consecutive week in the window
+        window = rk[-(weeks + 1):]          # weeks+1 rank values → weeks transitions
+        all_improved = True
+        for i in range(1, len(window)):
+            if int(window[i]) >= int(window[i - 1]):   # rank went up (worse) or stayed
+                all_improved = False
+                break
+
+        if not all_improved:
+            continue
+
+        prev = int(rk[-(weeks + 1)])
+        curr = int(rk[-1])
+        change = prev - curr
+
+        prices = h.get('prices', [])
+        latest_price = prices[-1] if prices and prices[-1] > 0 else 0
+        prev_price = prices[-(weeks + 1)] if len(prices) >= weeks + 1 and prices[-(weeks + 1)] > 0 else 0
+        price_return = ((latest_price / prev_price - 1) * 100) if (latest_price > 0 and prev_price > 0) else None
+
+        ms_list = h.get('market_states', [])
+        latest_ms = ms_list[-1] if ms_list else ''
+
+        results.append({
+            'ticker': ticker,
+            'company_name': h['company_name'],
+            'category': h['category'],
+            'sector': h.get('sector', ''),
+            'prev_rank': prev,
+            'current_rank': curr,
+            'rank_change': change,
+            'price': latest_price,
+            'price_return': price_return,
+            'market_state': latest_ms,
+            'streak': weeks,
+        })
+
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results)
+    return df.nlargest(n, 'rank_change')
 
 # ============================================
 # UI: SIDEBAR
@@ -5966,13 +6036,15 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
         )
     with c_side:
         mv_side = st.selectbox(
-            'View', options=['⬆️ Biggest Climbers', '⬇️ Biggest Decliners'],
+            'View', options=['⬆️ Biggest Climbers', '⬇️ Biggest Decliners', '🔄 Consistent Movers'],
             index=0, key='movers_tab_side',
         )
 
     # ── Fetch movers ─────────────────────────────────────────────
     gainers, decliners = get_top_movers(histories, n=mv_count, weeks=mv_weeks,
                                          tickers=_filtered_tickers)
+    consistent = get_consistent_movers(histories, n=mv_count, weeks=mv_weeks,
+                                        tickers=_filtered_tickers)
 
     # ── Detect pattern flips + new entries/exits over the same window ──
     new_rockets, new_crashes, new_entries, exited_tickers = [], [], [], []
@@ -6161,12 +6233,75 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
           </div>
         </div>""", unsafe_allow_html=True)
 
-    # ── Mover Table Builder ──────────────────────────────────────
+    # ── Enrichment lookup (used by sector concentration + table) ─
     enrich_cols = ['ticker', 'trajectory_score', 'grade', 'sector']
     enrich_df = filtered_df[
         [c for c in enrich_cols if c in filtered_df.columns]
     ].drop_duplicates('ticker')
 
+    # ── Sector Concentration Analysis ────────────────────────────
+    def _sector_concentration(df_mv, accent):
+        """Build sector concentration HTML bar if any sector dominates."""
+        if df_mv.empty or 'sector' not in df_mv.columns:
+            return ''
+        sec_col = df_mv['sector'].fillna('Unknown').replace('', 'Unknown')
+        counts = sec_col.value_counts()
+        total = len(df_mv)
+        if total == 0:
+            return ''
+        # Build bar segments for top sectors
+        bars_html = []
+        for sec_name, cnt in counts.head(6).items():
+            pct = cnt / total * 100
+            # Only show sector rotation signal if concentration >= 30%
+            is_hot = pct >= 30
+            bar_color = accent if is_hot else '#30363d'
+            label_color = accent if is_hot else '#8b949e'
+            fire = ' 🔥' if is_hot else ''
+            bars_html.append(
+                f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">'
+                f'<span style="color:{label_color};font-size:0.73rem;min-width:120px;'
+                f'overflow:hidden;white-space:nowrap;text-overflow:ellipsis;'
+                f'font-weight:{"700" if is_hot else "400"};">'
+                f'{_safe(str(sec_name)[:20])}{fire}</span>'
+                f'<div style="flex:1;background:#21262d;border-radius:4px;height:14px;overflow:hidden;">'
+                f'<div style="width:{pct:.1f}%;background:{bar_color};height:100%;border-radius:4px;'
+                f'min-width:2px;"></div></div>'
+                f'<span style="color:{label_color};font-size:0.72rem;min-width:50px;text-align:right;'
+                f'font-weight:{"700" if is_hot else "400"};">{cnt} ({pct:.0f}%)</span></div>')
+        return ''.join(bars_html)
+
+    # Determine which side to show based on dropdown
+    _active_df = gainers if mv_side == '⬆️ Biggest Climbers' else (
+        decliners if mv_side == '⬇️ Biggest Decliners' else consistent)
+    _active_label = 'Climbers' if mv_side == '⬆️ Biggest Climbers' else (
+        'Decliners' if mv_side == '⬇️ Biggest Decliners' else 'Consistent Movers')
+    _active_accent = '#3fb950' if mv_side == '⬆️ Biggest Climbers' else (
+        '#f85149' if mv_side == '⬇️ Biggest Decliners' else '#58a6ff')
+
+    # Merge sector from enrichment if active_df doesn't have it from get_top_movers
+    if not _active_df.empty:
+        if 'sector' not in _active_df.columns or _active_df['sector'].fillna('').eq('').all():
+            _active_df = _active_df.merge(
+                enrich_df[['ticker', 'sector']].drop_duplicates('ticker'),
+                on='ticker', how='left', suffixes=('', '_enr'))
+            if 'sector_enr' in _active_df.columns:
+                _active_df['sector'] = _active_df['sector_enr'].fillna(_active_df.get('sector', ''))
+                _active_df = _active_df.drop(columns=['sector_enr'])
+
+    _sec_html = _sector_concentration(_active_df, _active_accent)
+    if _sec_html:
+        st.markdown(f"""
+        <div style="background:#0d1117;border-radius:12px;padding:14px 18px;margin-bottom:14px;
+            border:1px solid #30363d;">
+          <div style="font-size:0.82rem;font-weight:700;color:#c9d1d9;margin-bottom:8px;
+              letter-spacing:0.3px;">🏭 Sector Concentration — {_safe(_active_label)}
+            <span style="color:#6e7681;font-weight:400;font-size:0.73rem;margin-left:6px;">
+              (30%+ = sector rotation signal 🔥)</span></div>
+          {_sec_html}
+        </div>""", unsafe_allow_html=True)
+
+    # ── Mover Table Builder ──────────────────────────────────────
     scroll_h = {50: 580, 100: 1050, 150: 1500}.get(mv_count, 580)
 
     def _mover_table_html(df_mv, accent, icon, label):
@@ -6182,7 +6317,9 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                     'border:1px solid #30363d;border-top:0;text-align:center;color:#6e7681;'
                     'font-size:0.88rem;">No movers detected for this window</div>')
 
-        enriched = df_mv.merge(enrich_df, on='ticker', how='left')
+        enriched = df_mv.merge(
+            enrich_df.drop(columns=[c for c in ['sector'] if c in enrich_df.columns], errors='ignore'),
+            on='ticker', how='left')
 
         col_hdr = (
             '<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
@@ -6195,8 +6332,16 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             '<span style="min-width:56px;text-align:right;">Price</span>'
             '<span style="min-width:56px;text-align:right;">Return</span>'
             '<span style="min-width:80px;text-align:center;">Prev → Now</span>'
+            '<span style="min-width:68px;text-align:center;">State</span>'
             '<span style="min-width:32px;text-align:center;">Grd</span>'
             '<span style="min-width:36px;text-align:right;">Score</span></div>')
+
+        _MS_MAP = {
+            'STRONG_UPTREND': ('▲▲', '#3fb950'), 'UPTREND': ('▲', '#3fb950'),
+            'BOUNCE': ('↗', '#58a6ff'), 'PULLBACK': ('↘', '#e3b341'),
+            'SIDEWAYS': ('━', '#8b949e'), 'ROTATION': ('⟳', '#d2a8ff'),
+            'DOWNTREND': ('▼', '#f85149'), 'STRONG_DOWNTREND': ('▼▼', '#f85149'),
+        }
 
         rows_html = [col_hdr]
         for i, (_, m) in enumerate(enriched.iterrows()):
@@ -6233,6 +6378,11 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                 pr_color = '#6e7681'
                 pr_str = '—'
 
+            # Market state pill
+            _ms_raw = str(m.get('market_state', '') if pd.notna(m.get('market_state', '')) else '')
+            _ms_icon, _ms_color = _MS_MAP.get(_ms_raw, ('—', '#6e7681'))
+            _ms_label = _safe(_ms_raw.replace('_', ' ').title()[:12]) if _ms_raw else '—'
+
             rows_html.append(
                 f'<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
                 f'background:{stripe};border-bottom:1px solid #21262d;">'
@@ -6251,6 +6401,9 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'text-align:right;font-variant-numeric:tabular-nums;">{pr_str}</span>'
                 f'<span style="color:#8b949e;font-size:0.8rem;min-width:80px;text-align:center;'
                 f'font-variant-numeric:tabular-nums;">{prev_r} → {curr_r}</span>'
+                f'<span title="{_ms_label}" style="color:{_ms_color};font-size:0.74rem;min-width:68px;'
+                f'text-align:center;font-weight:600;overflow:hidden;white-space:nowrap;'
+                f'text-overflow:ellipsis;">{_ms_icon} {_ms_label}</span>'
                 f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:32px;'
                 f'text-align:center;">{_safe(gr)}</span>'
                 f'<span style="color:#FF6B35;font-weight:600;font-size:0.82rem;min-width:36px;'
@@ -6263,9 +6416,37 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
 
     if mv_side == '⬆️ Biggest Climbers':
         mv_html = _mover_table_html(gainers, '#3fb950', '⬆️', 'Biggest Climbers')
-    else:
+        _dl_df = gainers
+    elif mv_side == '⬇️ Biggest Decliners':
         mv_html = _mover_table_html(decliners, '#f85149', '⬇️', 'Biggest Decliners')
-    st.markdown(mv_html, unsafe_allow_html=True)
+        _dl_df = decliners
+    else:
+        if consistent.empty:
+            st.info(f'No stocks improved their rank in every single week of the {wk_label} window. '
+                    'Try a shorter time window.')
+            mv_html = ''
+            _dl_df = pd.DataFrame()
+        else:
+            mv_html = _mover_table_html(consistent, '#58a6ff', '🔄',
+                                         f'Consistent Movers ({wk_label})')
+            _dl_df = consistent
+    if mv_html:
+        st.markdown(mv_html, unsafe_allow_html=True)
+
+    # ── Download Button ──────────────────────────────────────────
+    if not _dl_df.empty:
+        _dl_cols = [c for c in ['ticker', 'company_name', 'category', 'sector',
+                                'rank_change', 'prev_rank', 'current_rank',
+                                'price', 'price_return', 'market_state'] if c in _dl_df.columns]
+        _dl_csv = _dl_df[_dl_cols].to_csv(index=False).encode('utf-8')
+        _dl_label = mv_side.split(' ', 1)[-1].replace(' ', '_')
+        st.download_button(
+            label=f'📥 Download {mv_side.split(" ", 1)[-1]} CSV',
+            data=_dl_csv,
+            file_name=f'Top_Movers_{_dl_label}_{wk_label.replace(" ", "_")}.csv',
+            mime='text/csv',
+            key='movers_download_btn',
+        )
 
 
 # ============================================
