@@ -8742,6 +8742,10 @@ def _dna_score_large(row):
     elif state == 'UPTREND': score += 4
     # ROTATION removed — 1.06x ratio (barely above neutral)
 
+    # PULLBACK Confluence — PULLBACK (6.2x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
+
     return min(score, 100), reasons
 
 
@@ -8809,6 +8813,10 @@ def _dna_score_mega(row):
     elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (4.7x)')
     elif state == 'UPTREND': score += 5
     if state in ('DOWNTREND', 'STRONG_DOWNTREND'): score -= 8
+
+    # PULLBACK Confluence — PULLBACK (5.6x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
 
     return min(score, 100), reasons
 
@@ -8893,6 +8901,10 @@ def _dna_score_mid(row):
     if is_momentum: score += 2
     if is_contrarian: score += 3; reasons.append('Contrarian Setup (1.65x)')
 
+    # PULLBACK Confluence — PULLBACK (6.8x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
+
     return min(score, 100), reasons, path
 
 
@@ -8958,6 +8970,10 @@ def _dna_score_small(row):
     state = str(row.get('market_state', '')).strip()
     if state in ('UPTREND', 'STRONG_UPTREND'): score += 4
     elif state == 'PULLBACK': score += 4
+
+    # PULLBACK Confluence — PULLBACK (5.2x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
 
     return min(score, 100), reasons
 
@@ -9033,6 +9049,10 @@ def _dna_score_micro(row):
     # DOWNTREND removed — 0.57x anti-winner
     # STRONG_DOWNTREND removed — 0.21x anti-winner
 
+    # PULLBACK Confluence — PULLBACK (8.9x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
+
     return min(score, 100), reasons
 
 
@@ -9087,7 +9107,7 @@ def compute_dna_for_ticker(ticker: str, histories: dict) -> dict:
         path = 'Position/TQ'
     elif cat == 'Micro Cap':
         dna_score, reasons = _dna_score_micro(row)
-        path = 'Coiled Spring'
+        path = 'Tension/Recovery'
     else:
         return None
 
@@ -9135,9 +9155,9 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             <b>What this does:</b> Scans TODAY's stocks using <b>category-specific DNA profiles</b>
             derived from actual 6-month winners. Each cap size has its own scoring formula
             calibrated to how past winners looked <b>before</b> they started winning.<br>
-            <b>Large Cap</b>: Position + Tension leaders | <b>Mega Cap</b>: Volume + Near-high + Low tension |
-            <b>Mid Cap</b>: Score leaders + Trend quality | <b>Small Cap</b>: Position + TQ driven |
-            <b>Micro Cap</b>: Coiled Spring — low volume, high tension, rotation state
+            <b>Large Cap</b>: Position + Tension + Surgical Patterns | <b>Mega Cap</b>: Position + Near-High + Tension (higher=better) |
+            <b>Mid Cap</b>: Master + Position + From-Low (#1 signal) + Dual Path | <b>Small Cap</b>: Position + TQ + Pattern Enrichment |
+            <b>Micro Cap</b>: Tension + From-Low + Rank + Patterns — recovery/momentum driven
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -9192,6 +9212,29 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
                 except (ValueError, TypeError):
                     pass
 
+    # Build prev-week DNA score map for DNA trend tracking
+    prev_dna_map = {}
+    if prev_df is not None:
+        for _, r in prev_df.iterrows():
+            tk = str(r['ticker']).strip()
+            cat = str(r.get('category', '')).strip()
+            try:
+                if cat == 'Large Cap':
+                    _ps, _ = _dna_score_large(r)
+                elif cat == 'Mega Cap':
+                    _ps, _ = _dna_score_mega(r)
+                elif cat == 'Mid Cap':
+                    _ps, _, _ = _dna_score_mid(r)
+                elif cat == 'Small Cap':
+                    _ps, _ = _dna_score_small(r)
+                elif cat == 'Micro Cap':
+                    _ps, _ = _dna_score_micro(r)
+                else:
+                    continue
+                prev_dna_map[tk] = _ps
+            except Exception:
+                pass
+
     # Build 2-weeks-ago lookup for "New This Week"
     prev2_tickers = set()
     if len(dates) >= 3:
@@ -9236,7 +9279,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             path = 'Position/TQ'
         elif cat == 'Micro Cap':
             dna_score, reasons = _dna_score_micro(row)
-            path = 'Coiled Spring'
+            path = 'Tension/Recovery'
         else:
             continue
 
@@ -9276,6 +9319,23 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         # New this week flag
         is_new = tk not in prev2_tickers if prev2_tickers else False
 
+        # DNA trend — week-over-week score change
+        prev_dna = prev_dna_map.get(tk)
+        if prev_dna is not None:
+            dna_delta = dna_score - prev_dna
+            if dna_delta >= 10:
+                dna_trend = f'🔥+{dna_delta}'
+            elif dna_delta > 0:
+                dna_trend = f'↑+{dna_delta}'
+            elif dna_delta <= -10:
+                dna_trend = f'↓{dna_delta}'
+            elif dna_delta < 0:
+                dna_trend = f'↓{dna_delta}'
+            else:
+                dna_trend = '→'
+        else:
+            dna_trend = '🆕'
+
         state = str(row.get('market_state', '')).strip()
         company = str(row.get('company_name', tk)).strip()
         ms = _safe_dna(row, 'master_score')
@@ -9285,6 +9345,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             'Company': company[:25],
             'Category': cat,
             'DNA Score': dna_score,
+            'DNA Δ': dna_trend,
             'Conviction': conviction,
             'Path': path,
             'State': state,
@@ -9297,6 +9358,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             'MS': f'{ms:.0f}',
             'New': '🆕' if is_new else '',
             '_score': dna_score,
+            '_dna_delta': dna_delta if prev_dna is not None else 0,
         })
 
     if not results:
@@ -9310,8 +9372,9 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     high_conv = len(res_df[res_df['Conviction'].str.contains('HIGH')])
     med_conv = len(res_df[res_df['Conviction'].str.contains('MEDIUM')])
     new_count = len(res_df[res_df['New'] == '🆕'])
+    rising_count = len(res_df[res_df['_dna_delta'] >= 10])
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.metric("Total Matches", total)
     with c2:
@@ -9320,6 +9383,8 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         st.metric("🟡 Medium Conviction", med_conv)
     with c4:
         st.metric("🆕 New This Week", new_count)
+    with c5:
+        st.metric("🔥 DNA Rising", rising_count)
 
     # ── Filter options ──
     fc1, fc2 = st.columns(2)
@@ -9334,7 +9399,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         (res_df['Conviction'].isin(conv_filter))
     ].copy()
 
-    display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'Conviction',
+    display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
                     'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
                     'Rank', 'Rank Δ', 'MS']
     display_df = display_df[display_cols]
@@ -9361,6 +9426,15 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         st.markdown("*These stocks just appeared on the DNA radar — early signals.*")
         st.dataframe(new_df, use_container_width=True, height=min(300, 35 * len(new_df) + 40))
 
+    # ── DNA RISING SPOTLIGHT ──
+    rising_df = res_df[res_df['_dna_delta'] >= 10].sort_values('_dna_delta', ascending=False)
+    if not rising_df.empty:
+        rising_display = rising_df[display_cols].head(20)
+        st.markdown("---")
+        st.markdown("#### 🔥 DNA Rising — Fastest Improving Setups")
+        st.markdown("*These stocks' DNA scores jumped 10+ points vs last week — early-stage setups catching fire.*")
+        st.dataframe(rising_display, use_container_width=True, height=min(300, 35 * len(rising_display) + 40))
+
     # ── HIGH CONVICTION DETAIL ──
     high_df = display_df[display_df['Conviction'] == '🔴 HIGH']
     if not high_df.empty:
@@ -9385,34 +9459,40 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     # ── DNA SCORING LEGEND ──
     with st.expander("📖 DNA Scoring Methodology"):
         st.markdown(r"""
-        Each category uses a **unique scoring formula** calibrated to actual 6-month winner profiles
-        + **backtest-validated pattern bonuses** (BT = backtest proven):
+        Each category uses a **unique scoring formula** calibrated to actual 6-month winner profiles.
+        All metrics, thresholds, patterns, and states are **data-validated** against real winner/non-winner separation.
 
-        | Category | Key Drivers | Winner Archetype |
-        |----------|------------|------------------|
-        | **Large Cap** | Position Score\*\*\*, Position Tension\*\*\*, From Low\*\*\* | Quality leaders with building tension |
-        | **Mega Cap** | Volume Score\*, Near High\*, LOW Tension\*\*\* | Stable blue chips with volume interest |
-        | **Mid Cap** | Master\*\*\*, Position\*\*\*, Breakout\*\*\*, TQ\*\*\*, Rank\*\*\* | Dual-path: Momentum OR **Contrarian (BT#3)** |
-        | **Small Cap** | Position\*\*\*, TQ\*\*\*, Breakout\*\*\*, Rank\*\*\* | TQ & Position driven, pattern enrichment |
-        | **Micro Cap** | LOW Volume\*\*, LOW Money Flow\*\*, HIGH Tension\* | Coiled Spring — under radar, building tension |
+        | Category | Top Drivers (by separation) | Winner Archetype |
+        |----------|---------------------------|------------------|
+        | **Large Cap** | Position\*\*\*, Tension\*\*\*, From-Low\*\*\* + Surgical Patterns | Quality leaders — high position & tension, PULLBACK/UPTREND states |
+        | **Mega Cap** | Position\*\*\* (+43%), Near-High\*\*\*, Tension\*\*\* (higher=better), From-Low\*\*\* (+61%) | Institutional leaders near highs with strong recovery |
+        | **Mid Cap** | From-Low\*\*\* (+294% #1), Master\*\*\*, Position\*\*\*, TQ\*\*\*, Rank\*\*\* | Dual-path: Momentum OR Contrarian (1.65x edge) |
+        | **Small Cap** | Position\*\*\*, TQ\*\*\*, Breakout\*\*\*, Rank\*\*\*, From-Low\*\* | TQ & Position driven with pattern enrichment |
+        | **Micro Cap** | Tension\*\*\* (+337%), From-Low\*\*\* (+700%), Position\*\*\*, Rank\*\*\* | Recovery/momentum — strong rebound from lows with rank confirmation |
 
-        **Backtest-Validated Boosts** (applied across ALL categories):
-        - 🏆 **Quality GARP** (+7): S15 = **+20.28% alpha**, #1 strategy overall
-        - 🔄 **Capitulation** (+5-7): S13 = **+17.82% alpha**, #2 strategy overall
-        - 🤫 **Stealth** (+6-7): S17 = **+12.37% alpha**, #4 strategy overall
-        - 📉 **Contrarian Path** (+8 Mid Cap): S20 = **+12.49% alpha** vs S19 Momentum = +0.72%
+        **Universal Signals** (strong across ALL 5 cap categories):
+        - 📉 **PULLBACK State** (5-9x winner ratio): The #1 most consistent signal across all caps
+        - 📈 **STRONG_UPTREND State** (4-5x): Second strongest universal state signal
+        - 🏆 **Quality/GARP Pattern** (+7): Elite quality leaders
+        - 🤫 **Stealth Pattern** (+6-7): Under-the-radar movers
+        - ❌ **CAPITULATION removed** from all caps: 0x or anti-winner across every category
+        - ❌ **DOWNTREND/STRONG_DOWNTREND**: Anti-winner states (0.2-0.6x) — penalized or excluded
 
         **Conviction Levels:**
         - 🔴 **HIGH** (65+): Strong DNA match — multiple winner criteria aligned
         - 🟡 **MEDIUM** (45-64): Moderate match — developing setup, worth monitoring
         - 🟢 **LOW** (30-44): Early signal — partial match, watch for improvement
 
-        **Pattern Enrichment** (compared to non-winners):
-        - Micro: VALUE MOMENTUM (16.2x!), INFO DECAY (3.9x), STEALTH (1.9x)
-        - Mid: MARKET LEADER (2.2x), CAT LEADER (2.0x), LIQUID LEADER (2.4x)
+        **Top Pattern Ratios** (winner frequency vs non-winner, data-validated):
+        - Micro: VALUE MOMENTUM (8.2x), GOLDEN CROSS (4.9x), INFO DECAY (4.5x), PREMIUM MOM (4.3x)
+        - Mid: VALUE MOMENTUM (31x!), RUNAWAY GAP (7.9x), 52W HIGH (6.6x), MOMENTUM WAVE (4x)
         - Small: RUNAWAY GAP (9.0x), VELOCITY SQUEEZE (3.4x), ACCELERATION (2.5x)
-        - Large: 52W HIGH APPROACH (2.2x), PYRAMID (2.0x), VOL EXPLOSION (1.8x)
-        - Mega: PREMIUM MOMENTUM (3.5x), INSTITUTIONAL (3.2x), VOL EXPLOSION (3.0x)
+        - Large: VALUE MOMENTUM (9.6x), MOMENTUM WAVE (3.6x), INSTITUTIONAL (3.6x), PREMIUM MOM (3.3x)
+        - Mega: INSTITUTIONAL (17.9x!), STEALTH (11.9x), INST. TSUNAMI (11.2x), VOL EXPLOSION (6.4x)
+
+        **Advanced Features:**
+        - 🔥 **Pullback Confluence** (+3): When PULLBACK state fires AND 5+ other criteria already met — strongest setups
+        - 📊 **DNA Δ (Trend)**: Week-over-week DNA score change. 🔥+N = rising fast (catching fire), ↑+N = improving, ↓N = fading
         """)
 
 
