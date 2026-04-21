@@ -560,7 +560,6 @@ st.markdown("""
 
     /* ── Top Movers: compact when sidebar is expanded ── */
     html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-ticker  { display: none !important; }
-    html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-sector  { display: none !important; }
     html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-row     { padding-left: 8px !important; padding-right: 8px !important; gap: 5px !important; }
     html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-grid    { gap: 6px !important; }
 
