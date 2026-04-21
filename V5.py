@@ -5043,7 +5043,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         _chip(f'{grade_s + grade_a}', 'S + A Grade', 'm-green'),
         _chip(f'{rockets}', '🚀 Rockets'),
         _chip(f'{confirmed}', '💰 Confirmed', 'm-green'),
-        _chip(f'{decay_high}', '🔻 Traps', 'm-red' if decay_high > 0 else ''),
+        _chip(f'{decay_high}', '🔻 High Decay', 'm-red' if decay_high > 0 else ''),
         _chip(f'{sect_leaders}', '👑 Alpha', 'm-gold'),
         _chip(f'{metadata.get("total_weeks", 0)}', 'Weeks'),
     ])
@@ -5115,16 +5115,23 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Sector Alpha': ('sector_alpha_value', False),
     }
     col_name, ascending = sort_map.get(sort_by, ('trajectory_score', False))
+    # B1: Fall back to trajectory_score if the requested sort column is missing
+    if col_name not in filtered_local.columns:
+        col_name, ascending = 'trajectory_score', False
     display_df = filtered_local.sort_values(col_name, ascending=ascending).head(display_n).reset_index(drop=True)
-    display_df['t_rank'] = range(1, len(display_df) + 1)
     table_n = len(display_df)
 
-    # ── Add latest price from histories ──
+    # ── Add latest price from histories (B2: use NaN for missing so cell shows blank, not fake ₹0.00) ──
     _price_map = {}
     for _tk in display_df['ticker'].astype(str):
         _prices = histories.get(_tk, {}).get('prices', [])
-        _price_map[_tk] = round(float(_prices[-1]), 2) if _prices else 0.0
-    display_df['latest_price'] = display_df['ticker'].astype(str).map(_price_map).fillna(0.0)
+        _price_map[_tk] = round(float(_prices[-1]), 2) if _prices else float('nan')
+    display_df['latest_price'] = display_df['ticker'].astype(str).map(_price_map)
+
+    # ── B3: Coerce numeric format columns to safe defaults so "%+d" / "%d" don't choke on NaN ──
+    for _nc in ('rank_change', 'last_week_change', 'streak'):
+        if _nc in display_df.columns:
+            display_df[_nc] = pd.to_numeric(display_df[_nc], errors='coerce').fillna(0).astype(int)
 
     # ── Column definitions for each view ──
     # Each: (df_col, display_name, tooltip, column_config_or_None)
@@ -5256,7 +5263,26 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ── Dynamic height ──
     tbl_height = min(800, max(180, len(table_df) * 35 + 60))
 
-    st.caption(f"Showing {table_n:,} of {shown:,} filtered stocks · Sorted by **{sort_by}**")
+    # U2: Caption with universe context
+    _univ_n = len(all_local)
+    st.caption(f"Showing **{table_n:,}** of **{shown:,}** filtered · universe **{_univ_n:,}** · sorted by **{sort_by}**")
+
+    # B5: Dedicated CSV download for current view
+    try:
+        _csv_bytes = ('\ufeff' + table_df.to_csv(index=False)).encode('utf-8')
+        _ld = metadata.get('latest_date', '') or ''
+        _ld_safe = str(_ld).replace('-', '').replace('/', '').replace(' ', '')[:8] or 'latest'
+        _view_safe = str(view_mode).lower().replace(' ', '_')
+        st.download_button(
+            label=f"⬇️ Download view ({table_n:,} rows)",
+            data=_csv_bytes,
+            file_name=f"rankings_{_view_safe}_{_ld_safe}.csv",
+            mime="text/csv",
+            key='rank_dl_view',
+            use_container_width=False,
+        )
+    except Exception:
+        pass
 
     st.dataframe(
         table_df, column_config=col_config,
