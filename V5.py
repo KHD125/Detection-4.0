@@ -10696,7 +10696,11 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
                 use_container_width=True,
                 help="Downloads the current view (after filters + sort).",
             )
-        st.dataframe(display_df, use_container_width=True,
+        # Insert a "#" column reflecting position in the CURRENT sort.
+        # This replaces the meaningless pandas index (which becomes random
+        # after sort) with a real serial number that always reads 1,2,3...
+        display_df.insert(0, '#', range(1, len(display_df) + 1))
+        st.dataframe(display_df, use_container_width=True, hide_index=True,
                      height=min(600, max(140, 35 * len(display_df) + 40)))
 
     # ── Category breakdown (when All Categories selected) ──
@@ -10711,21 +10715,27 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             st.markdown(f"**{cat_name}**: {len(cat_df)} matches ({high_c} high conviction)")
 
     # ── NEW THIS WEEK SPOTLIGHT ──
-    new_df = display_df[display_df['New'] == '🆕']
+    new_df = display_df[display_df['New'] == '🆕'].copy()
     if not new_df.empty:
         st.markdown("---")
         st.markdown("#### 🆕 New DNA Matches This Week")
         st.markdown("*These stocks just appeared on the DNA radar — early signals.*")
-        st.dataframe(new_df, use_container_width=True, height=min(300, 35 * len(new_df) + 40))
+        # Re-number for this filtered slice so # always reads 1,2,3...
+        if '#' in new_df.columns:
+            new_df['#'] = range(1, len(new_df) + 1)
+        st.dataframe(new_df, use_container_width=True, hide_index=True,
+                     height=min(300, 35 * len(new_df) + 40))
 
     # ── DNA RISING SPOTLIGHT ──
     rising_df = res_df[res_df['_dna_delta'] >= 10].sort_values('_dna_delta', ascending=False)
     if not rising_df.empty:
-        rising_display = rising_df[display_cols].head(20)
+        rising_display = rising_df[display_cols].head(20).copy()
+        rising_display.insert(0, '#', range(1, len(rising_display) + 1))
         st.markdown("---")
         st.markdown("#### 🔥 DNA Rising — Fastest Improving Setups")
         st.markdown("*These stocks' DNA scores jumped 10+ points vs last week — early-stage setups catching fire.*")
-        st.dataframe(rising_display, use_container_width=True, height=min(300, 35 * len(rising_display) + 40))
+        st.dataframe(rising_display, use_container_width=True, hide_index=True,
+                     height=min(300, 35 * len(rising_display) + 40))
 
     # ── HIGH CONVICTION DETAIL ──
     high_df = display_df[display_df['Conviction'] == '🔴 HIGH']
