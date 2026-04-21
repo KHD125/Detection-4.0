@@ -10386,17 +10386,16 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Parse all weekly data ──
+    # ── Parse all weekly data (uses shared helper for filename robustness) ──
     weekly_data = {}
     for ufile in uploaded_files:
         try:
+            dt = parse_date_from_filename(getattr(ufile, 'name', ''))
+            if dt is None:
+                continue
             ufile.seek(0)
             df = pd.read_csv(ufile)
             df['ticker'] = df['ticker'].astype(str).str.strip()
-            fname = getattr(ufile, 'name', str(ufile))
-            parts = fname.replace('.csv', '').split('_')
-            date_str = parts[2] if len(parts) >= 3 else fname
-            dt = datetime.strptime(date_str, '%Y-%m-%d')
             weekly_data[dt] = df
         except Exception:
             continue
@@ -10484,11 +10483,12 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         if sidebar_tickers is not None and tk not in sidebar_tickers:
             continue
 
-        # Determine which scanner to use
+        # Determine which scanner to use — STRICT category match.
+        # (Previously a special-case let Large Cap rows leak through when the
+        # user selected Mega Cap. Removed: each cap is its own scoring path,
+        # mixing them produces wrong scores and a confusing watchlist.)
         if sel_cat != "All Categories" and cat != sel_cat:
-            # Special case: Mega Cap data might be labeled Large Cap
-            if not (sel_cat == "Mega Cap" and cat == "Large Cap"):
-                continue
+            continue
 
         if cat == 'Large Cap':
             dna_score, reasons = _dna_score_large(row)
@@ -10547,16 +10547,21 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         is_new = tk not in prev2_tickers if prev2_tickers else False
 
         # DNA trend — week-over-week score change
+        # Initialize explicitly so the dict-build below is bullet-proof even
+        # if future edits change the control flow.
+        dna_delta = 0
         prev_dna = prev_dna_map.get(tk)
         if prev_dna is not None:
             dna_delta = dna_score - prev_dna
+            # Symmetric thresholds with a stable band around 0 to avoid
+            # alarming "↓-1" / falsely-promising "↑+1" noise.
             if dna_delta >= 10:
                 dna_trend = f'🔥+{dna_delta}'
-            elif dna_delta > 0:
+            elif dna_delta >= 3:
                 dna_trend = f'↑+{dna_delta}'
             elif dna_delta <= -10:
                 dna_trend = f'↓{dna_delta}'
-            elif dna_delta < 0:
+            elif dna_delta <= -3:
                 dna_trend = f'↓{dna_delta}'
             else:
                 dna_trend = '→'
@@ -10588,7 +10593,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             'MS': f'{ms:.0f}',
             'New': '🆕' if is_new else '',
             '_score': dna_score,
-            '_dna_delta': dna_delta if prev_dna is not None else 0,
+            '_dna_delta': dna_delta,
             '_tq': tq_now,
             '_ms': ms,
             '_fh': fh_now,
@@ -10644,10 +10649,22 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
                     'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
                     'Rank', 'Rank Δ', 'MS']
+    # Hide the Category column when the user has narrowed to a single category —
+    # every row would just repeat the selected cap, wasting horizontal space.
+    if sel_cat != "All Categories":
+        display_cols = [c for c in display_cols if c != 'Category']
     display_df = display_df[display_cols]
 
-    st.markdown(f"**Showing {len(display_df)} stocks** (sorted by DNA Score)")
-    st.dataframe(display_df, use_container_width=True, height=min(600, 35 * len(display_df) + 40))
+    if display_df.empty:
+        st.info(
+            f"🔍 No stocks pass the current filters (Min DNA ≥ {min_score}, "
+            f"Conviction ∈ {', '.join(conv_filter)}). "
+            f"Try lowering Min DNA Score or adding more conviction tiers."
+        )
+    else:
+        st.markdown(f"**Showing {len(display_df)} stocks** (sorted by DNA Score)")
+        st.dataframe(display_df, use_container_width=True,
+                     height=min(600, max(140, 35 * len(display_df) + 40)))
 
     # ── Category breakdown (when All Categories selected) ──
     if sel_cat == "All Categories":
