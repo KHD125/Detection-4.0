@@ -10284,21 +10284,6 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             except Exception:
                 pass
 
-    # Build T-Score (trajectory_score) map for S5 Elite preset
-    # Source priority: filtered_df > traj_df. Missing → S5 Elite preset disabled.
-    tscore_map = {}
-    _tscore_src = filtered_df if (filtered_df is not None and not filtered_df.empty and 'trajectory_score' in filtered_df.columns) else \
-                  (traj_df if (traj_df is not None and not traj_df.empty and 'trajectory_score' in traj_df.columns) else None)
-    if _tscore_src is not None:
-        try:
-            _ts = pd.to_numeric(_tscore_src['trajectory_score'], errors='coerce')
-            for _tk, _v in zip(_tscore_src['ticker'].astype(str).str.strip(), _ts):
-                if pd.notna(_v):
-                    tscore_map[_tk] = float(_v)
-        except Exception:
-            tscore_map = {}
-    _tscore_available = len(tscore_map) > 0
-
     # Build 2-weeks-ago lookup for "New This Week"
     prev2_tickers = set()
     if len(dates) >= 3:
@@ -10433,7 +10418,6 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             '_ms': ms,
             '_fh': fh_now,
             '_pats': _pats_raw,
-            '_tscore': tscore_map.get(tk, float('nan')),  # for S5 Elite tier gating
         })
 
     if not results:
@@ -10461,98 +10445,26 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     with c5:
         st.metric("🔥 DNA Rising", rising_count)
 
-    # ── Filter options — Backtested Tier presets + manual override ──
-    st.markdown(
-        """<div style="background:linear-gradient(90deg,#0d1117,#161b22);
-                       border-left:3px solid #FF6B35; padding:10px 14px; margin:8px 0 6px 0;
-                       border-radius:6px; font-size:0.82rem; color:#c9d1d9;">
-        🎯 <b>Tier Presets</b> — Data-validated rules from 100W vs 100L Small-Cap analysis (Apr 2026).
-        Each tier trades breadth for precision. <b>S5 Elite</b> mirrors the highest-Sharpe (1.73) backtest strategy.
-        </div>""",
-        unsafe_allow_html=True,
-    )
-    tc1, tc2, tc3 = st.columns([1.2, 1, 1])
-    with tc1:
-        _s5_label = "⭐ S5 Elite — Proven +13% alpha (T-Score≥70)" if _tscore_available else "⭐ S5 Elite — (needs trajectory data)"
-        tier = st.radio(
-            "DNA Tier",
-            [_s5_label,
-             "🅰 Tier A — Elite (~94% precision)",
-             "🅱 Tier B — Strong (broader)",
-             "🅲 Tier C — Watch (early signals)",
-             "⚙ Custom"],
-            index=2, key='dna_wl_tier', horizontal=False,
-            help=("S5 Elite: T-Score≥70 AND DNA≥70 AND no anti-pattern — mirrors backtest strategy S5 (Sharpe 1.73, +13.24% alpha, 67.4% WR, -9.64% MaxDD)\n"
-                  "Tier A: dna≥70 AND tq≥70 AND fh>-20 AND state∈{PULLBACK,UPTREND,STRONG_UPTREND,BOUNCE} — 94% backtested precision\n"
-                  "Tier B: dna≥55 AND tq≥55 AND state∉{ROTATION,STRONG_DOWNTREND}\n"
-                  "Tier C: dna≥40 AND tq≥40 — broadest watch list\n"
-                  "Custom: use the slider/multiselect controls below"),
+    # ── Filter controls — sliders only (presets removed; reachable via these) ──
+    fc1, fc2 = st.columns([1, 1])
+    with fc1:
+        min_score = st.slider(
+            "Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore',
+            help="Higher = stricter watch-list. 70+ ≈ elite, 55+ ≈ strong, 40+ ≈ broad.",
         )
-    with tc2:
-        min_score = st.slider("Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore',
-                              disabled=not tier.startswith('⚙'))
-    with tc3:
+    with fc2:
         conv_filter = st.multiselect(
             "Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
             default=['🔴 HIGH', '🟡 MEDIUM'], key='dna_wl_conv',
-            disabled=not tier.startswith('⚙'),
         )
 
-    # Apply tier rule (validated against winner-vs-loser data)
-    GOOD_STATES = {'PULLBACK', 'UPTREND', 'STRONG_UPTREND', 'BOUNCE'}
-    BAD_STATES  = {'ROTATION', 'STRONG_DOWNTREND'}
-    ANTI_PATS   = ('RUNAWAY GAP', 'VELOCITY BREAKOUT', 'INSTITUTIONAL TSUNAMI')
+    if not conv_filter:
+        conv_filter = ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW']
 
-    if tier.startswith('⭐'):
-        if not _tscore_available:
-            st.warning("⚠ S5 Elite needs trajectory_score (load ≥2 weekly CSVs to compute). Falling back to Tier A.")
-            mask = (
-                (res_df['_score'] >= 70) &
-                (res_df['_tq'] >= 70) &
-                (res_df['_fh'] >= -20) &
-                (res_df['State'].isin(GOOD_STATES)) &
-                (~res_df['_pats'].fillna('').str.contains('|'.join(ANTI_PATS), regex=True))
-            )
-        else:
-            # S5 Elite: T-Score≥70 + DNA≥70 + no anti-pattern (mirrors backtest S5 strategy)
-            _ts = pd.to_numeric(res_df['_tscore'], errors='coerce')
-            mask = (
-                _ts.ge(70).fillna(False) &
-                (res_df['_score'] >= 70) &
-                (~res_df['_pats'].fillna('').str.contains('|'.join(ANTI_PATS), regex=True))
-            )
-        display_df = res_df[mask].copy()
-        if _tscore_available:
-            st.caption(f"⭐ **S5 Elite** — mirrors backtest strategy S5 (Sharpe 1.73, +13.24% alpha, 67.4% WR over 31 weeks). Tight portfolio, highest historical conviction.")
-    elif tier.startswith('🅰'):
-        mask = (
-            (res_df['_score'] >= 70) &
-            (res_df['_tq'] >= 70) &
-            (res_df['_fh'] >= -20) &
-            (res_df['State'].isin(GOOD_STATES)) &
-            (~res_df['_pats'].fillna('').str.contains('|'.join(ANTI_PATS), regex=True))
-        )
-        display_df = res_df[mask].copy()
-    elif tier.startswith('🅱'):
-        mask = (
-            (res_df['_score'] >= 55) &
-            (res_df['_tq'] >= 55) &
-            (~res_df['State'].isin(BAD_STATES)) &
-            (~res_df['_pats'].fillna('').str.contains('|'.join(ANTI_PATS), regex=True))
-        )
-        display_df = res_df[mask].copy()
-    elif tier.startswith('🅲'):
-        mask = (
-            (res_df['_score'] >= 40) &
-            (res_df['_tq'] >= 40) &
-            (~res_df['State'].isin(BAD_STATES))
-        )
-        display_df = res_df[mask].copy()
-    else:  # Custom
-        display_df = res_df[
-            (res_df['_score'] >= min_score) &
-            (res_df['Conviction'].isin(conv_filter))
-        ].copy()
+    display_df = res_df[
+        (res_df['_score'] >= min_score) &
+        (res_df['Conviction'].isin(conv_filter))
+    ].copy()
 
     display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
                     'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
