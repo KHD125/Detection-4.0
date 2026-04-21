@@ -9855,7 +9855,8 @@ def _dna_score_small(row):
       • trend_quality is biggest discriminator (winner µ=74 vs loser µ=27)
       • from_high_pct: winners stay near 52W highs (W=-18% vs L=-46%)
       • Tension/Recovery path = +17.7% ret_13w vs Position/TQ -0.26% (auto-routed in tab)
-      • RUNAWAY GAP / VELOCITY BREAKOUT / INST. TSUNAMI penalized
+      • RUNAWAY GAP / VELOCITY BREAKOUT penalized (LIQUID LEADER neutralized in v5,
+        INSTITUTIONAL TSUNAMI neutralized in v6 — both regime-flipped)
       • STRONG_UPTREND demoted (lagging indicator)
       • PULLBACK state rewarded (+13.26% ret_13w)
     """
@@ -9964,7 +9965,12 @@ def _dna_score_small(row):
         elif 'VELOCITY BREAKOUT' in p:
             score -= 6; reasons.append('⚠ Velocity Breakout'); has_anti_pat = True
         elif 'INSTITUTIONAL TSUNAMI' in p:
-            score -= 4; reasons.append('⚠ Inst. Tsunami'); has_anti_pat = True
+            # v6: NEUTRALIZED (was -4 in v3/v4/v5). 33-week pattern analyser evidence (Apr 2026):
+            #   • Winners cohort: +1.02% avg, ↑ trend (recent +2.05 vs older -1.64)
+            #   • Losers cohort:  -0.59% avg (mild)
+            #   • Cross-cohort spread: +1.61pp — pattern has flipped from trap to mildly positive
+            # Same fix shape as v5 LIQUID LEADER: regime shift → neutralize, don't reward.
+            pass
         elif 'LIQUID LEADER' in p:
             # v5: NEUTRALIZED (was -3 in v3/v4). Conflicting evidence:
             #   • 31-week W/L pool: -5.5% ret_13w, -6.7pp lift (TRAP)
