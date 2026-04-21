@@ -10625,8 +10625,8 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     with c5:
         st.metric("🔥 DNA Rising", rising_count)
 
-    # ── Filter controls — sliders only (presets removed; reachable via these) ──
-    fc1, fc2 = st.columns([1, 1])
+    # ── Filter controls — sliders + sort selector ──
+    fc1, fc2, fc3 = st.columns([1, 1, 1])
     with fc1:
         min_score = st.slider(
             "Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore',
@@ -10637,14 +10637,30 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             "Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
             default=['🔴 HIGH', '🟡 MEDIUM'], key='dna_wl_conv',
         )
+    with fc3:
+        # Sort by hidden numeric columns (always descending — best-first).
+        # Maps user-friendly labels to (column, ascending) tuples.
+        sort_options = {
+            'DNA Score (high → low)': ('_score', False),
+            'DNA Δ — Rising Fastest': ('_dna_delta', False),
+            'TQ (high → low)': ('_tq', False),
+            'Master Score (high → low)': ('_ms', False),
+            'Criteria Met (most → least)': ('Criteria Met', False),
+        }
+        sort_choice = st.selectbox(
+            "Sort By", list(sort_options.keys()), index=0, key='dna_wl_sort',
+            help="DNA Δ surfaces stocks whose setup is improving fastest week-over-week — "
+                 "often early-stage opportunities not yet at peak DNA Score.",
+        )
 
     if not conv_filter:
         conv_filter = ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW']
 
+    sort_col, sort_asc = sort_options[sort_choice]
     display_df = res_df[
         (res_df['_score'] >= min_score) &
         (res_df['Conviction'].isin(conv_filter))
-    ].copy()
+    ].sort_values(sort_col, ascending=sort_asc).copy()
 
     display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
                     'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
@@ -10662,7 +10678,24 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             f"Try lowering Min DNA Score or adding more conviction tiers."
         )
     else:
-        st.markdown(f"**Showing {len(display_df)} stocks** (sorted by DNA Score)")
+        # Header row: count + export button on the right
+        hdr_l, hdr_r = st.columns([3, 1])
+        with hdr_l:
+            st.markdown(f"**Showing {len(display_df)} stocks** — sorted by *{sort_choice}*")
+        with hdr_r:
+            # Export reflects the EXACT view the user is looking at (same filters,
+            # same sort, same columns). Filename encodes context for traceability.
+            _cat_tag = sel_cat.replace(' ', '') if sel_cat != 'All Categories' else 'AllCats'
+            _date_tag = dates[-1].strftime('%Y-%m-%d')
+            st.download_button(
+                "📥 Export CSV",
+                data=display_df.to_csv(index=False).encode('utf-8'),
+                file_name=f"dna_watchlist_{_cat_tag}_{_date_tag}.csv",
+                mime="text/csv",
+                key='dna_wl_export',
+                use_container_width=True,
+                help="Downloads the current view (after filters + sort).",
+            )
         st.dataframe(display_df, use_container_width=True,
                      height=min(600, max(140, 35 * len(display_df) + 40)))
 
