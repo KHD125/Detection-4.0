@@ -684,7 +684,10 @@ st.markdown("""
         background: #0d1117; border-radius: 14px; padding: 22px;
         margin-bottom: 16px; border: 1px solid #30363d;
     }
-    div[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+    /* DataFrame: rounded corners only on the inner scroll area, NOT on the
+       outer wrapper — `overflow: hidden` on the wrapper clips Streamlit's
+       hover toolbar (search / download / fullscreen icons in top-right). */
+    div[data-testid="stDataFrame"] > div { border-radius: 8px; overflow: hidden; }
     .stTabs [data-baseweb="tab-list"] { gap: 6px; }
     .stTabs [data-baseweb="tab"] { padding: 8px 20px; font-weight: 600; border-radius: 8px 8px 0 0; }
 
