@@ -4508,13 +4508,30 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     Uses ONLY pre-computed data from histories/traj_df — zero new API calls.
     """
 
-    n_stocks = len(filtered_df)
+    # Scope selector: filtered view vs full universe (mitigates survivorship bias)
+    pulse_scope = st.radio(
+        "Pulse Scope",
+        options=["Filtered Universe", "Full Universe"],
+        index=0,
+        horizontal=True,
+        key='market_pulse_scope',
+    )
+
+    if pulse_scope == "Full Universe":
+        pulse_df = all_df.copy()
+    else:
+        pulse_df = filtered_df.copy()
+
+    n_stocks = len(pulse_df)
     if n_stocks == 0:
-        st.info("No stocks match the current filters. Adjust sidebar filters to see Market Pulse.")
+        if pulse_scope == "Full Universe":
+            st.info("No stocks available in full universe for Market Pulse.")
+        else:
+            st.info("No stocks match the current filters. Adjust sidebar filters or switch to Full Universe.")
         return
 
     # ── Filter histories to only include tickers in filtered_df ──
-    _filtered_tickers = set(filtered_df['ticker'].unique())
+    _filtered_tickers = set(pulse_df['ticker'].astype(str).str.strip().unique())
     _filtered_hist = {t: h for t, h in histories.items() if t in _filtered_tickers}
     if not _filtered_hist:
         st.info("No history data for filtered stocks.")
@@ -4530,18 +4547,27 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         """
         hist = {k: v for k, v in zip(_hist_keys, _hist_data_tuple)}
         # Discover all dates across tickers
-        date_set: dict = {}  # date_str -> week_index
+        date_set = set()
+        date_idx_map = {}
         for ticker, h in hist.items():
-            for i, d in enumerate(h.get('dates', [])):
+            ds_list = [str(d)[:10] for d in h.get('dates', [])]
+            idx_map = {ds: i for i, ds in enumerate(ds_list)}
+            date_idx_map[ticker] = idx_map
+            for d in ds_list:
                 ds = str(d)[:10]
-                if ds not in date_set:
-                    date_set[ds] = ds
-        sorted_dates = sorted(date_set.keys())
+                date_set.add(ds)
+        sorted_dates = sorted(date_set)
         if not sorted_dates:
             return []
 
+        prev_date_map = {
+            sorted_dates[i]: (sorted_dates[i - 1] if i > 0 else None)
+            for i in range(len(sorted_dates))
+        }
+
         weeks = []
         for wi, ds in enumerate(sorted_dates):
+            prev_ds = prev_date_map.get(ds)
             snap = {
                 'date': ds, 'tickers': [], 'scores': [], 'ranks': [],
                 'prev_ranks': [], 'grades': [], 'patterns': [],
@@ -4549,16 +4575,20 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                 'market_strengths': [],
             }
             for ticker, h in hist.items():
-                dates_list = [str(d)[:10] for d in h.get('dates', [])]
-                if ds not in dates_list:
+                idx_map = date_idx_map.get(ticker, {})
+                idx = idx_map.get(ds)
+                if idx is None:
                     continue
-                idx = dates_list.index(ds)
                 snap['tickers'].append(ticker)
                 scores = h.get('scores', [])
                 snap['scores'].append(scores[idx] if idx < len(scores) else 0)
                 ranks = h.get('ranks', [])
-                snap['ranks'].append(ranks[idx] if idx < len(ranks) else 0)
-                prev_r = ranks[idx - 1] if idx > 0 and idx - 1 < len(ranks) else (ranks[idx] if idx < len(ranks) else 0)
+                curr_r = ranks[idx] if idx < len(ranks) else 0
+                snap['ranks'].append(curr_r)
+
+                # Previous calendar week rank (if ticker existed that week), else fallback to current.
+                prev_idx = idx_map.get(prev_ds) if prev_ds is not None else None
+                prev_r = ranks[prev_idx] if prev_idx is not None and prev_idx < len(ranks) else curr_r
                 snap['prev_ranks'].append(prev_r)
                 # Grade from score
                 sc = scores[idx] if idx < len(scores) else 0
@@ -4593,11 +4623,34 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     latest = weekly_snaps[-1]
     n_weeks = len(weekly_snaps)
 
+    def _safe_ad_ratio(adv: int, dec: int):
+        if dec == 0 and adv == 0:
+            return np.nan
+        if dec == 0:
+            return np.inf
+        return adv / dec
+
+    def _fmt_ratio(val):
+        if pd.isna(val):
+            return 'NA'
+        if np.isinf(val):
+            return '∞'
+        return f'{val:.2f}'
+
     # ── Current metrics ──────────────────────────────────────────
-    regime = filtered_df['market_regime'].iloc[0] if 'market_regime' in filtered_df.columns else 'SIDEWAYS'
-    trend_med = float(filtered_df['market_trend_median'].iloc[0]) if 'market_trend_median' in filtered_df.columns else 50.0
-    avg_score = float(filtered_df['trajectory_score'].mean()) if 'trajectory_score' in filtered_df.columns else 0
-    avg_alpha = float(filtered_df['alpha_score'].mean()) if 'alpha_score' in filtered_df.columns else 0
+    if 'market_regime' in pulse_df.columns:
+        _rg_mode = pulse_df['market_regime'].dropna().astype(str).mode()
+        regime = _rg_mode.iloc[0] if len(_rg_mode) > 0 else 'SIDEWAYS'
+    else:
+        regime = 'SIDEWAYS'
+
+    if 'market_trend_median' in pulse_df.columns:
+        _tm = pd.to_numeric(pulse_df['market_trend_median'], errors='coerce').dropna()
+        trend_med = float(_tm.median()) if len(_tm) > 0 else 50.0
+    else:
+        trend_med = 50.0
+    avg_score = float(pulse_df['trajectory_score'].mean()) if 'trajectory_score' in pulse_df.columns else 0
+    avg_alpha = float(pulse_df['alpha_score'].mean()) if 'alpha_score' in pulse_df.columns else 0
 
     # Breadth from latest snapshot
     lat_scores = np.array(latest['scores'], dtype=float)
@@ -4608,7 +4661,8 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     unchanged = int(np.sum(lat_ranks == lat_prev))
     pct_strong = int(100 * np.sum(lat_scores >= 55) / max(len(lat_scores), 1))
     pct_improving = int(100 * improving / max(len(lat_ranks), 1))
-    ad_ratio = round(improving / max(declining, 1), 2)
+    ad_ratio = _safe_ad_ratio(improving, declining)
+    ad_ratio_disp = _fmt_ratio(ad_ratio)
 
     # Regime styling
     regime_cfg = {
@@ -4635,7 +4689,7 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
             📡 Market Pulse</div>
           <div style="color:#8b949e;font-size:0.85rem;margin-top:2px;">
             {metadata.get('date_range','')} &nbsp;·&nbsp; {n_weeks} weeks
-            &nbsp;·&nbsp; {n_stocks} stocks</div>
+                        &nbsp;·&nbsp; {n_stocks} stocks &nbsp;·&nbsp; {pulse_scope}</div>
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
           <div style="{r_bg};border:1px solid {r_color}33;border-radius:12px;padding:10px 18px;
@@ -4664,7 +4718,7 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
           <div style="color:#58a6ff;font-weight:700;font-size:1.15rem;">{pct_strong}%</div>
           <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Strong (B+)</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-          <div style="color:#e6edf3;font-weight:700;font-size:1.15rem;">{ad_ratio}</div>
+                    <div style="color:#e6edf3;font-weight:700;font-size:1.15rem;">{ad_ratio_disp}</div>
           <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">A/D Ratio</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
           <div style="color:#d2a8ff;font-weight:700;font-size:1.15rem;">{avg_score:.0f}</div>
@@ -4686,6 +4740,7 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     pct_improving_list = []
     pct_strong_list = []
     ad_ratio_list = []
+    ad_ratio_text = []
     avg_score_list = []
     for snap in weekly_snaps:
         sc_arr = np.array(snap['scores'], dtype=float)
@@ -4697,7 +4752,9 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         dates_list.append(snap['date'])
         pct_improving_list.append(round(100 * imp / n_s, 1))
         pct_strong_list.append(round(100 * np.sum(sc_arr >= 55) / n_s, 1))
-        ad_ratio_list.append(round(imp / max(dec, 1), 2))
+        _ad_val = _safe_ad_ratio(imp, dec)
+        ad_ratio_list.append(np.nan if np.isinf(_ad_val) else round(_ad_val, 2) if not pd.isna(_ad_val) else np.nan)
+        ad_ratio_text.append(_fmt_ratio(_ad_val))
         avg_score_list.append(round(float(np.mean(sc_arr)), 1))
 
     fig_breadth = go.Figure()
@@ -4720,8 +4777,8 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     fig_breadth.add_trace(go.Scatter(
         x=dates_list, y=ad_ratio_list, name='A/D Ratio',
         mode='lines+markers', line=dict(color='#d29922', width=2, dash='dash'),
-        marker=dict(size=4), yaxis='y2',
-        hovertemplate='%{x}<br>A/D: %{y}<extra></extra>',
+        marker=dict(size=4), yaxis='y2', customdata=ad_ratio_text,
+        hovertemplate='%{x}<br>A/D: %{customdata}<extra></extra>',
     ))
     fig_breadth.update_layout(
         template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
