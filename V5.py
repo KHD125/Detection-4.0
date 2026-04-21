@@ -5287,36 +5287,8 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         st.session_state[_recent_key] = []
     st.session_state[_recent_key] = [x for x in st.session_state[_recent_key] if x in labels][:8]
 
-    c_s1, c_s2 = st.columns([3, 2])
-    with c_s1:
-        search_query = st.text_input(
-            "Filter Search List",
-            value=st.session_state.get('search_filter_query', ''),
-            placeholder="Type part of ticker/company...",
-            key='search_filter_query'
-        )
-    with c_s2:
-        quick_ticker = st.text_input(
-            "Quick Ticker Jump",
-            value='',
-            placeholder="e.g. RELIANCE",
-            key='search_quick_ticker'
-        )
-
-    _q = (search_query or '').strip().lower()
-    labels_filtered = [l for l in labels if _q in l.lower()] if _q else labels
-    if not labels_filtered:
-        st.warning("No matches for current search text. Showing full list.")
-        labels_filtered = labels
-
-    _qt = (quick_ticker or '').strip().upper()
-    if _qt:
-        _jump = next((l for l in labels if l.startswith(f"{_qt} —")), None)
-        if _jump is not None:
-            st.session_state['search_select'] = _jump
-
     selected_label = st.selectbox("🔍 Search Stock",
-                                   labels_filtered, index=None,
+                                   labels, index=None,
                                    placeholder="Type ticker or company name...",
                                    key='search_select')
 
