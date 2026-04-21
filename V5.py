@@ -9672,7 +9672,6 @@ def _dna_score_large(row):
 def _dna_score_mega(row):
     """Mega Cap DNA scorer."""
     score, reasons = 0, []
-    vol = _safe_dna(row, 'volume_score')
     fh = _safe_dna(row, 'from_high_pct', -99)
     pt = _safe_dna(row, 'position_tension')
     fl = _safe_dna(row, 'from_low_pct')
@@ -9738,7 +9737,8 @@ def _dna_score_mega(row):
     if state == 'PULLBACK' and len(reasons) >= 5:
         score += 3; reasons.append('Pullback Confluence')
 
-    return min(score, 100), reasons
+    # Floor at 0: DOWNTREND penalty (-8) without offsetting positives can push negative.
+    return max(0, min(score, 100)), reasons
 
 
 def _dna_score_mid(row):
@@ -9919,27 +9919,35 @@ def _dna_score_small(row):
     elif mom >= 55: score += 2
 
     # ── PATTERNS — only proven winners get points; proven losers PENALIZED ──
-    has_winner_pat = False
-    has_anti_pat = False
+    # Pre-compute winner-pattern flag so HIGH PE penalty + Confluence bonus
+    # are order-independent (must be evaluated BEFORE the loop reads has_winner_pat).
+    # Set: exactly the patterns that historically set has_winner_pat=True in the loop.
+    _WINNER_PATS = ('VALUE MOMENTUM', 'PYRAMID', 'HIDDEN GEM',
+                    'ROTATION LEADER', 'GOLDEN CROSS', 'STEALTH')
+    has_winner_pat = any(
+        any(wp in p for wp in _WINNER_PATS)
+        or ('INSTITUTIONAL' in p and 'TSUNAMI' not in p)
+        for p in pats
+    )
     for p in pats:
         # ✅ DATA-VALIDATED WINNERS (forward avg return positive, statistically significant)
         if 'VALUE MOMENTUM' in p:
             # +21.5% ret_13w, +9.6pp 13w win-lift — strongest single pattern in dataset
-            score += 6; reasons.append('Value Momentum (+21%)'); has_winner_pat = True
+            score += 6; reasons.append('Value Momentum (+21%)')
         elif 'PYRAMID' in p:
             # 4w-only edge (+7%); fades to +0.6% by 13w with -10.5pp lift — tactical only
-            score += 5; reasons.append('Pyramid (+7% 4w)'); has_winner_pat = True
+            score += 5; reasons.append('Pyramid (+7% 4w)')
         elif 'HIDDEN GEM' in p:
             # +4.9% ret_13w, +7.8pp 13w lift, 45% w4 — newly added v3
-            score += 5; reasons.append('Hidden Gem (+5%)'); has_winner_pat = True
+            score += 5; reasons.append('Hidden Gem (+5%)')
         elif 'ROTATION LEADER' in p:
-            score += 5; reasons.append('Rotation Leader'); has_winner_pat = True
+            score += 5; reasons.append('Rotation Leader')
         elif 'GOLDEN CROSS' in p:
-            score += 6; reasons.append('Golden Cross (+6.7%)'); has_winner_pat = True
+            score += 6; reasons.append('Golden Cross (+6.7%)')
         elif 'INSTITUTIONAL' in p and 'TSUNAMI' not in p:
-            score += 6; reasons.append('Institutional (+7.9%)'); has_winner_pat = True
+            score += 6; reasons.append('Institutional (+7.9%)')
         elif 'STEALTH' in p:
-            score += 5; reasons.append('Stealth'); has_winner_pat = True
+            score += 5; reasons.append('Stealth')
         elif 'ACCELERATION' in p:
             # +10.8% ret_13w, +2.1pp lift — restored in v3 after v2 dropped it
             score += 3; reasons.append('Acceleration (+11%)')
@@ -9961,9 +9969,9 @@ def _dna_score_small(row):
 
         # ❌ DATA-VALIDATED LOSERS (forward returns negative or loser-enriched)
         if 'RUNAWAY GAP' in p:
-            score -= 6; reasons.append('⚠ Runaway Gap'); has_anti_pat = True
+            score -= 6; reasons.append('⚠ Runaway Gap')
         elif 'VELOCITY BREAKOUT' in p:
-            score -= 6; reasons.append('⚠ Velocity Breakout'); has_anti_pat = True
+            score -= 6; reasons.append('⚠ Velocity Breakout')
         elif 'INSTITUTIONAL TSUNAMI' in p:
             # v6: NEUTRALIZED (was -4 in v3/v4/v5). 33-week pattern analyser evidence (Apr 2026):
             #   • Winners cohort: +1.02% avg, ↑ trend (recent +2.05 vs older -1.64)
@@ -10142,7 +10150,6 @@ def compute_dna_for_ticker(ticker: str, histories: dict) -> dict:
         'breakout_score': _latest('breakout_score'),
         'trend_quality': _latest('trend_qualities', 0),  # stored as trend_qualities
         'momentum_score': _latest('momentum_score'),
-        'acceleration_score': _latest('acceleration_score'),
         'rvol_score': _latest('rvol_score'),
         'market_state': h.get('market_state', ''),
         'patterns': h.get('patterns', ''),
