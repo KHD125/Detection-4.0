@@ -4824,6 +4824,10 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                         histories: dict, metadata: dict):
     """Render the main rankings tab — Clean, minimal, maximum signal density."""
 
+    # Work on local copies to avoid cross-tab/session side effects.
+    all_local = all_df.copy()
+    filtered_local = filtered_df.copy()
+
     # ── Ensure all required columns exist (defensive) ──
     for col, default in [('price_tag', ''), ('signal_tags', ''), ('decay_tag', ''),
                          ('decay_label', ''), ('decay_score', 0),
@@ -4836,36 +4840,38 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                          ('alpha_score', 0), ('conviction', 0), ('tmi', 0),
                          ('rally_gain', 0), ('rally_stage', 'UNKNOWN'),
                          ('rally_leg_pct', 0), ('confidence', 0)]:
-        if col not in all_df.columns:
-            all_df[col] = default
-        if col not in filtered_df.columns:
-            filtered_df[col] = default
+        if col not in all_local.columns:
+            all_local[col] = default
+        if col not in filtered_local.columns:
+            filtered_local[col] = default
 
     # ── Empty state guard ──
-    if filtered_df.empty:
+    if filtered_local.empty:
         st.info("🔍 No stocks match your current filters. Try adjusting or clearing filters.")
         return
 
     # ── Keep full filtered reference for intelligence dashboard ──
-    full_filtered_df = filtered_df.copy()
+    full_filtered_df = filtered_local.copy()
 
     # ── Compute metrics from FULL filtered data (before Show Top truncation) ──
-    total = len(all_df)
-    shown = len(filtered_df)
-    avg_score = filtered_df['trajectory_score'].mean()
-    avg_alpha = filtered_df['alpha_score'].mean()
-    rockets = int((filtered_df['pattern_key'] == 'rocket').sum())
-    elites = int((filtered_df['pattern_key'] == 'stable_elite').sum())
-    confirmed = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum())
-    divergent = int((filtered_df['price_label'] == 'PRICE_DIVERGENT').sum())
-    decay_high = int((filtered_df['decay_label'] == 'DECAY_HIGH').sum())
-    decay_mod = int((filtered_df['decay_label'] == 'DECAY_MODERATE').sum())
-    decay_mild = int((filtered_df['decay_label'] == 'DECAY_MILD').sum())
+    shown = len(filtered_local)
+    avg_score = float(pd.to_numeric(filtered_local['trajectory_score'], errors='coerce').mean())
+    avg_alpha = float(pd.to_numeric(filtered_local['alpha_score'], errors='coerce').mean())
+    if pd.isna(avg_score):
+        avg_score = 0.0
+    if pd.isna(avg_alpha):
+        avg_alpha = 0.0
+    rockets = int((filtered_local['pattern_key'] == 'rocket').sum())
+    confirmed = int((filtered_local['price_label'] == 'PRICE_CONFIRMED').sum())
+    divergent = int((filtered_local['price_label'] == 'PRICE_DIVERGENT').sum())
+    decay_high = int((filtered_local['decay_label'] == 'DECAY_HIGH').sum())
+    decay_mod = int((filtered_local['decay_label'] == 'DECAY_MODERATE').sum())
+    decay_mild = int((filtered_local['decay_label'] == 'DECAY_MILD').sum())
     decay_any = decay_high + decay_mod + decay_mild
     clean_pct = round((1 - decay_any / max(shown, 1)) * 100, 1)
-    sect_leaders = int((filtered_df['sector_alpha_tag'] == 'SECTOR_LEADER').sum())
-    grade_s = int((filtered_df['grade'] == 'S').sum())
-    grade_a = int((filtered_df['grade'] == 'A').sum())
+    sect_leaders = int((filtered_local['sector_alpha_tag'] == 'SECTOR_LEADER').sum())
+    grade_s = int((filtered_local['grade'] == 'S').sum())
+    grade_a = int((filtered_local['grade'] == 'A').sum())
     clean_n = shown - decay_any
 
     # ════════════════════════════════════════════
@@ -4885,7 +4891,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         _chip(f'{confirmed}', '💰 Confirmed', 'm-green'),
         _chip(f'{decay_high}', '🔻 Traps', 'm-red' if decay_high > 0 else ''),
         _chip(f'{sect_leaders}', '👑 Alpha', 'm-gold'),
-        _chip(f'{metadata["total_weeks"]}', 'Weeks'),
+        _chip(f'{metadata.get("total_weeks", 0)}', 'Weeks'),
     ])
     st.markdown(f'<div class="m-strip">{chips}</div>', unsafe_allow_html=True)
 
@@ -4901,7 +4907,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         display_n_select = st.selectbox("Show Top", show_top_options,
                                          index=3, key='rank_topn',
                                          label_visibility='collapsed')
-        display_n = len(filtered_df) if display_n_select == "All" else display_n_select
+        display_n = len(filtered_local) if display_n_select == "All" else display_n_select
     with ctl1:
         sort_by = st.selectbox("Sort by", [
             'Trajectory Score', 'Alpha Score', 'Current Rank', 'Rank Change', 'TMI',
@@ -4914,12 +4920,25 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         ], key='rank_view', label_visibility='collapsed')
 
     # ── T-Rank = rank within full universe (stable, never changes with filters) ──
-    t_rank_sorted = all_df.sort_values(
-        ['trajectory_score', 'confidence', 'consistency'],
-        ascending=[False, False, False]
-    ).reset_index(drop=True)
-    t_rank_map = {t: i + 1 for i, t in enumerate(t_rank_sorted['ticker'])}
-    filtered_df['t_rank_universe'] = filtered_df['ticker'].map(t_rank_map).fillna(0).astype(int)
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _build_t_rank_map(rank_rows):
+        rank_df = pd.DataFrame(rank_rows, columns=['ticker', 'trajectory_score', 'confidence', 'consistency'])
+        rank_df = rank_df.sort_values(
+            ['trajectory_score', 'confidence', 'consistency'],
+            ascending=[False, False, False]
+        ).reset_index(drop=True)
+        return {str(t): i + 1 for i, t in enumerate(rank_df['ticker'])}
+
+    _rank_rows = tuple(
+        zip(
+            all_local['ticker'].astype(str),
+            pd.to_numeric(all_local['trajectory_score'], errors='coerce').fillna(0.0),
+            pd.to_numeric(all_local['confidence'], errors='coerce').fillna(0.0),
+            pd.to_numeric(all_local['consistency'], errors='coerce').fillna(0.0),
+        )
+    )
+    t_rank_map = _build_t_rank_map(_rank_rows)
+    filtered_local['t_rank_universe'] = filtered_local['ticker'].astype(str).map(t_rank_map).fillna(0).astype(int)
 
     # ── Sort FIRST, then apply Show Top limit ──
     sort_map = {
@@ -4942,15 +4961,16 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Sector Alpha': ('sector_alpha_value', False),
     }
     col_name, ascending = sort_map.get(sort_by, ('trajectory_score', False))
-    display_df = filtered_df.sort_values(col_name, ascending=ascending).head(display_n).reset_index(drop=True)
+    display_df = filtered_local.sort_values(col_name, ascending=ascending).head(display_n).reset_index(drop=True)
     display_df['t_rank'] = range(1, len(display_df) + 1)
     table_n = len(display_df)
 
     # ── Add latest price from histories ──
-    display_df['latest_price'] = display_df['ticker'].apply(
-        lambda t: round(histories.get(t, {}).get('prices', [0])[-1], 2)
-        if histories.get(t, {}).get('prices') else 0
-    )
+    _price_map = {}
+    for _tk in display_df['ticker'].astype(str):
+        _prices = histories.get(_tk, {}).get('prices', [])
+        _price_map[_tk] = round(float(_prices[-1]), 2) if _prices else 0.0
+    display_df['latest_price'] = display_df['ticker'].astype(str).map(_price_map).fillna(0.0)
 
     # ── Column definitions for each view ──
     # Each: (df_col, display_name, tooltip, column_config_or_None)
@@ -5060,7 +5080,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         cdef = COL_DEFS.get(col_key)
         if cdef is None:
             continue
-        src_col, disp_name, tooltip, cfg = cdef
+        src_col, disp_name, _tooltip, cfg = cdef
         if src_col not in display_df.columns:
             continue
         df_cols.append(src_col)
