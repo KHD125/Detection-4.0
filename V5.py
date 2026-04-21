@@ -10847,6 +10847,13 @@ def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
     # Horizons in weeks: find nearest available date index
     horizons = {'1w': 1, '2w': 2, '4w': 4, '8w': 8, '13w': 13}
 
+    # Per-window calendar gap is needed for honest annualization & cadence warnings.
+    # CSV cadence is irregular (4-day to 14-day gaps possible); a naive 7-day
+    # assumption breaks downstream stats.
+    forward_gap_days = {}
+    for i in range(n_weeks - 1):
+        forward_gap_days[i] = max(1, (dates[i + 1] - dates[i]).days)
+
     def _find_nearest_future_idx(entry_idx, weeks_ahead):
         """Find the nearest date index that is ~weeks_ahead from entry_idx."""
         target = entry_idx + weeks_ahead
@@ -10863,8 +10870,13 @@ def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
         return best_idx
 
     # ── Step 4: Walk-forward — score each week ──
+    # FIX: Always include every ticker as a UNIVERSE row (cheap: just forward
+    # returns + category). Apply filters only to decide whether to run the
+    # expensive DNA scorer. This keeps the "Universe" baseline honest under
+    # filter modes — previously `all_universe` collapsed to the same filtered
+    # subset, making alpha-vs-universe meaningless (always near 0).
     all_rows = []
-    total_entry_weeks = sum(1 for i in range(n_weeks) if i + 1 < n_weeks)
+    total_entry_weeks = max(0, n_weeks - 1)
 
     processed = 0
     for entry_idx, entry_date in enumerate(dates):
@@ -10874,8 +10886,15 @@ def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
 
         df = weekly_data[entry_date]
         entry_label = entry_date.strftime('%Y-%m-%d')
+        gap_days_this_week = forward_gap_days.get(entry_idx, 7)
 
-        # Compute category average returns at each horizon for alpha calculation
+        # Track first row index for this week so backfill is O(rows_this_week)
+        # instead of O(total_rows_so_far) — the previous code rescanned
+        # `all_rows` every week, which is O(W² × N) overall.
+        week_start_idx = len(all_rows)
+
+        # Category returns are now built from the FULL CSV (no filter) so that
+        # cat_avg/alpha is correct regardless of mode.
         cat_returns = {}  # {category: {horizon: [returns]}}
 
         processed += 1
@@ -10892,22 +10911,26 @@ def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
 
             cat = str(row.get('category', ''))
 
-            # ── Apply filters ──
+            # ── Filter check: decides only whether DNA scoring runs ──
+            in_filter = True
             if mode == 'tickers' and tickers_filter:
-                if ticker not in tickers_filter:
-                    continue
+                in_filter = ticker in tickers_filter
             elif mode == 'category' and categories_filter:
-                if cat not in categories_filter:
-                    continue
+                in_filter = cat in categories_filter
 
-            # ── DNA Score ──
+            # ── DNA Score (only for in-filter rows; universe rows skip this) ──
             row_dict = row.to_dict()
-            dna_result = _score_row_dna(row_dict)
-
-            dna_score = dna_result['dna_score'] if dna_result else 0
-            conviction = dna_result['conviction'] if dna_result else 'NONE'
-            path = dna_result['path'] if dna_result else ''
-            reasons = dna_result['reasons'] if dna_result else []
+            if in_filter:
+                dna_result = _score_row_dna(row_dict)
+                dna_score = dna_result['dna_score'] if dna_result else 0
+                conviction = dna_result['conviction'] if dna_result else 'NONE'
+                path = dna_result['path'] if dna_result else ''
+                reasons = dna_result['reasons'] if dna_result else []
+            else:
+                dna_score = 0
+                conviction = 'NONE'
+                path = ''
+                reasons = []
 
             # ── Forward Returns from price matrix ──
             entry_price = price_matrix.get(ticker, {}).get(entry_idx, 0)
@@ -10940,6 +10963,8 @@ def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
             # ── Build row ──
             detail_row = {
                 'entry_week': entry_label,
+                'gap_days_1w': gap_days_this_week,  # actual days to next CSV
+                'in_filter': in_filter,            # universe-vs-filtered flag
                 'ticker': ticker,
                 'company_name': str(row.get('company_name', '')),
                 'category': cat,
@@ -10966,18 +10991,18 @@ def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
             all_rows.append(detail_row)
 
         # ── Backfill category averages for this entry week ──
+        # cat_returns now reflects the FULL universe (not filtered subset),
+        # so cat_avg is the true category mean and alpha is meaningful.
         cat_avgs = {}
         for c, h_dict in cat_returns.items():
             cat_avgs[c] = {}
             for h_key, vals in h_dict.items():
                 cat_avgs[c][h_key] = float(np.mean(vals)) if vals else None
 
-        # Update rows from this week with cat averages and alpha
-        start_idx = len(all_rows) - sum(1 for r in all_rows if r['entry_week'] == entry_label)
-        for i in range(start_idx, len(all_rows)):
+        # O(rows_this_week) backfill — uses week_start_idx captured before the
+        # ticker loop; previous version rescanned all_rows every week (O(N²)).
+        for i in range(week_start_idx, len(all_rows)):
             r = all_rows[i]
-            if r['entry_week'] != entry_label:
-                continue
             c = r['category']
             for h_name in ['4w', '8w', '13w']:
                 key = f'ret_{h_name}'
@@ -10993,13 +11018,14 @@ def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
 
     detail_df = pd.DataFrame(all_rows)
 
-    # ── Winner flags ──
+    # ── Winner flags (NaN-safe: pd.notna correctly rejects np.nan;
+    #    `x is not None` would let NaN slip through and silently tag rows as winner=0).
     if 'ret_4w' in detail_df.columns:
-        detail_df['winner_4w'] = detail_df['ret_4w'].apply(lambda x: 1 if x is not None and x > 10 else 0)
+        detail_df['winner_4w'] = detail_df['ret_4w'].apply(lambda x: 1 if pd.notna(x) and x > 10 else 0)
     if 'ret_8w' in detail_df.columns:
-        detail_df['winner_8w'] = detail_df['ret_8w'].apply(lambda x: 1 if x is not None and x > 15 else 0)
+        detail_df['winner_8w'] = detail_df['ret_8w'].apply(lambda x: 1 if pd.notna(x) and x > 15 else 0)
     if 'ret_13w' in detail_df.columns:
-        detail_df['winner_13w'] = detail_df['ret_13w'].apply(lambda x: 1 if x is not None and x > 25 else 0)
+        detail_df['winner_13w'] = detail_df['ret_13w'].apply(lambda x: 1 if pd.notna(x) and x > 25 else 0)
 
     if progress_callback:
         progress_callback(1.0, "DNA Backtest complete!")
@@ -11124,8 +11150,17 @@ def render_dna_backtest_tab(uploaded_files):
     if detail_df is None:
         return
 
-    # ── Filter to DNA-scored rows (score > 0) for analysis ──
-    scored_df = detail_df[detail_df['dna_score'] > 0].copy()
+    # ── Split: DNA-scored picks (in-filter, score>0) vs full universe ──
+    # `in_filter` flag was set by the engine: True for tickers that passed
+    # the user's mode/category/ticker filter, False for universe-only rows.
+    # This guarantees `all_universe` is the TRUE market baseline even when
+    # the user filters down to a handful of tickers — previously the baseline
+    # collapsed to the same filtered subset, making alpha meaningless.
+    if 'in_filter' in detail_df.columns:
+        scored_df = detail_df[(detail_df['in_filter']) & (detail_df['dna_score'] > 0)].copy()
+    else:
+        # Backward-compat fallback (older cached results without the flag)
+        scored_df = detail_df[detail_df['dna_score'] > 0].copy()
     all_universe = detail_df.copy()
 
     if scored_df.empty:
@@ -11141,6 +11176,26 @@ def render_dna_backtest_tab(uploaded_files):
     if not avail_horizons:
         st.warning("No forward return data available. Need more CSVs for forward price matching.")
         return
+
+    # ── Cadence warning (consistent with Strategy Backtest tab) ──
+    if 'gap_days_1w' in scored_df.columns:
+        _gd_series = scored_df['gap_days_1w'].dropna().astype(int)
+        if len(_gd_series) > 0:
+            _gd_min, _gd_max = int(_gd_series.min()), int(_gd_series.max())
+            if _gd_max - _gd_min > 3 or _gd_max > 9:
+                _gd_avg = float(_gd_series.mean())
+                st.caption(
+                    f"📅 CSV cadence is irregular (gaps {_gd_min}–{_gd_max} days, "
+                    f"avg {_gd_avg:.1f}). Horizons (1w/2w/4w/8w/13w) match the nearest "
+                    f"available CSV — treat as nominal, not strict calendar."
+                )
+
+    # ── Sample-size caveat for thin filters ──
+    if len(scored_df) < 50:
+        st.caption(
+            f"⚠️ Small sample ({len(scored_df)} DNA-scored picks across all weeks). "
+            f"Conviction/path/signal stats are directional only."
+        )
 
     # ══════════════════════════════════════════════
     # SECTION 1: CONVICTION PERFORMANCE MATRIX
@@ -11261,13 +11316,20 @@ def render_dna_backtest_tab(uploaded_files):
                 f'Hit Rate ({ref_label})': round(hit_r, 1),
                 'Alpha vs Universe': round(avg_r - uni_avg, 2),
                 'Count': data['count'],
-                'Predictive Power': round((avg_r - uni_avg) * np.log2(max(data['count'], 2)), 2),
+                # Linear-capped reliability score: rewards alpha but caps the
+                # multiplier at 1.0 once we have >=30 observations. Avoids the
+                # log scaling pathology where 5 lucky observations of a rare
+                # signal can dominate ranking via inflated big-move alpha.
+                'Predictive Power': round((avg_r - uni_avg) * min(1.0, data['count'] / 30.0), 2),
             })
 
         if sig_rows:
             sig_df = pd.DataFrame(sig_rows).sort_values('Predictive Power', ascending=False)
             st.dataframe(sig_df, use_container_width=True, hide_index=True)
-            st.caption(f"Predictive Power = Alpha × log₂(Count). Higher = more reliable edge. Reference horizon: {ref_label}.")
+            st.caption(
+                f"Predictive Power = Alpha × min(1, Count/30). Caps reward at 30 obs to avoid "
+                f"rewarding overfit rare big-move signals. Reference horizon: {ref_label}."
+            )
         else:
             st.info("Not enough signal observations (min 3 per signal).")
     else:
@@ -11371,51 +11433,101 @@ def render_dna_backtest_tab(uploaded_files):
         ts_df = pd.DataFrame(weekly_perf)
         st.dataframe(ts_df, use_container_width=True, hide_index=True)
 
-        # Cumulative equity chart
-        dna_cum = 100.0
-        uni_cum = 100.0
-        chart_data = []
-        for wp in weekly_perf:
-            d_ret = wp.get(f'DNA Avg ({ts_label})')
-            u_ret = wp.get(f'Universe Avg ({ts_label})')
-            if d_ret is not None:
-                dna_cum *= (1 + d_ret / 100)
-            if u_ret is not None:
-                uni_cum *= (1 + u_ret / 100)
-            chart_data.append({
-                'Week': wp['Week'],
-                'DNA Equity': round(dna_cum, 2),
-                'Universe Equity': round(uni_cum, 2),
-            })
+        # ── Cumulative Equity Chart ─────────────────────────────────────────
+        # CRITICAL: equity compounding is only mathematically valid when each
+        # period's return is non-overlapping. We use ret_1w explicitly here
+        # (NOT the user-selectable ts_horizon) because:
+        #   - 4w/8w/13w returns OVERLAP across consecutive entry weeks
+        #     → compounding them weekly inflates the curve dramatically
+        #     (e.g. avg +2% per 4w window across 18 weeks = 1.02^18 = 1.43,
+        #      while the actual non-overlapping return is ~1.02^4.5 = 1.09).
+        # ret_1w is non-overlapping and the only honest choice for an equity curve.
+        if 'ret_1w' in scored_df.columns:
+            equity_rows = []
+            for week in sorted(scored_df['entry_week'].unique()):
+                w_scored = scored_df[scored_df['entry_week'] == week]
+                w_uni = all_universe[all_universe['entry_week'] == week]
+                d_1w = w_scored['ret_1w'].dropna()
+                u_1w = w_uni['ret_1w'].dropna()
+                equity_rows.append({
+                    'week': week,
+                    'dna_ret_1w': float(d_1w.mean()) if len(d_1w) > 0 else None,
+                    'uni_ret_1w': float(u_1w.mean()) if len(u_1w) > 0 else None,
+                })
 
-        chart_df = pd.DataFrame(chart_data)
+            # Need at least 2 weeks with valid 1w returns to build a curve
+            valid_equity = [e for e in equity_rows
+                            if e['dna_ret_1w'] is not None and e['uni_ret_1w'] is not None]
 
-        # Build HTML bar chart (no altair dependency)
-        max_eq = max(max(r['DNA Equity'] for r in chart_data), max(r['Universe Equity'] for r in chart_data), 101)
-        min_eq = min(min(r['DNA Equity'] for r in chart_data), min(r['Universe Equity'] for r in chart_data), 99)
-        eq_range = max(max_eq - min_eq, 1)
-        chart_html = '<div style="background:#0d1117; border-radius:8px; padding:12px; border:1px solid #30363d;">'
-        chart_html += '<div style="display:flex; gap:4px; align-items:flex-end; height:180px;">'
-        for cd in chart_data:
-            dna_h = max(10, int((cd['DNA Equity'] - min_eq) / eq_range * 160))
-            uni_h = max(10, int((cd['Universe Equity'] - min_eq) / eq_range * 160))
-            chart_html += f'''<div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:2px;">
-                <div style="width:40%; background:#3fb950; height:{dna_h}px; border-radius:2px 2px 0 0;" title="DNA {cd['DNA Equity']}"></div>
-                <div style="width:40%; background:#58a6ff; height:{uni_h}px; border-radius:2px 2px 0 0; margin-top:-{dna_h + 2}px; margin-left:50%;" title="Univ {cd['Universe Equity']}"></div>
-            </div>'''
-        chart_html += '</div>'
-        final_dna = chart_data[-1]['DNA Equity']
-        final_uni = chart_data[-1]['Universe Equity']
-        d_color = '#3fb950' if final_dna >= final_uni else '#f85149'
-        chart_html += f'<div style="display:flex; justify-content:space-between; margin-top:8px; font-size:0.75rem; color:#8b949e;">'
-        chart_html += f'<span>{chart_data[0]["Week"]}</span><span>{chart_data[-1]["Week"]}</span></div>'
-        chart_html += f'<div style="margin-top:6px; font-size:0.82rem;">'
-        chart_html += f'<span style="color:#3fb950;">■</span> <span style="color:#e6edf3;">DNA: {final_dna:.1f}</span> &nbsp; '
-        chart_html += f'<span style="color:#58a6ff;">■</span> <span style="color:#e6edf3;">Universe: {final_uni:.1f}</span> &nbsp; '
-        chart_html += f'<span style="color:{d_color}; font-weight:700;">Δ {final_dna - final_uni:+.1f}</span></div>'
-        chart_html += '</div>'
-        st.markdown(chart_html, unsafe_allow_html=True)
-        st.caption(f"Cumulative equity (base=100) using {ts_label} forward returns each entry week.")
+            if len(valid_equity) >= 2:
+                dna_cum, uni_cum = 100.0, 100.0
+                chart_x, chart_dna, chart_uni = [], [], []
+                for e in valid_equity:
+                    dna_cum *= (1 + e['dna_ret_1w'] / 100)
+                    uni_cum *= (1 + e['uni_ret_1w'] / 100)
+                    chart_x.append(e['week'])
+                    chart_dna.append(round(dna_cum, 2))
+                    chart_uni.append(round(uni_cum, 2))
+
+                final_dna = chart_dna[-1]
+                final_uni = chart_uni[-1]
+                spread = final_dna - final_uni
+                spread_color = '#3fb950' if spread >= 0 else '#f85149'
+
+                # Market state context (consistent with Strategy Backtest tab)
+                uni_total = (final_uni / 100 - 1) * 100
+                if uni_total < -5:
+                    mkt_state, mkt_color = 'BEAR MARKET', '#f85149'
+                elif uni_total > 5:
+                    mkt_state, mkt_color = 'BULL MARKET', '#3fb950'
+                else:
+                    mkt_state, mkt_color = 'SIDEWAYS MARKET', '#ffa657'
+
+                fig_eq = go.Figure()
+                fig_eq.add_trace(go.Scatter(
+                    x=chart_x, y=chart_dna,
+                    name=f'DNA Equity ({final_dna:.1f})',
+                    mode='lines+markers',
+                    line=dict(color='#3fb950', width=3),
+                    marker=dict(size=6),
+                    hovertemplate='Week: %{x}<br>DNA: %{y:.2f}<extra></extra>',
+                ))
+                fig_eq.add_trace(go.Scatter(
+                    x=chart_x, y=chart_uni,
+                    name=f'Universe Equity ({final_uni:.1f})',
+                    mode='lines+markers',
+                    line=dict(color='#58a6ff', width=2, dash='dash'),
+                    marker=dict(size=5),
+                    hovertemplate='Week: %{x}<br>Universe: %{y:.2f}<extra></extra>',
+                ))
+                fig_eq.add_hline(y=100, line_dash='dot', line_color='#484f58', opacity=0.5)
+                fig_eq.update_layout(
+                    template='plotly_dark',
+                    paper_bgcolor='#0d1117',
+                    plot_bgcolor='#0d1117',
+                    height=360,
+                    margin=dict(l=40, r=20, t=30, b=40),
+                    legend=dict(orientation='h', yanchor='bottom', y=-0.25, xanchor='center', x=0.5),
+                    yaxis=dict(title='Equity (₹100 start)', gridcolor='#21262d'),
+                    xaxis=dict(title='Entry Week', gridcolor='#21262d'),
+                    hovermode='x unified',
+                )
+                st.plotly_chart(fig_eq, use_container_width=True, key='dna_bt_equity_chart')
+
+                # Verdict caption
+                st.markdown(
+                    f"<div style='font-size:0.85rem; color:#8b949e; margin-top:-8px;'>"
+                    f"📊 Universe: <span style='color:{mkt_color}; font-weight:700;'>{uni_total:+.1f}% ({mkt_state})</span> "
+                    f"&nbsp;·&nbsp; DNA edge: <span style='color:{spread_color}; font-weight:700;'>{spread:+.1f}</span> "
+                    f"&nbsp;·&nbsp; <span style='color:#484f58;'>Compounded from non-overlapping 1w returns "
+                    f"({len(valid_equity)} valid weeks)</span></div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info(f"📈 Need at least 2 weeks with valid 1w returns to draw equity curve "
+                        f"(have {len(valid_equity)}).")
+        else:
+            st.info("📈 Equity curve requires `ret_1w` data — need at least 2 consecutive CSVs.")
 
     # ══════════════════════════════════════════════
     # SECTION 6: TOP & BOTTOM PICKS DETAIL
