@@ -10577,7 +10577,9 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
 
         results.append({
             'Ticker': tk,
-            'Company': company[:25],
+            # Inline 🆕 badge appended to Company name (replaces standalone
+            # "New" column). Truncate name first to keep total length consistent.
+            'Company': (company[:25] + ' 🆕') if is_new else company[:25],
             'Category': cat,
             'DNA Score': dna_score,
             'DNA Δ': dna_trend,
@@ -10591,7 +10593,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             'Rank': f'{rk_now:.0f}',
             'Rank Δ': rk_trend,
             'MS': f'{ms:.0f}',
-            'New': '🆕' if is_new else '',
+            '_is_new': is_new,         # kept as hidden flag for the "New This Week" section
             '_score': dna_score,
             '_dna_delta': dna_delta,
             '_tq': tq_now,
@@ -10610,7 +10612,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     total = len(res_df)
     high_conv = len(res_df[res_df['Conviction'].str.contains('HIGH')])
     med_conv = len(res_df[res_df['Conviction'].str.contains('MEDIUM')])
-    new_count = len(res_df[res_df['New'] == '🆕'])
+    new_count = len(res_df[res_df['_is_new']])
     rising_count = len(res_df[res_df['_dna_delta'] >= 10])
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -10662,7 +10664,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         (res_df['Conviction'].isin(conv_filter))
     ].sort_values(sort_col, ascending=sort_asc).copy()
 
-    display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
+    display_cols = ['Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
                     'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
                     'Rank', 'Rank Δ', 'MS']
     # Hide the Category column when the user has narrowed to a single category —
@@ -10715,14 +10717,20 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             st.markdown(f"**{cat_name}**: {len(cat_df)} matches ({high_c} high conviction)")
 
     # ── NEW THIS WEEK SPOTLIGHT ──
-    new_df = display_df[display_df['New'] == '🆕'].copy()
+    # Filter via the hidden _is_new flag on the original res_df, then project
+    # only the visible display_cols (preserves filter context: same min DNA,
+    # same conviction tiers).
+    new_filter_mask = (
+        res_df['_is_new'] &
+        (res_df['_score'] >= min_score) &
+        (res_df['Conviction'].isin(conv_filter))
+    )
+    new_df = res_df[new_filter_mask][display_cols].copy()
     if not new_df.empty:
         st.markdown("---")
         st.markdown("#### 🆕 New DNA Matches This Week")
         st.markdown("*These stocks just appeared on the DNA radar — early signals.*")
-        # Re-number for this filtered slice so # always reads 1,2,3...
-        if '#' in new_df.columns:
-            new_df['#'] = range(1, len(new_df) + 1)
+        new_df.insert(0, '#', range(1, len(new_df) + 1))
         st.dataframe(new_df, use_container_width=True, hide_index=True,
                      height=min(300, 35 * len(new_df) + 40))
 
