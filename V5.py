@@ -10461,11 +10461,13 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             except Exception:
                 pass
 
-    # Build 2-weeks-ago lookup for "New This Week"
-    prev2_tickers = set()
-    if len(dates) >= 3:
-        prev2_df = weekly_data[dates[-3]]
-        prev2_tickers = set(prev2_df['ticker'].astype(str).str.strip())
+    # Build "new this week" set: tickers in the latest CSV but NOT in the
+    # immediately preceding CSV. Strict 1-week semantic to match the label
+    # "New This Week". Works correctly with as little as 2 weeks of data
+    # (the previous 2-weeks-ago check silently disabled the flag in that case).
+    prev_tickers = set()
+    if prev_df is not None:
+        prev_tickers = set(prev_df['ticker'].astype(str).str.strip())
 
     # ── Apply sidebar filters: only scan tickers passing global filters ──
     # Always build the set — empty set correctly shows 0 results when filters exclude everything
@@ -10537,17 +10539,21 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         else:
             tq_trend = '—'
 
-        # Rank improvement
-        rk_now = _safe_dna(row, 'rank', 9999)
+        # Rank improvement — only when current rank is real (not missing-sentinel)
+        # and previous-week rank exists. Avoids false "↓-9856" alerts when the
+        # latest CSV is missing a rank value (defaults to 9999).
+        rk_now_raw = _safe_dna(row, 'rank', 9999)
+        rk_has = rk_now_raw < 9999
+        rk_now = rk_now_raw
         rk_prev = prev_rank_map.get(tk)
-        if rk_prev is not None:
+        if rk_has and rk_prev is not None:
             rk_delta = rk_prev - rk_now  # positive = improved
             rk_trend = f'↑{rk_delta:.0f}' if rk_delta > 20 else (f'↓{-rk_delta:.0f}' if rk_delta < -20 else '→')
         else:
             rk_trend = '—'
 
-        # New this week flag
-        is_new = tk not in prev2_tickers if prev2_tickers else False
+        # New this week flag (1-week strict; consistent with section label)
+        is_new = (tk not in prev_tickers) if prev_tickers else False
 
         # DNA trend — week-over-week score change
         # Initialize explicitly so the dict-build below is bullet-proof even
@@ -10593,7 +10599,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             'Key Signals': ', '.join(reasons[:4]),
             'TQ': f'{tq_now:.0f}',
             'TQ Trend': tq_trend,
-            'Rank': f'{rk_now:.0f}',
+            'Rank': f'{rk_now:.0f}' if rk_has else '—',
             'Rank Δ': rk_trend,
             'MS': f'{ms:.0f}',
             '_is_new': is_new,         # kept as hidden flag for the "New This Week" section
@@ -10686,7 +10692,17 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         # Header row: count + export button on the right
         hdr_l, hdr_r = st.columns([3, 1])
         with hdr_l:
-            st.markdown(f"**Showing {len(display_df)} stocks** — sorted by *{sort_choice}*")
+            # Dual count: filtered (table) / total (universe). Resolves the
+            # confusion where top metric cards show universe-wide counts but
+            # the table reflects Min DNA / Conviction filters.
+            _total_universe = len(res_df)
+            if len(display_df) == _total_universe:
+                st.markdown(f"**Showing all {_total_universe} stocks** — sorted by *{sort_choice}*")
+            else:
+                st.markdown(
+                    f"**Showing {len(display_df)} of {_total_universe} matches** — "
+                    f"sorted by *{sort_choice}*"
+                )
         with hdr_r:
             # Export reflects the EXACT view the user is looking at (same filters,
             # same sort, same columns). Filename encodes context for traceability.
@@ -10733,6 +10749,11 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         st.markdown("---")
         st.markdown("#### 🆕 New DNA Matches This Week")
         st.markdown("*These stocks just appeared on the DNA radar — early signals.*")
+        st.caption(
+            "ℹ️ Scoped to your sidebar filters (sector / category / market state). "
+            "True new arrivals (e.g. fresh IPOs) only appear here once they enter "
+            "the sidebar's selected universe."
+        )
         new_df.insert(0, '#', range(1, len(new_df) + 1))
         st.dataframe(new_df, use_container_width=True, hide_index=True,
                      height=min(300, 35 * len(new_df) + 40))
