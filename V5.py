@@ -9829,74 +9829,199 @@ def _dna_score_mid(row):
 
 
 def _dna_score_small(row):
-    """Small Cap DNA scorer."""
+    """Small Cap DNA scorer — DATA-VALIDATED v4 (Apr 2026).
+
+    Calibrated against 100 Winners vs 100 Losers (3M return), small-cap universe,
+    33 weeks of forward-return data (Aug 2025 → Apr 2026), validated on dna_backtest_full_detail (3260 rows).
+
+    v4 additions vs v3 (from pattern_analyser_report Pattern×State matrix):
+      • PYRAMID + UPTREND         → +3 (1w +3.9%, 85% WR, n=20)
+      • INSTITUTIONAL + DOWNTREND → +3 (1w +4.5%, 81% WR, n=21)
+      • STEALTH + STRONG_UPTREND  → +2 (1w +4.9%, 81% WR, n=16)
+      • GOLDEN CROSS + UPTREND    → +2 (1w +4.2%, 69% WR, n=16)
+      • ACCELERATION + UPTREND    → -3 trap (1w -5.9%, n=14)
+      • RUNAWAY + STRONG_UPTREND  → -2 trap reinforcement
+
+    v3 corrections (preserved):
+      • PYRAMID +8 → +5 — fades from +7% (4w) to +0.6% (13w), -10.5pp 13w lift
+      • BOUNCE state +5 → -2 — TRAP at 13w (-14.86% ret, only 2% win rate)
+      • LIQUID LEADER +4 → -3 — n=300, -5.5% ret_13w, -6.7pp 13w lift (NEW trap)
+      • VALUE MOMENTUM +3 → +6 — +21.5% ret_13w, +9.6pp lift (strongest pattern)
+      • HIDDEN GEM ADDED +5 — +4.9% ret_13w, +7.8pp lift, 45% w4
+      • ACCELERATION ADDED +3 — +10.8% ret_13w, +2.1pp lift
+      • RANGE COMPRESS ADDED +3 — +4.7% ret_13w, +3.2pp lift
+
+    Inherited v2 calibration (preserved):
+      • trend_quality is biggest discriminator (winner µ=74 vs loser µ=27)
+      • from_high_pct: winners stay near 52W highs (W=-18% vs L=-46%)
+      • Tension/Recovery path = +17.7% ret_13w vs Position/TQ -0.26% (auto-routed in tab)
+      • RUNAWAY GAP / VELOCITY BREAKOUT / INST. TSUNAMI penalized
+      • STRONG_UPTREND demoted (lagging indicator)
+      • PULLBACK state rewarded (+13.26% ret_13w)
+    """
     score, reasons = 0, []
     pos = _safe_dna(row, 'position_score')
-    tq = _safe_dna(row, 'trend_quality')
+    tq  = _safe_dna(row, 'trend_quality')
     brk = _safe_dna(row, 'breakout_score')
-    ms = _safe_dna(row, 'master_score')
-    rk = _safe_dna(row, 'rank', 9999)
-    fh = _safe_dna(row, 'from_high_pct', -99)
-    fl = _safe_dna(row, 'from_low_pct')
-    pt = _safe_dna(row, 'position_tension')
+    ms  = _safe_dna(row, 'master_score')
+    rk  = _safe_dna(row, 'rank', 9999)
+    fh  = _safe_dna(row, 'from_high_pct', -99)
+    fl  = _safe_dna(row, 'from_low_pct')
+    pt  = _safe_dna(row, 'position_tension')
+    mom = _safe_dna(row, 'momentum_score')
     pats = _get_patterns_dna(row)
 
-    if pos >= 65: score += 16; reasons.append('Elite Position')
-    elif pos >= 45: score += 10; reasons.append('Strong Position')
-    elif pos >= 33: score += 4
+    # ── trend_quality — BIGGEST discriminator (lift 2.81x) ──
+    if tq >= 80:   score += 18; reasons.append('Elite TQ')
+    elif tq >= 65: score += 12; reasons.append('Strong TQ')
+    elif tq >= 50: score += 6
+    elif tq >= 30: score += 2
+    elif tq < 20:  score -= 4   # explicit penalty for very weak TQ
 
-    if tq >= 83: score += 14; reasons.append('Exceptional TQ')
-    elif tq >= 59: score += 9; reasons.append('Strong TQ')
-    elif tq >= 29: score += 3
+    # ── position_score — 1.61x lift, broad signal ──
+    if pos >= 65:   score += 14; reasons.append('Elite Position')
+    elif pos >= 50: score += 9;  reasons.append('Strong Position')
+    elif pos >= 35: score += 4
 
-    if brk >= 56: score += 10; reasons.append('High Breakout')
-    elif brk >= 45: score += 6; reasons.append('Good Breakout')
-    elif brk >= 34: score += 2
+    # ── from_high_pct — winners avg -18%, losers avg -46% ──
+    if fh >= -10:   score += 10; reasons.append('At 52W High')
+    elif fh >= -20: score += 7;  reasons.append('Near High')
+    elif fh >= -30: score += 3
+    elif fh < -45:  score -= 6   # penalty: losers cluster here
 
-    if ms >= 56: score += 10; reasons.append('High Master Score')
-    elif ms >= 46: score += 6
-    elif ms >= 40: score += 2
+    # ── breakout_score (1.82x lift) ──
+    if brk >= 60:   score += 9;  reasons.append('High Breakout')
+    elif brk >= 45: score += 5;  reasons.append('Good Breakout')
+    elif brk >= 30: score += 2
 
-    if rk <= 400: score += 8; reasons.append('Top 400 Rank')
-    elif rk <= 823: score += 5; reasons.append('Above-Median Rank')
-    elif rk <= 1280: score += 2
+    # ── master_score (1.34x lift, weaker on its own) ──
+    if ms >= 60:    score += 7;  reasons.append('High Master Score')
+    elif ms >= 50:  score += 4
+    elif ms >= 40:  score += 2
 
-    if fh >= -13: score += 8; reasons.append('Near High')
-    elif fh >= -26: score += 4
+    # ── rank — Top 100 had +2.02% ret, 55.8% WR (sig ***) ──
+    if rk <= 100:    score += 10; reasons.append('Top 100 Rank')
+    elif rk <= 400:  score += 6;  reasons.append('Top 400 Rank')
+    elif rk <= 800:  score += 3;  reasons.append('Above-Median Rank')
 
-    if pt >= 94: score += 8; reasons.append('High Tension')
-    elif pt >= 83: score += 4
+    # ── position_tension — Tension/Recovery path = +5.6% ret, 58.8% WR ──
+    if pt >= 150:   score += 10; reasons.append('Extreme Tension')
+    elif pt >= 100: score += 6;  reasons.append('High Tension')
+    elif pt >= 80:  score += 3
 
-    if fl >= 69: score += 8; reasons.append('Strong Recovery')
-    elif fl >= 54: score += 4
+    # ── from_low_pct — recovery strength ──
+    if fl >= 75:    score += 6;  reasons.append('Strong Recovery')
+    elif fl >= 55:  score += 3
 
+    # ── momentum_score — present in winners (1.22x) ──
+    if mom >= 70:   score += 5;  reasons.append('High Momentum')
+    elif mom >= 55: score += 2
+
+    # ── PATTERNS — only proven winners get points; proven losers PENALIZED ──
+    has_winner_pat = False
+    has_anti_pat = False
     for p in pats:
-        if 'VELOCITY SQUEEZE' in p: score += 7; reasons.append('Velocity Squeeze')
-        elif 'ACCELERATION' in p: score += 6; reasons.append('Acceleration')
-        elif 'MARKET LEADER' in p: score += 5; reasons.append('Market Leader')
-        elif 'CAT LEADER' in p: score += 5; reasons.append('Cat Leader')
-        elif 'PULLBACK SUPPORT' in p: score += 5; reasons.append('Pullback Support')
-        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP')
-        elif 'RUNAWAY GAP' in p: score += 6; reasons.append('Runaway Gap')
-        elif 'PREMIUM MOMENTUM' in p: score += 4; reasons.append('Premium Momentum')
-        elif 'STEALTH' in p: score += 6; reasons.append('Stealth')
-        elif '52W HIGH' in p: score += 5; reasons.append('52W High Approach')
-        elif 'GOLDEN CROSS' in p: score += 5; reasons.append('Golden Cross')
-        elif 'VALUE MOMENTUM' in p: score += 5; reasons.append('Value Momentum')
-        elif 'LIQUID LEADER' in p: score += 5; reasons.append('Liquid Leader')
-        elif 'INSTITUTIONAL TSUNAMI' in p: score += 4; reasons.append('Inst. Tsunami')
-        elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional')
+        # ✅ DATA-VALIDATED WINNERS (forward avg return positive, statistically significant)
+        if 'VALUE MOMENTUM' in p:
+            # +21.5% ret_13w, +9.6pp 13w win-lift — strongest single pattern in dataset
+            score += 6; reasons.append('Value Momentum (+21%)'); has_winner_pat = True
+        elif 'PYRAMID' in p:
+            # 4w-only edge (+7%); fades to +0.6% by 13w with -10.5pp lift — tactical only
+            score += 5; reasons.append('Pyramid (+7% 4w)'); has_winner_pat = True
+        elif 'HIDDEN GEM' in p:
+            # +4.9% ret_13w, +7.8pp 13w lift, 45% w4 — newly added v3
+            score += 5; reasons.append('Hidden Gem (+5%)'); has_winner_pat = True
+        elif 'ROTATION LEADER' in p:
+            score += 5; reasons.append('Rotation Leader'); has_winner_pat = True
+        elif 'GOLDEN CROSS' in p:
+            score += 6; reasons.append('Golden Cross (+6.7%)'); has_winner_pat = True
+        elif 'INSTITUTIONAL' in p and 'TSUNAMI' not in p:
+            score += 6; reasons.append('Institutional (+7.9%)'); has_winner_pat = True
+        elif 'STEALTH' in p:
+            score += 5; reasons.append('Stealth'); has_winner_pat = True
+        elif 'ACCELERATION' in p:
+            # +10.8% ret_13w, +2.1pp lift — restored in v3 after v2 dropped it
+            score += 3; reasons.append('Acceleration (+11%)')
+        elif 'RANGE COMPRESS' in p:
+            # +4.7% ret_13w, +3.2pp lift — newly added v3
+            score += 3; reasons.append('Range Compress (+5%)')
+        elif 'VELOCITY SQUEEZE' in p:
+            score += 4; reasons.append('Velocity Squeeze')
+        elif 'PULLBACK SUPPORT' in p:
+            score += 4; reasons.append('Pullback Support')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+            score += 4; reasons.append('Quality/GARP')
+        elif '52W HIGH' in p:
+            score += 4; reasons.append('52W High Approach')
+        elif 'MARKET LEADER' in p:
+            score += 3; reasons.append('Market Leader')
+        elif 'CAT LEADER' in p:
+            score += 3; reasons.append('Cat Leader')
 
+        # ❌ DATA-VALIDATED LOSERS (forward returns negative or loser-enriched)
+        if 'RUNAWAY GAP' in p:
+            score -= 6; reasons.append('⚠ Runaway Gap'); has_anti_pat = True
+        elif 'VELOCITY BREAKOUT' in p:
+            score -= 6; reasons.append('⚠ Velocity Breakout'); has_anti_pat = True
+        elif 'INSTITUTIONAL TSUNAMI' in p:
+            score -= 4; reasons.append('⚠ Inst. Tsunami'); has_anti_pat = True
+        elif 'LIQUID LEADER' in p:
+            # NEW v3 trap: n=300, -5.5% ret_13w, -6.7pp 13w lift (was +4 in v2 — wrong!)
+            score -= 3; reasons.append('⚠ Liquid Leader Trap'); has_anti_pat = True
+        elif 'HIGH PE' in p and not has_winner_pat:
+            # HIGH PE alone is bad (29% of losers vs 8% of winners) but neutral with a winner pattern
+            score -= 3; reasons.append('⚠ High PE')
+        elif 'PREMIUM MOMENTUM' in p:
+            score -= 2; reasons.append('⚠ Premium Mom')
+
+    # ── MARKET STATE — recalibrated to 13w forward returns (v3) ──
     state = str(row.get('market_state', '')).strip()
-    if state == 'PULLBACK': score += 5; reasons.append('Pullback State')
-    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend')
-    elif state == 'UPTREND': score += 4
+    if state == 'PULLBACK':         score += 6; reasons.append('Pullback State (+13%)')   # +13.26% ret_13w, 17% win
+    elif state == 'UPTREND':        score += 4; reasons.append('Uptrend State (+5%)')     # +5.35% ret_13w
+    elif state == 'DOWNTREND':      score += 3   # +1.94% ret_13w (Tension/Recovery setups hide here)
+    elif state == 'STRONG_UPTREND': score += 1   # +1.85% ret_13w — lagging
+    elif state == 'SIDEWAYS':       score -= 1   # +0.33% ret_13w — flat/noise
+    elif state == 'ROTATION':       score -= 3; reasons.append('⚠ Rotation State')        # -2.43% ret_13w
+    elif state == 'BOUNCE':         score -= 2; reasons.append('⚠ Bounce Trap (13w)')     # v3: -14.86% ret_13w, 2% win — TRAP
+    # STRONG_DOWNTREND intentionally NOT scored — high mean (+9%) but extreme drawdown risk
 
-    # PULLBACK Confluence — PULLBACK (5.2x) + multiple criteria = strongest setup
+    # ── PATTERN × STATE COMBOS (v4) — validated on pattern_analyser_report matrix ──
+    # Each combo: 1w return + win-rate + sample size from Pattern×State matrix
+    if pats:
+        # Pre-compute pattern flags once (cheaper than re-iterating)
+        _has_pyramid       = any('PYRAMID' in p for p in pats)
+        _has_inst          = any('INSTITUTIONAL' in p and 'TSUNAMI' not in p for p in pats)
+        _has_stealth       = any('STEALTH' in p for p in pats)
+        _has_golden        = any('GOLDEN CROSS' in p for p in pats)
+        _has_acceleration  = any('ACCELERATION' in p for p in pats)
+        _has_runaway       = any('RUNAWAY GAP' in p for p in pats)
+
+        # ✅ Confluence WINNERS (validated 1w returns + high WR)
+        if _has_pyramid and state == 'UPTREND':
+            score += 3; reasons.append('🎯 Pyramid+Uptrend (+3.9% / 85% WR)')
+        if _has_inst and state == 'DOWNTREND':
+            score += 3; reasons.append('🎯 Inst+Downtrend (+4.5% / 81% WR)')
+        if _has_stealth and state == 'STRONG_UPTREND':
+            score += 2; reasons.append('🎯 Stealth+Strong Up (+4.9% / 81% WR)')
+        if _has_golden and state == 'UPTREND':
+            score += 2; reasons.append('🎯 Golden+Uptrend (+4.2% / 69% WR)')
+
+        # ❌ Confluence TRAPS (validated negatives — pattern looks bullish but state confirms exhaustion)
+        if _has_acceleration and state == 'UPTREND':
+            score -= 3; reasons.append('⚠ Accel+Uptrend Trap (-5.9%)')
+        if _has_runaway and state == 'STRONG_UPTREND':
+            score -= 2; reasons.append('⚠ Runaway+Strong Up Trap')
+
+    # ── CONFLUENCE BONUS — multiple winner criteria stacking ──
+    if has_winner_pat and tq >= 60 and pos >= 50 and fh >= -25:
+        score += 4; reasons.append('🎯 Confluence Setup')
+
+    # PULLBACK Confluence preserved (validated v1 rule)
     if state == 'PULLBACK' and len(reasons) >= 5:
         score += 3; reasons.append('Pullback Confluence')
 
-    return min(score, 100), reasons
+    # Hard floor at 0 (penalties can't push negative for display)
+    return max(0, min(score, 100)), reasons
 
 
 def _dna_score_micro(row):
@@ -10156,6 +10281,21 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             except Exception:
                 pass
 
+    # Build T-Score (trajectory_score) map for S5 Elite preset
+    # Source priority: filtered_df > traj_df. Missing → S5 Elite preset disabled.
+    tscore_map = {}
+    _tscore_src = filtered_df if (filtered_df is not None and not filtered_df.empty and 'trajectory_score' in filtered_df.columns) else \
+                  (traj_df if (traj_df is not None and not traj_df.empty and 'trajectory_score' in traj_df.columns) else None)
+    if _tscore_src is not None:
+        try:
+            _ts = pd.to_numeric(_tscore_src['trajectory_score'], errors='coerce')
+            for _tk, _v in zip(_tscore_src['ticker'].astype(str).str.strip(), _ts):
+                if pd.notna(_v):
+                    tscore_map[_tk] = float(_v)
+        except Exception:
+            tscore_map = {}
+    _tscore_available = len(tscore_map) > 0
+
     # Build 2-weeks-ago lookup for "New This Week"
     prev2_tickers = set()
     if len(dates) >= 3:
@@ -10197,7 +10337,10 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             dna_score, reasons, path = _dna_score_mid(row)
         elif cat == 'Small Cap':
             dna_score, reasons = _dna_score_small(row)
-            path = 'Position/TQ'
+            # Dynamic path detection (validated: Tension/Recovery = +5.6% ret, 58.8% WR)
+            _pt = _safe_dna(row, 'position_tension')
+            _fl = _safe_dna(row, 'from_low_pct')
+            path = 'Tension/Recovery' if (_pt >= 100 or _fl >= 75) else 'Position/TQ'
         elif cat == 'Micro Cap':
             dna_score, reasons = _dna_score_micro(row)
             path = 'Tension/Recovery'
@@ -10260,6 +10403,9 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         state = str(row.get('market_state', '')).strip()
         company = str(row.get('company_name', tk)).strip()
         ms = _safe_dna(row, 'master_score')
+        fh_now = _safe_dna(row, 'from_high_pct', -99)
+        # Raw pattern set for Tier anti-pattern checks
+        _pats_raw = ' | '.join(_get_patterns_dna(row))
 
         results.append({
             'Ticker': tk,
@@ -10280,6 +10426,11 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             'New': '🆕' if is_new else '',
             '_score': dna_score,
             '_dna_delta': dna_delta if prev_dna is not None else 0,
+            '_tq': tq_now,
+            '_ms': ms,
+            '_fh': fh_now,
+            '_pats': _pats_raw,
+            '_tscore': tscore_map.get(tk, float('nan')),  # for S5 Elite tier gating
         })
 
     if not results:
@@ -10307,18 +10458,98 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     with c5:
         st.metric("🔥 DNA Rising", rising_count)
 
-    # ── Filter options ──
-    fc1, fc2 = st.columns(2)
-    with fc1:
-        min_score = st.slider("Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore')
-    with fc2:
-        conv_filter = st.multiselect("Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
-                                     default=['🔴 HIGH', '🟡 MEDIUM'], key='dna_wl_conv')
+    # ── Filter options — Backtested Tier presets + manual override ──
+    st.markdown(
+        """<div style="background:linear-gradient(90deg,#0d1117,#161b22);
+                       border-left:3px solid #FF6B35; padding:10px 14px; margin:8px 0 6px 0;
+                       border-radius:6px; font-size:0.82rem; color:#c9d1d9;">
+        🎯 <b>Tier Presets</b> — Data-validated rules from 100W vs 100L Small-Cap analysis (Apr 2026).
+        Each tier trades breadth for precision. <b>S5 Elite</b> mirrors the highest-Sharpe (1.73) backtest strategy.
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    tc1, tc2, tc3 = st.columns([1.2, 1, 1])
+    with tc1:
+        _s5_label = "⭐ S5 Elite — Proven +13% alpha (T-Score≥70)" if _tscore_available else "⭐ S5 Elite — (needs trajectory data)"
+        tier = st.radio(
+            "DNA Tier",
+            [_s5_label,
+             "🅰 Tier A — Elite (~94% precision)",
+             "🅱 Tier B — Strong (broader)",
+             "🅲 Tier C — Watch (early signals)",
+             "⚙ Custom"],
+            index=2, key='dna_wl_tier', horizontal=False,
+            help=("S5 Elite: T-Score≥70 AND DNA≥70 AND no anti-pattern — mirrors backtest strategy S5 (Sharpe 1.73, +13.24% alpha, 67.4% WR, -9.64% MaxDD)\n"
+                  "Tier A: dna≥70 AND tq≥70 AND fh>-20 AND state∈{PULLBACK,UPTREND,STRONG_UPTREND,BOUNCE} — 94% backtested precision\n"
+                  "Tier B: dna≥55 AND tq≥55 AND state∉{ROTATION,STRONG_DOWNTREND}\n"
+                  "Tier C: dna≥40 AND tq≥40 — broadest watch list\n"
+                  "Custom: use the slider/multiselect controls below"),
+        )
+    with tc2:
+        min_score = st.slider("Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore',
+                              disabled=not tier.startswith('⚙'))
+    with tc3:
+        conv_filter = st.multiselect(
+            "Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
+            default=['🔴 HIGH', '🟡 MEDIUM'], key='dna_wl_conv',
+            disabled=not tier.startswith('⚙'),
+        )
 
-    display_df = res_df[
-        (res_df['_score'] >= min_score) &
-        (res_df['Conviction'].isin(conv_filter))
-    ].copy()
+    # Apply tier rule (validated against winner-vs-loser data)
+    GOOD_STATES = {'PULLBACK', 'UPTREND', 'STRONG_UPTREND', 'BOUNCE'}
+    BAD_STATES  = {'ROTATION', 'STRONG_DOWNTREND'}
+    ANTI_PATS   = ('RUNAWAY GAP', 'VELOCITY BREAKOUT', 'INSTITUTIONAL TSUNAMI')
+
+    if tier.startswith('⭐'):
+        if not _tscore_available:
+            st.warning("⚠ S5 Elite needs trajectory_score (load ≥2 weekly CSVs to compute). Falling back to Tier A.")
+            mask = (
+                (res_df['_score'] >= 70) &
+                (res_df['_tq'] >= 70) &
+                (res_df['_fh'] >= -20) &
+                (res_df['State'].isin(GOOD_STATES)) &
+                (~res_df['_pats'].fillna('').str.contains('|'.join(ANTI_PATS), regex=True))
+            )
+        else:
+            # S5 Elite: T-Score≥70 + DNA≥70 + no anti-pattern (mirrors backtest S5 strategy)
+            _ts = pd.to_numeric(res_df['_tscore'], errors='coerce')
+            mask = (
+                _ts.ge(70).fillna(False) &
+                (res_df['_score'] >= 70) &
+                (~res_df['_pats'].fillna('').str.contains('|'.join(ANTI_PATS), regex=True))
+            )
+        display_df = res_df[mask].copy()
+        if _tscore_available:
+            st.caption(f"⭐ **S5 Elite** — mirrors backtest strategy S5 (Sharpe 1.73, +13.24% alpha, 67.4% WR over 31 weeks). Tight portfolio, highest historical conviction.")
+    elif tier.startswith('🅰'):
+        mask = (
+            (res_df['_score'] >= 70) &
+            (res_df['_tq'] >= 70) &
+            (res_df['_fh'] >= -20) &
+            (res_df['State'].isin(GOOD_STATES)) &
+            (~res_df['_pats'].fillna('').str.contains('|'.join(ANTI_PATS), regex=True))
+        )
+        display_df = res_df[mask].copy()
+    elif tier.startswith('🅱'):
+        mask = (
+            (res_df['_score'] >= 55) &
+            (res_df['_tq'] >= 55) &
+            (~res_df['State'].isin(BAD_STATES)) &
+            (~res_df['_pats'].fillna('').str.contains('|'.join(ANTI_PATS), regex=True))
+        )
+        display_df = res_df[mask].copy()
+    elif tier.startswith('🅲'):
+        mask = (
+            (res_df['_score'] >= 40) &
+            (res_df['_tq'] >= 40) &
+            (~res_df['State'].isin(BAD_STATES))
+        )
+        display_df = res_df[mask].copy()
+    else:  # Custom
+        display_df = res_df[
+            (res_df['_score'] >= min_score) &
+            (res_df['Conviction'].isin(conv_filter))
+        ].copy()
 
     display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
                     'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
