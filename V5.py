@@ -9966,8 +9966,11 @@ def _dna_score_small(row):
         elif 'INSTITUTIONAL TSUNAMI' in p:
             score -= 4; reasons.append('⚠ Inst. Tsunami'); has_anti_pat = True
         elif 'LIQUID LEADER' in p:
-            # NEW v3 trap: n=300, -5.5% ret_13w, -6.7pp 13w lift (was +4 in v2 — wrong!)
-            score -= 3; reasons.append('⚠ Liquid Leader Trap'); has_anti_pat = True
+            # v5: NEUTRALIZED (was -3 in v3/v4). Conflicting evidence:
+            #   • 31-week W/L pool: -5.5% ret_13w, -6.7pp lift (TRAP)
+            #   • 100-winner cohort study (Jan-Apr 2026): 2→27 winners, +18pp lift (CONFIRMER)
+            # Regime-dependent → safest to neutralize, let other signals decide.
+            pass
         elif 'HIGH PE' in p and not has_winner_pat:
             # HIGH PE alone is bad (29% of losers vs 8% of winners) but neutral with a winner pattern
             score -= 3; reasons.append('⚠ High PE')
