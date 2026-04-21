@@ -5266,21 +5266,69 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     # ── Search Input — dropdown shows only filtered stocks ──
     label_map = {}
     for _, r in filtered_df.iterrows():
-        label_map[f"{r['ticker']} — {r['company_name'][:35]}"] = r['ticker']
+        _tk = str(r.get('ticker', '')).strip()
+        if not _tk:
+            continue
+        _nm = str(r.get('company_name', ''))[:35]
+        label_map[f"{_tk} — {_nm}"] = _tk
     labels = sorted(label_map.keys())
+
+    if not labels:
+        st.info("No stocks available under current filters")
+        return
 
     # Clear stale selection if it no longer exists in filtered labels
     if 'search_select' in st.session_state and st.session_state['search_select'] not in labels:
         st.session_state['search_select'] = None
 
+    # Keep a small recent-search memory for faster repeated analysis
+    _recent_key = 'search_recent_labels'
+    if _recent_key not in st.session_state or not isinstance(st.session_state[_recent_key], list):
+        st.session_state[_recent_key] = []
+    st.session_state[_recent_key] = [x for x in st.session_state[_recent_key] if x in labels][:8]
+
+    c_s1, c_s2 = st.columns([3, 2])
+    with c_s1:
+        search_query = st.text_input(
+            "Filter Search List",
+            value=st.session_state.get('search_filter_query', ''),
+            placeholder="Type part of ticker/company...",
+            key='search_filter_query'
+        )
+    with c_s2:
+        quick_ticker = st.text_input(
+            "Quick Ticker Jump",
+            value='',
+            placeholder="e.g. RELIANCE",
+            key='search_quick_ticker'
+        )
+
+    _q = (search_query or '').strip().lower()
+    labels_filtered = [l for l in labels if _q in l.lower()] if _q else labels
+    if not labels_filtered:
+        st.warning("No matches for current search text. Showing full list.")
+        labels_filtered = labels
+
+    _qt = (quick_ticker or '').strip().upper()
+    if _qt:
+        _jump = next((l for l in labels if l.startswith(f"{_qt} —")), None)
+        if _jump is not None:
+            st.session_state['search_select'] = _jump
+
     selected_label = st.selectbox("🔍 Search Stock",
-                                   labels, index=None,
+                                   labels_filtered, index=None,
                                    placeholder="Type ticker or company name...",
                                    key='search_select')
 
     if selected_label is None:
         st.info("👆 Select a stock from the dropdown to view detailed trajectory analysis")
         return
+
+    # Update recent-search trail (max 8)
+    _recent = [selected_label] + [x for x in st.session_state[_recent_key] if x != selected_label]
+    st.session_state[_recent_key] = _recent[:8]
+    if st.session_state[_recent_key]:
+        st.caption("Recent: " + " | ".join(st.session_state[_recent_key][:4]))
 
     ticker = label_map[selected_label]
     matches = filtered_df[filtered_df['ticker'] == ticker]
@@ -5305,8 +5353,8 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         ['trajectory_score', 'confidence', 'consistency'],
         ascending=[False, False, False]
     ).reset_index(drop=True)
-    t_rank_idx = sorted_df[sorted_df['ticker'] == ticker].index
-    t_rank = int(t_rank_idx[0]) + 1 if len(t_rank_idx) > 0 else 0
+    t_rank_map = {tk: i + 1 for i, tk in enumerate(sorted_df['ticker'].tolist())}
+    t_rank = int(t_rank_map.get(ticker, 0))
 
     pattern_key = row.get('pattern_key', 'neutral')
     p_emoji, p_name, p_desc = PATTERN_DEFS.get(pattern_key, ('➖', 'Neutral', ''))
@@ -5404,6 +5452,112 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         for label, val, sub in kpi_items
     ])
     st.markdown(f'<div class="m-strip">{kpi_html}</div>', unsafe_allow_html=True)
+
+    # ── Last-Week Delta + Action Verdict ────────────────────────
+    prev_rank = int(ranks_list[-2]) if len(ranks_list) >= 2 else int(ranks_list[-1])
+    curr_rank = int(ranks_list[-1])
+    rank_1w_delta = prev_rank - curr_rank if len(ranks_list) >= 2 else 0
+
+    prev_price = float(h['prices'][-2]) if len(h['prices']) >= 2 else float(latest_price)
+    price_1w_delta = float(latest_price) - prev_price if len(h['prices']) >= 2 else 0.0
+    price_1w_ret = ((float(latest_price) / prev_price - 1) * 100) if len(h['prices']) >= 2 and prev_price > 0 and latest_price > 0 else 0.0
+
+    _scores = h.get('scores', [])
+    score_1w_delta = float(_scores[-1] - _scores[-2]) if len(_scores) >= 2 else 0.0
+
+    # Heuristic verdict engine for faster operator decision-making
+    verdict_points = 0
+    verdict_reasons_pos, verdict_reasons_neg = [], []
+
+    if t_score >= 75:
+        verdict_points += 2; verdict_reasons_pos.append("High trajectory score")
+    elif t_score >= 60:
+        verdict_points += 1; verdict_reasons_pos.append("Above-average trajectory score")
+    else:
+        verdict_points -= 1; verdict_reasons_neg.append("Weak trajectory score")
+
+    if alpha >= 65:
+        verdict_points += 2; verdict_reasons_pos.append("Strong alpha")
+    elif alpha >= 50:
+        verdict_points += 1; verdict_reasons_pos.append("Decent alpha")
+    else:
+        verdict_points -= 1; verdict_reasons_neg.append("Low alpha")
+
+    if exit_risk_val <= 30:
+        verdict_points += 2; verdict_reasons_pos.append("Low exit risk")
+    elif exit_risk_val >= 70:
+        verdict_points -= 2; verdict_reasons_neg.append("High exit risk")
+
+    if hot:
+        verdict_points += 1; verdict_reasons_pos.append("Hot streak active")
+
+    _confidence = float(row.get('confidence', 0.0))
+    if _confidence >= 0.75:
+        verdict_points += 1; verdict_reasons_pos.append("High confidence")
+    elif _confidence < 0.45:
+        verdict_points -= 1; verdict_reasons_neg.append("Low confidence")
+
+    if price_label_display == 'PRICE_CONFIRMED':
+        verdict_points += 1; verdict_reasons_pos.append("Price confirms rank trend")
+    elif price_label_display == 'PRICE_DIVERGENT':
+        verdict_points -= 1; verdict_reasons_neg.append("Price-rank divergence")
+
+    if market_regime == 'BULL':
+        verdict_points += 1; verdict_reasons_pos.append("Bull regime tailwind")
+    elif market_regime == 'BEAR':
+        verdict_points -= 1; verdict_reasons_neg.append("Bear regime headwind")
+
+    if verdict_points >= 5:
+        verdict_label, verdict_color = '✅ CONTINUATION CANDIDATE', '#3fb950'
+    elif verdict_points >= 2:
+        verdict_label, verdict_color = '👀 WATCHLIST / SET ALERTS', '#d29922'
+    else:
+        verdict_label, verdict_color = '⚠️ HIGH RISK / AVOID', '#f85149'
+
+    verdict_reasons = (verdict_reasons_pos + verdict_reasons_neg)[:3]
+    verdict_reason_text = ' • '.join([_html.escape(x) for x in verdict_reasons]) if verdict_reasons else 'No dominant signal'
+
+    _rank_delta_txt = f"{rank_1w_delta:+d}"
+    _rank_delta_c = '#3fb950' if rank_1w_delta > 0 else ('#f85149' if rank_1w_delta < 0 else '#8b949e')
+    _price_delta_txt = f"{price_1w_delta:+.1f} ({price_1w_ret:+.1f}%)"
+    _price_delta_c = '#3fb950' if price_1w_delta > 0 else ('#f85149' if price_1w_delta < 0 else '#8b949e')
+    _score_delta_txt = f"{score_1w_delta:+.1f}"
+    _score_delta_c = '#3fb950' if score_1w_delta > 0 else ('#f85149' if score_1w_delta < 0 else '#8b949e')
+
+    st.markdown(f"""
+        <div style="
+                background:linear-gradient(135deg, #0d1117 0%, #121820 100%);
+                border:1px solid #30363d;
+                border-left:4px solid {verdict_color};
+                border-radius:12px;
+                padding:12px 14px;
+                margin:8px 0 10px 0;
+                box-shadow:0 6px 20px rgba(0,0,0,0.22);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <span style="background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:0.72rem;color:#8b949e;">
+                        1W Δ Rank <b style="color:{_rank_delta_c};margin-left:4px;">{_rank_delta_txt}</b>
+                    </span>
+                    <span style="background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:0.72rem;color:#8b949e;">
+                        1W Δ Price <b style="color:{_price_delta_c};margin-left:4px;">{_price_delta_txt}</b>
+                    </span>
+                    <span style="background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:0.72rem;color:#8b949e;">
+                        1W Δ Score <b style="color:{_score_delta_c};margin-left:4px;">{_score_delta_txt}</b>
+                    </span>
+                </div>
+                <div style="
+                        background:{verdict_color}22;
+                        color:{verdict_color};
+                        border:1px solid {verdict_color}55;
+                        border-radius:10px;
+                        padding:6px 10px;
+                        font-size:0.78rem;
+                        font-weight:800;
+                        letter-spacing:0.2px;">{verdict_label}</div>
+            </div>
+            <div style="margin-top:8px;color:#9aa4af;font-size:0.73rem;line-height:1.35;">{verdict_reason_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── Exit Warning Banner (if exit risk is high) ──
     if exit_risk_val >= 60:
@@ -5748,6 +5902,15 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             wk_col_config['Ret 30d%'] = st.column_config.NumberColumn(format="%.1f%%")
         st.dataframe(wk_df, column_config=wk_col_config, hide_index=True, use_container_width=True)
 
+        _wk_csv = wk_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📥 Download {ticker} Week History CSV",
+            data=_wk_csv,
+            file_name=f"Search_{ticker}_Week_History.csv",
+            mime='text/csv',
+            key=f"search_wk_download_{ticker}",
+        )
+
     # ── Compare ──
     with st.expander("⚖️ Compare Stocks", expanded=False):
         compare_labels = [l for l in labels if l != selected_label]
@@ -5755,13 +5918,199 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             st.info("No other stocks available for comparison with current filters")
         else:
             st.caption("Select up to 4 stocks to compare rank percentile trajectories and key metrics side by side")
-            compare_selections = st.multiselect("Compare with",
-                                                 compare_labels, max_selections=4,
-                                                 key='compare_select',
-                                                 label_visibility='collapsed')
+            compare_selections = st.multiselect(
+                "Compare with",
+                compare_labels,
+                max_selections=4,
+                key='compare_select',
+                label_visibility='collapsed'
+            )
             if compare_selections:
                 compare_tickers = [label_map[l] for l in compare_selections]
                 _render_comparison_chart(ticker, compare_tickers, histories, traj_df)
+
+                # Build compact comparison table
+                comp_rows = []
+                for _tk in [ticker] + compare_tickers:
+                    _r = traj_df[traj_df['ticker'] == _tk]
+                    if _r.empty:
+                        continue
+                    _rw = _r.iloc[0]
+                    _hh = histories.get(_tk, {})
+                    _rk = _hh.get('ranks', [])
+                    _pr = _hh.get('prices', [])
+                    _chg_1w = int(_rk[-2] - _rk[-1]) if len(_rk) >= 2 else 0
+                    _ret_1w = ((_pr[-1] / _pr[-2] - 1) * 100) if len(_pr) >= 2 and _pr[-1] > 0 and _pr[-2] > 0 else np.nan
+                    comp_rows.append({
+                        'Ticker': _tk,
+                        'Company': str(_rw.get('company_name', '')),
+                        'T-Score': float(_rw.get('trajectory_score', 0)),
+                        'Alpha': float(_rw.get('alpha_score', 0)),
+                        'Exit Risk': float(_rw.get('exit_risk', 0)),
+                        'Grade': str(_rw.get('grade', '')),
+                        'Current Rank': int(_rw.get('current_rank', 0)),
+                        '1W Rank Δ': _chg_1w,
+                        '1W Return %': _ret_1w,
+                    })
+
+                if comp_rows:
+                    comp_df = pd.DataFrame(comp_rows)
+
+                    # Sorting / focus controls
+                    c_cmp1, c_cmp2 = st.columns([1, 1])
+                    with c_cmp1:
+                        _cmp_sort_metric = st.selectbox(
+                            "Sort Compare Table By",
+                            options=['T-Score', 'Alpha', '1W Return %', '1W Rank Δ', 'Exit Risk', 'Current Rank'],
+                            index=0,
+                            key='search_compare_sort_metric'
+                        )
+                    with c_cmp2:
+                        _cmp_sort_dir = st.selectbox(
+                            "Sort Direction",
+                            options=['Best First', 'Worst First'],
+                            index=0,
+                            key='search_compare_sort_dir'
+                        )
+
+                    _lower_better = _cmp_sort_metric in ('Exit Risk', 'Current Rank')
+                    _asc = _lower_better if _cmp_sort_dir == 'Best First' else (not _lower_better)
+                    comp_df = comp_df.sort_values(_cmp_sort_metric, ascending=_asc, na_position='last').reset_index(drop=True)
+
+                    # Leader snapshot cards
+                    _leader = comp_df.iloc[0]
+                    _leader_tk = str(_leader.get('Ticker', '—'))
+                    _leader_cmp = str(_leader.get('Company', ''))[:28]
+                    _safest_idx = comp_df['Exit Risk'].idxmin() if len(comp_df) else None
+                    _momentum_idx = comp_df['1W Return %'].fillna(-1e9).idxmax() if len(comp_df) else None
+                    _safest_tk = str(comp_df.loc[_safest_idx, 'Ticker']) if _safest_idx is not None else '—'
+                    _momentum_tk = str(comp_df.loc[_momentum_idx, 'Ticker']) if _momentum_idx is not None else '—'
+
+                    st.markdown(f"""
+                    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:6px 0 10px 0;">
+                      <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:9px 10px;">
+                        <div style="color:#8b949e;font-size:0.66rem;text-transform:uppercase;">Top by {_cmp_sort_metric}</div>
+                        <div style="color:#e6edf3;font-weight:800;font-size:0.95rem;">🏆 {_html.escape(_leader_tk)}</div>
+                        <div style="color:#6e7681;font-size:0.68rem;">{_html.escape(_leader_cmp)}</div>
+                      </div>
+                      <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:9px 10px;">
+                        <div style="color:#8b949e;font-size:0.66rem;text-transform:uppercase;">Safest Exit Profile</div>
+                        <div style="color:#58a6ff;font-weight:800;font-size:0.95rem;">🛡️ {_html.escape(_safest_tk)}</div>
+                        <div style="color:#6e7681;font-size:0.68rem;">Lowest exit risk in selection</div>
+                      </div>
+                      <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:9px 10px;">
+                        <div style="color:#8b949e;font-size:0.66rem;text-transform:uppercase;">Strongest 1W Momentum</div>
+                        <div style="color:#3fb950;font-weight:800;font-size:0.95rem;">⚡ {_html.escape(_momentum_tk)}</div>
+                        <div style="color:#6e7681;font-size:0.68rem;">Highest 1W return in selection</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    st.dataframe(
+                        comp_df,
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config={
+                            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format='%.1f'),
+                            'Alpha': st.column_config.ProgressColumn('Alpha', min_value=0, max_value=100, format='%.1f'),
+                            'Exit Risk': st.column_config.ProgressColumn('Exit Risk', min_value=0, max_value=100, format='%.1f'),
+                            'Current Rank': st.column_config.NumberColumn(format='#%d'),
+                            '1W Rank Δ': st.column_config.NumberColumn(format='%+d'),
+                            '1W Return %': st.column_config.NumberColumn(format='%.1f%%'),
+                        },
+                    )
+
+                    # Head-to-head: selected ticker edge versus each comparator
+                    _base_row = next((x for x in comp_rows if x.get('Ticker') == ticker), None)
+                    _hh_rows = []
+                    if _base_row is not None:
+                        _b_ts = float(_base_row.get('T-Score', 0))
+                        _b_alpha = float(_base_row.get('Alpha', 0))
+                        _b_exit = float(_base_row.get('Exit Risk', 0))
+                        _b_rank = int(_base_row.get('Current Rank', 0))
+                        _b_rchg = int(_base_row.get('1W Rank Δ', 0))
+                        _b_ret = _base_row.get('1W Return %', np.nan)
+                        _b_ret = float(_b_ret) if pd.notna(_b_ret) else np.nan
+
+                        for _cmp in comp_rows:
+                            _tk_cmp = str(_cmp.get('Ticker', ''))
+                            if _tk_cmp == ticker:
+                                continue
+
+                            _c_ts = float(_cmp.get('T-Score', 0))
+                            _c_alpha = float(_cmp.get('Alpha', 0))
+                            _c_exit = float(_cmp.get('Exit Risk', 0))
+                            _c_rank = int(_cmp.get('Current Rank', 0))
+                            _c_rchg = int(_cmp.get('1W Rank Δ', 0))
+                            _c_ret = _cmp.get('1W Return %', np.nan)
+                            _c_ret = float(_c_ret) if pd.notna(_c_ret) else np.nan
+
+                            _edge_ts = _b_ts - _c_ts
+                            _edge_alpha = _b_alpha - _c_alpha
+                            _edge_exit = _c_exit - _b_exit  # positive = selected has lower exit risk
+                            _edge_rank = _c_rank - _b_rank  # positive = selected has better (lower) rank
+                            _edge_rchg = _b_rchg - _c_rchg
+                            _edge_ret = (_b_ret - _c_ret) if pd.notna(_b_ret) and pd.notna(_c_ret) else np.nan
+
+                            _valid_edges = [_edge_ts, _edge_alpha, _edge_exit, _edge_rank, _edge_rchg]
+                            if pd.notna(_edge_ret):
+                                _valid_edges.append(_edge_ret)
+                            _wins = sum(1 for _e in _valid_edges if _e > 0)
+                            _total = len(_valid_edges)
+                            _status = 'LEADING' if _wins >= max(1, int(np.ceil(_total / 2))) else 'LAGGING'
+
+                            _hh_rows.append({
+                                'Selected': ticker,
+                                'Vs': _tk_cmp,
+                                'Edge T-Score': _edge_ts,
+                                'Edge Alpha': _edge_alpha,
+                                'Edge ExitSafe': _edge_exit,
+                                'Edge RankPos': _edge_rank,
+                                'Edge 1W RankΔ': _edge_rchg,
+                                'Edge 1W Return%': _edge_ret,
+                                'Wins': f'{_wins}/{_total}',
+                                'Status': _status,
+                            })
+
+                    if _hh_rows:
+                        hh_df = pd.DataFrame(_hh_rows).sort_values(['Status', 'Wins', 'Edge T-Score'], ascending=[False, False, False])
+                        _lead_count = int((hh_df['Status'] == 'LEADING').sum())
+                        _lag_count = int((hh_df['Status'] == 'LAGGING').sum())
+                        st.markdown(
+                            f'<div style="margin:8px 0 6px 0;color:#8b949e;font-size:0.75rem;">'
+                            f'⚔️ <b>{_html.escape(ticker)}</b> head-to-head: '
+                            f'<span style="color:#3fb950;">{_lead_count} leading</span> · '
+                            f'<span style="color:#f85149;">{_lag_count} lagging</span></div>',
+                            unsafe_allow_html=True
+                        )
+                        st.dataframe(
+                            hh_df,
+                            hide_index=True,
+                            use_container_width=True,
+                            column_config={
+                                'Edge T-Score': st.column_config.NumberColumn(format='%+.1f'),
+                                'Edge Alpha': st.column_config.NumberColumn(format='%+.1f'),
+                                'Edge ExitSafe': st.column_config.NumberColumn(format='%+.1f'),
+                                'Edge RankPos': st.column_config.NumberColumn(format='%+d'),
+                                'Edge 1W RankΔ': st.column_config.NumberColumn(format='%+d'),
+                                'Edge 1W Return%': st.column_config.NumberColumn(format='%+.1f'),
+                            },
+                        )
+                        st.download_button(
+                            label="📥 Download Head-to-Head CSV",
+                            data=hh_df.to_csv(index=False).encode('utf-8'),
+                            file_name=f"Search_HeadToHead_{ticker}.csv",
+                            mime='text/csv',
+                            key=f"search_h2h_download_{ticker}",
+                        )
+
+                    st.download_button(
+                        label="📥 Download Compare Snapshot CSV",
+                        data=comp_df.to_csv(index=False).encode('utf-8'),
+                        file_name=f"Search_Compare_{ticker}.csv",
+                        mime='text/csv',
+                        key=f"search_compare_download_{ticker}",
+                    )
 
 
 def _render_rank_chart(h: dict, ticker: str):
