@@ -5074,29 +5074,34 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         ], key='rank_view', label_visibility='collapsed')
 
     # ── T-Rank = rank within full universe (stable, never changes with filters) ──
-    @st.cache_data(ttl=300, show_spinner=False)
-    def _build_t_rank_map(rank_rows):
-        rank_df = pd.DataFrame(rank_rows, columns=['ticker', 'trajectory_score', 'confidence', 'consistency'])
-        rank_df = rank_df.sort_values(
-            ['trajectory_score', 'confidence', 'consistency'],
-            ascending=[False, False, False]
-        ).reset_index(drop=True)
-        return {str(t): i + 1 for i, t in enumerate(rank_df['ticker'])}
-
-    _rank_rows = tuple(
-        zip(
+    # R1 FIX: Use canonical upstream t_rank (already sector-blend + bear-tilt aware).
+    # Previously this rebuilt rank from raw trajectory_score, causing a silent
+    # divergence in BEAR regimes where the engine's sector_blend_score had
+    # reordered stocks. Single source of truth = compute_all_trajectories.
+    if 't_rank' in all_local.columns:
+        t_rank_map = dict(zip(
             all_local['ticker'].astype(str),
-            pd.to_numeric(all_local['trajectory_score'], errors='coerce').fillna(0.0),
-            pd.to_numeric(all_local['confidence'], errors='coerce').fillna(0.0),
-            pd.to_numeric(all_local['consistency'], errors='coerce').fillna(0.0),
-        )
+            pd.to_numeric(all_local['t_rank'], errors='coerce').fillna(0).astype(int),
+        ))
+    else:
+        # Defensive fallback if upstream schema changes: rebuild from score.
+        _fallback = all_local[['ticker', 'trajectory_score', 'confidence', 'consistency']].copy()
+        for _c in ('trajectory_score', 'confidence', 'consistency'):
+            _fallback[_c] = pd.to_numeric(_fallback[_c], errors='coerce').fillna(0.0)
+        _fallback = _fallback.sort_values(
+            ['trajectory_score', 'confidence', 'consistency'],
+            ascending=[False, False, False],
+        ).reset_index(drop=True)
+        t_rank_map = {str(t): i + 1 for i, t in enumerate(_fallback['ticker'])}
+    filtered_local['t_rank_universe'] = (
+        filtered_local['ticker'].astype(str).map(t_rank_map).fillna(0).astype(int)
     )
-    t_rank_map = _build_t_rank_map(_rank_rows)
-    filtered_local['t_rank_universe'] = filtered_local['ticker'].astype(str).map(t_rank_map).fillna(0).astype(int)
 
     # ── Sort FIRST, then apply Show Top limit ──
+    # R3 FIX: 'Trajectory Score' sorts by canonical t_rank ASC so the displayed
+    # order matches the displayed rank column (reflects sector-blend + bear-tilt).
     sort_map = {
-        'Trajectory Score': ('trajectory_score', False),
+        'Trajectory Score': ('t_rank', True),
         'Alpha Score': ('alpha_score', False),
         'Positional Quality': ('positional', False),
         'TMI': ('tmi', False),
