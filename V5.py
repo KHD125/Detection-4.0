@@ -4746,11 +4746,12 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         weeks = []
         for wi, ds in enumerate(sorted_dates):
             prev_ds = prev_date_map.get(ds)
+            # MP-6: Removed dead fields (decay_scores, trend_qualities,
+            # market_strengths, patterns, sectors, grades) — never displayed.
+            # MP-3: prices added so we can compute a true price-based A/D ratio.
             snap = {
                 'date': ds, 'tickers': [], 'scores': [], 'ranks': [],
-                'prev_ranks': [], 'grades': [], 'patterns': [],
-                'sectors': [], 'decay_scores': [], 'trend_qualities': [],
-                'market_strengths': [],
+                'prev_ranks': [], 'prices': [], 'prev_prices': [],
             }
             for ticker, h in hist.items():
                 idx_map = date_idx_map.get(ticker, {})
@@ -4764,25 +4765,23 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                 curr_r = ranks[idx] if idx < len(ranks) else 0
                 snap['ranks'].append(curr_r)
 
-                # Previous calendar week rank (if ticker existed that week), else fallback to current.
+                # MP-3 FIX: For newly-listed tickers (no prev week), use NaN
+                # instead of curr_r so they don't pollute improving/declining
+                # counts as silent "unchanged".
                 prev_idx = idx_map.get(prev_ds) if prev_ds is not None else None
-                prev_r = ranks[prev_idx] if prev_idx is not None and prev_idx < len(ranks) else curr_r
-                snap['prev_ranks'].append(prev_r)
-                # Grade from score
-                sc = scores[idx] if idx < len(scores) else 0
-                gr = 'F'
-                for thr, lbl, _ in GRADE_DEFS:
-                    if sc >= thr:
-                        gr = lbl
-                        break
-                snap['grades'].append(gr)
-                pats = h.get('pattern_history', [])
-                snap['patterns'].append(pats[idx] if idx < len(pats) else 'neutral')
-                snap['sectors'].append(h.get('sector', ''))
-                tq = h.get('trend_qualities', [])
-                snap['trend_qualities'].append(tq[idx] if idx < len(tq) else 50)
-                ms = h.get('overall_market_strength', [])
-                snap['market_strengths'].append(ms[idx] if idx < len(ms) else 50)
+                if prev_idx is not None and prev_idx < len(ranks):
+                    snap['prev_ranks'].append(float(ranks[prev_idx]))
+                else:
+                    snap['prev_ranks'].append(float('nan'))
+
+                # Prices for true price-based A/D ratio (MP-2 real fix)
+                prices = h.get('prices', [])
+                _cp = float(prices[idx]) if idx < len(prices) else float('nan')
+                snap['prices'].append(_cp)
+                if prev_idx is not None and prev_idx < len(prices):
+                    snap['prev_prices'].append(float(prices[prev_idx]))
+                else:
+                    snap['prev_prices'].append(float('nan'))
             weeks.append(snap)
         return weeks
 
@@ -4816,31 +4815,66 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         return f'{val:.2f}'
 
     # ── Current metrics ──────────────────────────────────────────
-    if 'market_regime' in pulse_df.columns:
-        _rg_mode = pulse_df['market_regime'].dropna().astype(str).mode()
-        regime = _rg_mode.iloc[0] if len(_rg_mode) > 0 else 'SIDEWAYS'
-    else:
-        regime = 'SIDEWAYS'
-
-    if 'market_trend_median' in pulse_df.columns:
+    # MP-1 FIX: Recompute regime from filtered subset's own trend median so
+    # the BULL/BEAR badge and the breadth KPIs both describe the SAME universe.
+    # The traj_df-level market_regime was computed once on the full universe;
+    # using it when scope="Filtered" mixed scopes and produced contradictory UI.
+    if 'trend' in pulse_df.columns:
+        _tm_series = pd.to_numeric(pulse_df['trend'], errors='coerce').dropna()
+        trend_med = float(_tm_series.median()) if len(_tm_series) > 0 else 50.0
+    elif 'market_trend_median' in pulse_df.columns:
         _tm = pd.to_numeric(pulse_df['market_trend_median'], errors='coerce').dropna()
         trend_med = float(_tm.median()) if len(_tm) > 0 else 50.0
     else:
         trend_med = 50.0
-    avg_score = float(pulse_df['trajectory_score'].mean()) if 'trajectory_score' in pulse_df.columns else 0
-    avg_alpha = float(pulse_df['alpha_score'].mean()) if 'alpha_score' in pulse_df.columns else 0
+
+    if trend_med > 58:
+        regime = 'BULL'
+    elif trend_med < 42:
+        regime = 'BEAR'
+    else:
+        regime = 'SIDEWAYS'
+
+    # MP-4: avg_score sourced from latest snapshot below; avg_alpha from filtered df
+    avg_alpha = float(pulse_df['alpha_score'].mean()) if 'alpha_score' in pulse_df.columns else 0.0
+    if pd.isna(avg_alpha):
+        avg_alpha = 0.0
 
     # Breadth from latest snapshot
     lat_scores = np.array(latest['scores'], dtype=float)
     lat_ranks = np.array(latest['ranks'], dtype=float)
     lat_prev = np.array(latest['prev_ranks'], dtype=float)
-    improving = int(np.sum(lat_ranks < lat_prev))
-    declining = int(np.sum(lat_ranks > lat_prev))
-    unchanged = int(np.sum(lat_ranks == lat_prev))
-    pct_strong = int(100 * np.sum(lat_scores >= 55) / max(len(lat_scores), 1))
-    pct_improving = int(100 * improving / max(len(lat_ranks), 1))
-    ad_ratio = _safe_ad_ratio(improving, declining)
+    lat_prices = np.array(latest.get('prices', []), dtype=float)
+    lat_prev_prices = np.array(latest.get('prev_prices', []), dtype=float)
+
+    # MP-3: mask out NaN prev_ranks (newly-listed tickers — no prior week)
+    _rk_valid = ~np.isnan(lat_prev)
+    improving = int(np.sum((lat_ranks < lat_prev) & _rk_valid))
+    declining = int(np.sum((lat_ranks > lat_prev) & _rk_valid))
+    unchanged = int(np.sum((lat_ranks == lat_prev) & _rk_valid))
+    _rk_n = int(_rk_valid.sum())
+
+    # MP-4: avg score sourced from latest snapshot (matches chart endpoint)
+    avg_score = float(np.mean(lat_scores)) if len(lat_scores) > 0 else 0.0
+    if pd.isna(avg_score):
+        avg_score = 0.0
+
+    # MP-5: consistent 1-decimal precision matching the chart
+    pct_strong = round(100.0 * float(np.sum(lat_scores >= 55)) / max(len(lat_scores), 1), 1)
+    pct_improving = round(100.0 * improving / max(_rk_n, 1), 1)
+    ad_ratio = _safe_ad_ratio(improving, declining)  # rank-improvement ratio
     ad_ratio_disp = _fmt_ratio(ad_ratio)
+
+    # MP-2 REAL FIX: True price-based Advance/Decline ratio (industry standard).
+    # Stocks whose PRICE rose vs previous week / stocks whose price fell.
+    if len(lat_prices) > 0 and len(lat_prev_prices) > 0:
+        _pr_valid = (~np.isnan(lat_prices)) & (~np.isnan(lat_prev_prices)) & (lat_prev_prices > 0)
+        price_adv = int(np.sum((lat_prices > lat_prev_prices) & _pr_valid))
+        price_dec = int(np.sum((lat_prices < lat_prev_prices) & _pr_valid))
+    else:
+        price_adv = price_dec = 0
+    price_ad_ratio = _safe_ad_ratio(price_adv, price_dec)
+    price_ad_disp = _fmt_ratio(price_ad_ratio)
 
     # Regime styling
     regime_cfg = {
@@ -4890,16 +4924,16 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
       <!-- 6 KPI chips -->
       <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:16px;">
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-          <div style="color:#3fb950;font-weight:700;font-size:1.15rem;">{pct_improving}%</div>
-          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Improving</div></div>
+          <div style="color:#3fb950;font-weight:700;font-size:1.15rem;">{pct_improving:.1f}%</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Rank ↑</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-          <div style="color:#58a6ff;font-weight:700;font-size:1.15rem;">{pct_strong}%</div>
+          <div style="color:#58a6ff;font-weight:700;font-size:1.15rem;">{pct_strong:.1f}%</div>
           <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Strong (B+)</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-                    <div style="color:#e6edf3;font-weight:700;font-size:1.15rem;">{ad_ratio_disp}</div>
-          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">A/D Ratio</div></div>
+                    <div style="color:#e6edf3;font-weight:700;font-size:1.15rem;">{price_ad_disp}</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Price A/D</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-          <div style="color:#d2a8ff;font-weight:700;font-size:1.15rem;">{avg_score:.0f}</div>
+          <div style="color:#d2a8ff;font-weight:700;font-size:1.15rem;">{avg_score:.1f}</div>
           <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Avg T-Score</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
           <div style="color:#FF6B35;font-weight:700;font-size:1.15rem;">{avg_alpha:.0f}</div>
@@ -4907,7 +4941,7 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
           <div style="color:{'#3fb950' if improving > declining else '#f85149'};font-weight:700;font-size:1.15rem;">
             {improving}↑ {declining}↓</div>
-          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Adv / Dec</div></div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Rank A/D</div></div>
       </div>
     </div>""", unsafe_allow_html=True)
 
@@ -4925,10 +4959,13 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         rk_arr = np.array(snap['ranks'], dtype=float)
         pr_arr = np.array(snap['prev_ranks'], dtype=float)
         n_s = max(len(sc_arr), 1)
-        imp = int(np.sum(rk_arr < pr_arr))
-        dec = int(np.sum(rk_arr > pr_arr))
+        # MP-3: mask out NaN prev_ranks (newly-listed)
+        _v = ~np.isnan(pr_arr)
+        imp = int(np.sum((rk_arr < pr_arr) & _v))
+        dec = int(np.sum((rk_arr > pr_arr) & _v))
+        _vn = max(int(_v.sum()), 1)
         dates_list.append(snap['date'])
-        pct_improving_list.append(round(100 * imp / n_s, 1))
+        pct_improving_list.append(round(100 * imp / _vn, 1))
         pct_strong_list.append(round(100 * np.sum(sc_arr >= 55) / n_s, 1))
         _ad_val = _safe_ad_ratio(imp, dec)
         ad_ratio_list.append(np.nan if np.isinf(_ad_val) else round(_ad_val, 2) if not pd.isna(_ad_val) else np.nan)
