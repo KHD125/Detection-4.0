@@ -4889,17 +4889,22 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # centered at ~50 (percentile component), so it sat at 50-52 forever and
     # was useless. Replace with a true composite breadth index that actually
     # responds to market conditions. Three equal-weight pillars:
-    #   1. % stocks improving in rank (flow / momentum)
-    #   2. % stocks strong B+ (structural quality)
-    #   3. Price A/D balance scaled to 0-100 (real price action)
-    # All three have ~50 as neutral, so the composite naturally sits at ~50
-    # in a flat market and moves meaningfully in trending markets.
+    #   1. % stocks improving in rank (flow / momentum)         neutral=50
+    #   2. % stocks strong B+ rescaled                          neutral=50
+    #      (pct_strong * 2.5 capped — typical 20% B+ ≈ neutral,
+    #       40% ≈ extreme bull, 0% ≈ extreme bear). Without this
+    #       rescale the raw 5-20% range permanently dragged the
+    #       composite into the 30s regardless of market state.
+    #   3. Price A/D balance scaled to 0-100 (real price action) neutral=50
     if price_adv + price_dec > 0:
         _pad_pct = 100.0 * price_adv / (price_adv + price_dec)
     else:
         _pad_pct = 50.0
+    _imp_score = float(pct_improving)                              # 0-100
+    _str_score = float(np.clip(pct_strong * 2.5, 0.0, 100.0))      # rescaled
+    _pad_score = float(_pad_pct)                                   # 0-100
     strength_pct = float(np.clip(
-        (pct_improving + pct_strong + _pad_pct) / 3.0,
+        (_imp_score + _str_score + _pad_score) / 3.0,
         0.0, 100.0,
     ))
     s_color = '#3fb950' if strength_pct >= 58 else ('#f85149' if strength_pct < 42 else '#d29922')
