@@ -4885,7 +4885,23 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     r_color, r_icon, r_bg = regime_cfg.get(regime, regime_cfg['SIDEWAYS'])
 
     # Strength bar width + color
-    strength_pct = max(0, min(100, trend_med))
+    # MP-7 FIX: Old "Mkt Strength" used trend.median() which is by-design
+    # centered at ~50 (percentile component), so it sat at 50-52 forever and
+    # was useless. Replace with a true composite breadth index that actually
+    # responds to market conditions. Three equal-weight pillars:
+    #   1. % stocks improving in rank (flow / momentum)
+    #   2. % stocks strong B+ (structural quality)
+    #   3. Price A/D balance scaled to 0-100 (real price action)
+    # All three have ~50 as neutral, so the composite naturally sits at ~50
+    # in a flat market and moves meaningfully in trending markets.
+    if price_adv + price_dec > 0:
+        _pad_pct = 100.0 * price_adv / (price_adv + price_dec)
+    else:
+        _pad_pct = 50.0
+    strength_pct = float(np.clip(
+        (pct_improving + pct_strong + _pad_pct) / 3.0,
+        0.0, 100.0,
+    ))
     s_color = '#3fb950' if strength_pct >= 58 else ('#f85149' if strength_pct < 42 else '#d29922')
 
     # ────────────────────────────────────────────────────────────
