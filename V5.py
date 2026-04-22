@@ -12853,19 +12853,34 @@ def main():
                 )
 
                 if range_mode == "Custom":
+                    # SMART FIX: replace open-ended date pickers with file-anchored
+                    # selectboxes. Options are the EXACT dates parsed from filenames,
+                    # so the user can never pick a day with no underlying CSV. Labels
+                    # show ISO date + friendly format. Auto-swap if From > To.
+                    _date_opts = [dt.date() for dt, _ in _dated_files]  # ascending
+                    _opt_labels = {d: f"{d.strftime('%Y-%m-%d')}  ·  {d.strftime('%b %d, %Y')}"
+                                   for d in _date_opts}
+
                     col_from, col_to = st.columns(2)
                     with col_from:
-                        range_start = st.date_input(
-                            "From", value=_min_dt,
-                            min_value=_min_dt, max_value=_max_dt,
-                            key='file_range_start'
+                        range_start = st.selectbox(
+                            "From",
+                            options=_date_opts,
+                            index=0,
+                            format_func=lambda d: _opt_labels.get(d, str(d)),
+                            key='file_range_start_sel'
                         )
                     with col_to:
-                        range_end = st.date_input(
-                            "To", value=_max_dt,
-                            min_value=_min_dt, max_value=_max_dt,
-                            key='file_range_end'
+                        range_end = st.selectbox(
+                            "To",
+                            options=_date_opts,
+                            index=len(_date_opts) - 1,
+                            format_func=lambda d: _opt_labels.get(d, str(d)),
+                            key='file_range_end_sel'
                         )
+                    # Silent swap so the user never sees an "invalid range" warning
+                    if range_start > range_end:
+                        range_start, range_end = range_end, range_start
                 else:
                     range_start = _min_dt
                     range_end = _max_dt
@@ -12876,7 +12891,10 @@ def main():
                     range_end = _max_dt
 
                 selected = [f for dt, f in _dated_files if range_start <= dt.date() <= range_end]
-                st.caption(f"{range_start.strftime('%Y-%m-%d')} → {range_end.strftime('%Y-%m-%d')} · {len(selected)}/{len(_dated_files)} files")
+                st.caption(
+                    f"✓ {len(selected)} week{'s' if len(selected) != 1 else ''} selected"
+                    f"  ·  {range_start.strftime('%b %d, %Y')} → {range_end.strftime('%b %d, %Y')}"
+                )
 
                 # Store for use outside sidebar
                 st.session_state['_sb_selected_files'] = selected
