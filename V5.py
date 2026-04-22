@@ -11458,8 +11458,8 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         results.append({
             'Ticker': tk,
             # Inline 🆕 badge appended to Company name (replaces standalone
-            # "New" column). Truncate name first to keep total length consistent.
-            'Company': (company[:25] + ' 🆕') if is_new else company[:25],
+            # "New" column). Full name preserved — column auto-sizes in dataframe.
+            'Company': (company + ' 🆕') if is_new else company,
             'Category': cat,
             'DNA Score': dna_score,
             'DNA Δ': dna_trend,
