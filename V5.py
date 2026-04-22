@@ -564,6 +564,32 @@ st.markdown("""
     html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-row     { padding-left: 8px !important; padding-right: 8px !important; gap: 5px !important; }
     html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-grid    { gap: 6px !important; }
 
+    /* ── Tab bar: always reachable ── 10 tabs can overflow when sidebar is
+       open. Make the tablist horizontally scrollable with momentum, hide
+       the ugly scrollbar, and tighten padding so most tabs fit on screen. */
+    div[data-testid="stTabs"] div[role="tablist"] {
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        flex-wrap: nowrap !important;
+        scrollbar-width: thin;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+    }
+    div[data-testid="stTabs"] div[role="tablist"]::-webkit-scrollbar { height: 6px; }
+    div[data-testid="stTabs"] div[role="tablist"]::-webkit-scrollbar-thumb {
+        background: rgba(88,166,255,0.35); border-radius: 3px;
+    }
+    div[data-testid="stTabs"] div[role="tablist"] button[role="tab"] {
+        flex-shrink: 0 !important;
+        white-space: nowrap !important;
+    }
+    /* When sidebar is open, shrink padding & font so MORE tabs are visible */
+    html:has(section[data-testid="stSidebar"][aria-expanded="true"]) div[data-testid="stTabs"] div[role="tablist"] button[role="tab"] {
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+        font-size: 0.86rem !important;
+    }
+
     /* ── Hero Banner ── */
     .hero-banner {
         text-align: center; padding: 1.6rem 1.2rem 1.3rem;
@@ -893,19 +919,61 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
         except Exception as e:
             logger.warning(f"Failed to read {ufile.name}: {e}")
 
+    # PERF P5: Numeric & string column lists used by both the parallel parser
+    # and the vectorized history builder below. Keeping them defined once
+    # eliminates duplication and lets the parser do ALL coercions in-thread.
+    _NUM_COLS = [
+        'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m',
+        'from_high_pct', 'momentum_score', 'volume_score',
+        'position_score', 'acceleration_score', 'breakout_score', 'rvol_score',
+        'pe', 'eps_current', 'eps_change_pct', 'from_low_pct',
+        'ret_1d', 'ret_1y', 'rvol', 'vmi', 'money_flow_mm',
+        'position_tension', 'momentum_harmony', 'overall_market_strength',
+    ]
+    _STR_PER_WEEK = ['market_state', 'patterns', 'eps_tier', 'pe_tier']
+    _STR_LATEST = ['company_name', 'category', 'sector', 'industry']
+
     def _parse_one(payload):
         _date, _name, _data = payload
         try:
             df = pd.read_csv(BytesIO(_data))
-            if 'rank' in df.columns and 'ticker' in df.columns:
-                df['ticker'] = df['ticker'].astype(str).str.strip()
-                df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
-                df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
-                df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
-                return (_date, df)
+            if 'rank' not in df.columns or 'ticker' not in df.columns:
+                return None
+            # Vectorized cleanup — drop empty/NaN tickers up-front
+            df['ticker'] = df['ticker'].astype(str).str.strip()
+            df = df[df['ticker'].ne('') & df['ticker'].ne('nan')].copy()
+            _total = len(df)
+            df['rank'] = pd.to_numeric(df['rank'], errors='coerce').fillna(_total)
+            df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
+            df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+            if 'trend_quality' in df.columns:
+                df['trend_quality'] = pd.to_numeric(df['trend_quality'], errors='coerce').fillna(0)
+            else:
+                df['trend_quality'] = 0.0
+            # All numeric tracked columns — vectorized coercion (NaN preserved)
+            for _c in _NUM_COLS:
+                if _c in df.columns:
+                    df[_c] = pd.to_numeric(df[_c], errors='coerce')
+                else:
+                    df[_c] = np.nan
+            # Per-week string columns — fillna('').strip()
+            for _sc in _STR_PER_WEEK:
+                if _sc in df.columns:
+                    df[_sc] = df[_sc].astype('object').where(df[_sc].notna(), '').astype(str).str.strip()
+                else:
+                    df[_sc] = ''
+            # Latest-only string fields (carried for end-of-pipeline display)
+            for _sf in _STR_LATEST:
+                if _sf in df.columns:
+                    df[_sf] = df[_sf].astype('object').where(df[_sf].notna(), '').astype(str).str.strip()
+                else:
+                    df[_sf] = ''
+            df['_date'] = _date.strftime('%Y-%m-%d')
+            df['_total'] = _total
+            return (_date, df)
         except Exception as e:
             logger.warning(f"Failed to load {_name}: {e}")
-        return None
+            return None
 
     if _payloads:
         _workers = min(8, len(_payloads))
@@ -922,103 +990,53 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     dates = sorted(weekly_data.keys())
     dates_iso = [d.strftime('%Y-%m-%d') for d in dates]
 
-    # ── Step 2: Build rank histories ──
+    # ── Step 2: Build rank histories (PERF P5 — vectorized) ──
+    # OLD: for each week, for each row in df.iterrows(): 22-col inner loop.
+    # That was O(weeks * stocks * cols) Python-level dict ops — the dominant
+    # cost of "Computing trajectories...".
+    # NEW: single concat -> groupby('ticker') -> .tolist() per column. Pandas
+    # does the heavy lifting in C. Same data shape, same semantics.
+    _all = pd.concat([weekly_data[d] for d in dates], ignore_index=True, sort=False, copy=False)
+
+    # PERF P5b: Pre-compute "latest non-empty" per ticker per static field in
+    # ONE vectorized pass per field, instead of per-ticker .astype + .ne calls
+    # inside the groupby loop (was 25K+ Series ops on 2K tickers × 6 fields).
+    _LATEST_FIELDS = _STR_LATEST + ['market_state', 'patterns']
+    _latest_meta: dict = {}
+    for _fld in _LATEST_FIELDS:
+        # Strings were already stripped & NaN-coerced to '' in _parse_one.
+        # Boolean mask is now a single C-level numpy op.
+        _ne_mask = _all[_fld].to_numpy(dtype=object) != ''
+        if _ne_mask.any():
+            _sub = _all.loc[_ne_mask, ['ticker', _fld]]
+            _latest_meta[_fld] = (
+                _sub.drop_duplicates('ticker', keep='last')
+                    .set_index('ticker')[_fld]
+                    .to_dict()
+            )
+        else:
+            _latest_meta[_fld] = {}
+
     histories = {}
-    for date in dates:
-        df = weekly_data[date]
-        total = len(df)
-        for _, row in df.iterrows():
-            ticker = str(row.get('ticker', '')).strip()
-            if not ticker or ticker == 'nan':
-                continue
-
-            if ticker not in histories:
-                histories[ticker] = {
-                    'dates': [], 'ranks': [], 'scores': [], 'prices': [],
-                    'total_per_week': [],
-                    'trend_qualities': [],
-                    'market_states': [],
-                    'pattern_history': [],
-                    'ret_7d': [],             # v2.3: Weekly returns (split-adjusted)
-                    'ret_30d': [],            # v2.3: 30-day returns
-                    'ret_3m': [],             # v2.3: 3-month returns
-                    'ret_6m': [],             # v3.0: 6-month returns (institutional horizon)
-                    'from_high_pct': [],      # v2.3: Distance from 52w high
-                    'momentum_score': [],     # v2.3: Wave engine momentum score
-                    'volume_score': [],       # v2.3: Wave engine volume score
-                    # ── v8.0: Wave Signal Fusion — 18 previously ignored columns ──
-                    'position_score': [],     # WAVE's 52-week position scoring
-                    'acceleration_score': [], # WAVE's momentum acceleration
-                    'breakout_score': [],     # WAVE's breakout detection (4 components)
-                    'rvol_score': [],         # WAVE's relative volume quality
-                    'pe': [],                 # Price/Earnings ratio
-                    'eps_current': [],        # Current EPS
-                    'eps_change_pct': [],     # EPS change percentage
-                    'from_low_pct': [],       # Distance from 52-week low
-                    'ret_1d': [],             # 1-day return (intraday momentum)
-                    'ret_1y': [],             # 1-year return (long-term trend)
-                    'rvol': [],               # Raw relative volume
-                    'vmi': [],                # Volume-Momentum Index
-                    'money_flow_mm': [],      # Money flow in millions
-                    'position_tension': [],   # Position tension metric
-                    'momentum_harmony': [],   # Momentum harmony (0-4)
-                    'eps_tier': [],           # EPS tier classification
-                    'pe_tier': [],            # PE tier classification
-                    'overall_market_strength': [],  # Market strength metric
-                    'company_name': '', 'category': '', 'sector': '',
-                    'industry': '', 'market_state': '', 'patterns': ''
-                }
-
-            h = histories[ticker]
-            h['dates'].append(date.strftime('%Y-%m-%d'))
-            h['ranks'].append(float(row['rank']) if pd.notna(row['rank']) else total)
-            h['scores'].append(float(row['master_score']))
-            h['prices'].append(float(row['price']))
-            h['total_per_week'].append(total)
-
-            tq_val = row.get('trend_quality', 0)
-            h['trend_qualities'].append(float(tq_val) if pd.notna(tq_val) else 0)
-            ms_val = row.get('market_state', '')
-            h['market_states'].append(str(ms_val).strip() if pd.notna(ms_val) else '')
-            pat_val = row.get('patterns', '')
-            h['pattern_history'].append(str(pat_val).strip() if pd.notna(pat_val) else '')
-
-            # v2.3: Track return & fundamental data per week
-            for col_name, hist_key in [
-                ('ret_7d', 'ret_7d'), ('ret_30d', 'ret_30d'), ('ret_3m', 'ret_3m'),
-                ('ret_6m', 'ret_6m'),
-                ('from_high_pct', 'from_high_pct'), ('momentum_score', 'momentum_score'),
-                ('volume_score', 'volume_score'),
-                # v8.0: Wave Signal Fusion — 18 previously ignored columns
-                ('position_score', 'position_score'), ('acceleration_score', 'acceleration_score'),
-                ('breakout_score', 'breakout_score'), ('rvol_score', 'rvol_score'),
-                ('pe', 'pe'), ('eps_current', 'eps_current'),
-                ('eps_change_pct', 'eps_change_pct'), ('from_low_pct', 'from_low_pct'),
-                ('ret_1d', 'ret_1d'), ('ret_1y', 'ret_1y'),
-                ('rvol', 'rvol'), ('vmi', 'vmi'),
-                ('money_flow_mm', 'money_flow_mm'), ('position_tension', 'position_tension'),
-                ('momentum_harmony', 'momentum_harmony'),
-                ('overall_market_strength', 'overall_market_strength'),
-            ]:
-                col_val = row.get(col_name, None)
-                if col_val is not None and pd.notna(col_val):
-                    try:
-                        h[hist_key].append(float(col_val))
-                    except (ValueError, TypeError):
-                        h[hist_key].append(float('nan'))
-                else:
-                    h[hist_key].append(float('nan'))
-
-            # Always keep latest info
-            for fld in ['company_name', 'category', 'sector', 'industry', 'market_state', 'patterns']:
-                val = row.get(fld, '')
-                if pd.notna(val) and str(val).strip():
-                    h[fld] = str(val).strip()
-
-            # v8.0: Track tier classifications (string columns)
-            for tier_col in ['eps_tier', 'pe_tier']:
-                tier_val = row.get(tier_col, '')
-                h[tier_col].append(str(tier_val).strip() if pd.notna(tier_val) else '')
+    for ticker, g in _all.groupby('ticker', sort=False):
+        h = {
+            'dates': g['_date'].tolist(),
+            'ranks': g['rank'].tolist(),
+            'scores': g['master_score'].tolist(),
+            'prices': g['price'].tolist(),
+            'total_per_week': g['_total'].tolist(),
+            'trend_qualities': g['trend_quality'].tolist(),
+            'market_states': g['market_state'].tolist(),
+            'pattern_history': g['patterns'].tolist(),
+            'eps_tier': g['eps_tier'].tolist(),
+            'pe_tier': g['pe_tier'].tolist(),
+        }
+        for _c in _NUM_COLS:
+            h[_c] = g[_c].tolist()
+        # Latest-non-empty static metadata: O(1) dict lookup now.
+        for _fld in _LATEST_FIELDS:
+            h[_fld] = _latest_meta[_fld].get(ticker, '')
+        histories[ticker] = h
 
     # ── Step 3: Compute trajectories for all tickers ──
     results = []
@@ -3131,47 +3149,51 @@ def _estimate_hurst(series: List[float]) -> float:
     H < 0.5: Anti-persistent (mean-reverting) — current pattern likely reverses
     
     Uses simplified R/S method suitable for short series (6-25 weeks).
+
+    PERF P6: Vectorized along axis=1 over (n_segs, seg_len) reshaped arrays
+    instead of per-segment Python loops + many tiny np.std/np.mean calls.
+    Reduces ~150 numpy calls per Hurst call to ~6 per seg_len. Same math.
     """
     n = len(series)
     if n < 6:
         return 0.5  # Insufficient data → assume random walk
-    
-    arr = np.array(series, dtype=float)
-    
+
+    arr = np.asarray(series, dtype=float)
+
     # Use multiple sub-series lengths for robust estimation
     rs_values = []
     lengths = []
-    
+
     for seg_len in range(3, n // 2 + 1):
         n_segs = n // seg_len
         if n_segs < 1:
             break
-        rs_seg = []
-        for i in range(n_segs):
-            seg = arr[i * seg_len:(i + 1) * seg_len]
-            mean_seg = np.mean(seg)
-            deviations = seg - mean_seg
-            cumulative = np.cumsum(deviations)
-            r = np.max(cumulative) - np.min(cumulative)  # Range
-            s = np.std(seg, ddof=1) if np.std(seg, ddof=1) > 0 else 1e-10  # Std dev
-            rs_seg.append(r / s)
-        
-        avg_rs = np.mean(rs_seg)
+        # Reshape contiguous prefix into (n_segs, seg_len). All segment-level
+        # ops then run as single vectorized numpy calls along axis=1.
+        mat = arr[:n_segs * seg_len].reshape(n_segs, seg_len)
+        means = mat.mean(axis=1, keepdims=True)
+        deviations = mat - means
+        cumulative = np.cumsum(deviations, axis=1)
+        ranges = cumulative.max(axis=1) - cumulative.min(axis=1)
+        # ddof=1 std along axis; guard against zero
+        stds = mat.std(axis=1, ddof=1)
+        stds = np.where(stds > 0, stds, 1e-10)
+        rs = ranges / stds
+        avg_rs = rs.mean()
         if avg_rs > 0:
             rs_values.append(np.log(avg_rs))
             lengths.append(np.log(seg_len))
-    
+
     if len(rs_values) < 2:
         return 0.5
-    
-    # Linear regression: log(R/S) = H * log(n) + c
-    # H is the slope
-    x = np.array(lengths)
-    y = np.array(rs_values)
+
+    # Linear regression: log(R/S) = H * log(n) + c → H is the slope
+    x = np.asarray(lengths)
+    y = np.asarray(rs_values)
     n_pts = len(x)
-    slope = (n_pts * np.sum(x * y) - np.sum(x) * np.sum(y)) / \
-            max(n_pts * np.sum(x ** 2) - np.sum(x) ** 2, 1e-10)
-    
+    sx = x.sum(); sy = y.sum()
+    slope = (n_pts * (x * y).sum() - sx * sy) / max(n_pts * (x * x).sum() - sx * sx, 1e-10)
+
     # Clamp to valid range [0.1, 0.9]
     return float(np.clip(slope, 0.1, 0.9))
 
@@ -6733,7 +6755,7 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
     week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len] or [1]
     week_labels = {1: '1 Week', 2: '2 Weeks', 4: '4 Weeks', 8: '8 Weeks', 12: '12 Weeks'}
 
-    c_wk, c_ct, c_side, _ = st.columns([1, 1, 1, 1])
+    c_wk, c_ct, c_side, c_sec = st.columns([1, 1, 1, 1.4])
     with c_wk:
         mv_weeks = st.selectbox(
             'Time Window', options=week_options,
@@ -6750,6 +6772,32 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             'View', options=['⬆️ Biggest Climbers', '⬇️ Biggest Decliners', '🔄 Consistent Movers'],
             index=0, key='movers_tab_side',
         )
+    with c_sec:
+        # Sector filter: built from the sectors actually present in the
+        # currently filtered universe so users can never pick an empty bucket.
+        if 'sector' in filtered_df.columns:
+            _sec_pool = (
+                filtered_df['sector'].dropna().astype(str).str.strip()
+                .replace('', pd.NA).dropna().unique().tolist()
+            )
+            _sec_pool = sorted(_sec_pool)
+        else:
+            _sec_pool = []
+        mv_sectors = st.multiselect(
+            'Sector', options=_sec_pool, default=[],
+            placeholder='All sectors', key='movers_tab_sectors',
+        )
+
+    # Narrow the candidate ticker set BEFORE calling get_top_movers so the
+    # n=50/100/150 cap operates on the sector-filtered universe (otherwise
+    # we'd compute the global top-N then drop most rows post-hoc).
+    if mv_sectors:
+        _sec_mask = filtered_df['sector'].astype(str).str.strip().isin(mv_sectors)
+        _filtered_tickers = set(filtered_df.loc[_sec_mask, 'ticker'].tolist())
+        if not _filtered_tickers:
+            st.info(f"No stocks match selected sector{'s' if len(mv_sectors) != 1 else ''}: "
+                    + ", ".join(mv_sectors))
+            return
 
     # ── Fetch movers ─────────────────────────────────────────────
     gainers, decliners = get_top_movers(histories, n=mv_count, weeks=mv_weeks,
@@ -12959,15 +13007,18 @@ def main():
     # ── Session-state caching (recompute only when files change) ──
     cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
     if st.session_state.get('_traj_key') != cache_key:
-        with st.spinner("📊 Computing trajectories across all weeks..."):
+        _t0 = datetime.now()
+        with st.spinner(f"📊 Reading & computing trajectories for {len(uploaded_files)} weeks (parallel)..."):
             try:
                 result = load_and_compute(uploaded_files)
             except Exception as e:
                 st.error(f"❌ Computation error: {e}")
                 logger.exception("load_and_compute failed")
                 return
+        _elapsed = (datetime.now() - _t0).total_seconds()
         st.session_state['_traj_key'] = cache_key
         st.session_state['_traj_result'] = result
+        st.session_state['_traj_elapsed'] = _elapsed
 
     result = st.session_state.get('_traj_result')
     if result is None or not isinstance(result, (tuple, list)) or len(result) != 4:
@@ -12994,9 +13045,15 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_dna_bt, tab_movers, tab_pattern, tab_dna_wl, tab_export, tab_about = st.tabs([
+    # Reordered per user: analysis tabs first, heavy compute tabs middle,
+    # utility tabs last. Order matches the in-session workflow:
+    # observe market → rank → search → watchlist → movers → backtest → export.
+    (tab_pulse, tab_ranking, tab_search, tab_dna_wl, tab_movers,
+     tab_backtest, tab_dna_bt, tab_pattern, tab_export, tab_about) = st.tabs([
         "📡 Market Pulse", "🏆 Rankings", "🔍 Search & Analyze",
-        "📊 Strategy Backtest", "🧬 DNA Backtest", "🔥 Top Movers", "🔬 Pattern Analyser", "🎯 DNA Watchlist", "📤 Export", "ℹ️ About"
+        "🎯 DNA Watchlist", "🔥 Top Movers",
+        "📊 Strategy Backtest", "🧬 DNA Backtest", "🔬 Pattern Analyser",
+        "📤 Export", "ℹ️ About"
     ])
 
     with tab_pulse:
