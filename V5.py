@@ -4912,6 +4912,23 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ────────────────────────────────────────────────────────────
     # SECTION 1: PULSE HERO CARD
     # ────────────────────────────────────────────────────────────
+    # MP-8 FIX: Build date_range from the ACTUAL weekly snapshots in scope, not
+    # from engine metadata. metadata['date_range'] reflects the full CSV span;
+    # filtered scope can produce a different first/last week, and n_weeks here
+    # is also from snapshots. Showing both from the same source eliminates the
+    # "18 weeks but Aug 30 → Apr 18" mismatch the user spotted.
+    def _fmt_snap_date(_ds: str) -> str:
+        try:
+            return datetime.strptime(_ds[:10], '%Y-%m-%d').strftime('%b %d, %Y')
+        except Exception:
+            return str(_ds)
+    _first_ds = weekly_snaps[0]['date'] if weekly_snaps else ''
+    _last_ds = weekly_snaps[-1]['date'] if weekly_snaps else ''
+    if _first_ds and _last_ds:
+        _date_range_str = f"{_fmt_snap_date(_first_ds)} → {_fmt_snap_date(_last_ds)}"
+    else:
+        _date_range_str = str(metadata.get('date_range', ''))
+
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#0d1117 0%,#161b22 100%);border-radius:16px;
         padding:22px 28px;margin-bottom:18px;border:1px solid #30363d;
@@ -4921,7 +4938,7 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
           <div style="font-size:1.5rem;font-weight:800;color:#e6edf3;letter-spacing:-0.3px;">
             📡 Market Pulse</div>
           <div style="color:#8b949e;font-size:0.85rem;margin-top:2px;">
-            {metadata.get('date_range','')} &nbsp;·&nbsp; {n_weeks} weeks
+            {_date_range_str} &nbsp;·&nbsp; {n_weeks} weeks
                         &nbsp;·&nbsp; {n_stocks} stocks &nbsp;·&nbsp; {pulse_scope}</div>
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
@@ -4975,7 +4992,7 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     ad_ratio_list = []
     ad_ratio_text = []
     avg_score_list = []
-    for snap in weekly_snaps:
+    for _wi, snap in enumerate(weekly_snaps):
         sc_arr = np.array(snap['scores'], dtype=float)
         rk_arr = np.array(snap['ranks'], dtype=float)
         pr_arr = np.array(snap['prev_ranks'], dtype=float)
@@ -4984,13 +5001,21 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         _v = ~np.isnan(pr_arr)
         imp = int(np.sum((rk_arr < pr_arr) & _v))
         dec = int(np.sum((rk_arr > pr_arr) & _v))
-        _vn = max(int(_v.sum()), 1)
+        _vn = int(_v.sum())
         dates_list.append(snap['date'])
-        pct_improving_list.append(round(100 * imp / _vn, 1))
+        # MP-9 FIX: First week has no prev → _vn==0 → skip improving/AD points
+        # entirely (None breaks Plotly line so the chart starts cleanly at
+        # week 2 instead of plunging to 0% / NaN on the first marker).
+        if _vn > 0 and _wi > 0:
+            pct_improving_list.append(round(100 * imp / _vn, 1))
+            _ad_val = _safe_ad_ratio(imp, dec)
+            ad_ratio_list.append(np.nan if np.isinf(_ad_val) else round(_ad_val, 2) if not pd.isna(_ad_val) else np.nan)
+            ad_ratio_text.append(_fmt_ratio(_ad_val))
+        else:
+            pct_improving_list.append(None)
+            ad_ratio_list.append(None)
+            ad_ratio_text.append('NA')
         pct_strong_list.append(round(100 * np.sum(sc_arr >= 55) / n_s, 1))
-        _ad_val = _safe_ad_ratio(imp, dec)
-        ad_ratio_list.append(np.nan if np.isinf(_ad_val) else round(_ad_val, 2) if not pd.isna(_ad_val) else np.nan)
-        ad_ratio_text.append(_fmt_ratio(_ad_val))
         avg_score_list.append(round(float(np.mean(sc_arr)), 1))
 
     fig_breadth = go.Figure()
@@ -5032,24 +5057,41 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     st.plotly_chart(fig_breadth, use_container_width=True, key='mp_breadth_chart')
 
     # Breadth sparkline summary
-    if len(pct_improving_list) >= 2:
-        delta_imp = pct_improving_list[-1] - pct_improving_list[-2]
-        delta_str = pct_strong_list[-1] - pct_strong_list[-2]
-        d_i_c = '#3fb950' if delta_imp >= 0 else '#f85149'
-        d_s_c = '#3fb950' if delta_str >= 0 else '#f85149'
-        d_i_sign = '+' if delta_imp >= 0 else ''
-        d_s_sign = '+' if delta_str >= 0 else ''
-        st.markdown(f"""
-        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;">
-          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
-              font-size:0.82rem;color:#c9d1d9;">
-            <span style="color:{d_i_c};font-weight:700;">{d_i_sign}{delta_imp:.1f}%</span>
-            improving vs prev week</div>
-          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
-              font-size:0.82rem;color:#c9d1d9;">
-            <span style="color:{d_s_c};font-weight:700;">{d_s_sign}{delta_str:.1f}%</span>
-            strong (B+) vs prev week</div>
-        </div>""", unsafe_allow_html=True)
+    # MP-9 follow-through: pct_improving_list may contain None for week 1.
+    # Guard the delta calc so we only show "vs prev week" when both endpoints
+    # are real numbers; otherwise omit the chip cleanly.
+    _last_imp = pct_improving_list[-1] if pct_improving_list else None
+    _prev_imp = pct_improving_list[-2] if len(pct_improving_list) >= 2 else None
+    _last_str = pct_strong_list[-1] if pct_strong_list else None
+    _prev_str = pct_strong_list[-2] if len(pct_strong_list) >= 2 else None
+    _imp_ok = isinstance(_last_imp, (int, float)) and isinstance(_prev_imp, (int, float))
+    _str_ok = isinstance(_last_str, (int, float)) and isinstance(_prev_str, (int, float))
+    if _imp_ok or _str_ok:
+        _chips_html = ''
+        if _imp_ok:
+            delta_imp = float(_last_imp) - float(_prev_imp)
+            d_i_c = '#3fb950' if delta_imp >= 0 else '#f85149'
+            d_i_sign = '+' if delta_imp >= 0 else ''
+            _chips_html += (
+                f'<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'
+                f'padding:8px 16px;font-size:0.82rem;color:#c9d1d9;">'
+                f'<span style="color:{d_i_c};font-weight:700;">{d_i_sign}{delta_imp:.1f}%</span>'
+                f' improving vs prev week</div>'
+            )
+        if _str_ok:
+            delta_str = float(_last_str) - float(_prev_str)
+            d_s_c = '#3fb950' if delta_str >= 0 else '#f85149'
+            d_s_sign = '+' if delta_str >= 0 else ''
+            _chips_html += (
+                f'<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'
+                f'padding:8px 16px;font-size:0.82rem;color:#c9d1d9;">'
+                f'<span style="color:{d_s_c};font-weight:700;">{d_s_sign}{delta_str:.1f}%</span>'
+                f' strong (B+) vs prev week</div>'
+            )
+        st.markdown(
+            f'<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;">{_chips_html}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 # ============================================
