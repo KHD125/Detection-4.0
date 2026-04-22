@@ -11331,6 +11331,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
 
         state = str(row.get('market_state', '')).strip()
         company = str(row.get('company_name', tk)).strip()
+        sector = str(row.get('sector', '')).strip() or '—'
         ms = _safe_dna(row, 'master_score')
         fh_now = _safe_dna(row, 'from_high_pct', -99)
         # Raw pattern set for Tier anti-pattern checks
@@ -11349,6 +11350,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             'State': state,
             'Criteria Met': len(reasons),
             'Key Signals': ', '.join(reasons[:4]),
+            'Sector': sector,
             'TQ': f'{tq_now:.0f}',
             'TQ Trend': tq_trend,
             'Rank': f'{rk_now:.0f}' if rk_has else '—',
@@ -11426,7 +11428,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     ].sort_values(sort_col, ascending=sort_asc).copy()
 
     display_cols = ['Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
-                    'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
+                    'Path', 'State', 'Criteria Met', 'Key Signals', 'Sector', 'TQ', 'TQ Trend',
                     'Rank', 'Rank Δ', 'MS']
     # Hide the Category column when the user has narrowed to a single category —
     # every row would just repeat the selected cap, wasting horizontal space.
