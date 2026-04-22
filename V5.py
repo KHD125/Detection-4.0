@@ -1074,14 +1074,9 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     sr_cfg = SECTOR_RELATIVE
     eligible_mask = traj_df['weeks'] >= MIN_WEEKS_DEFAULT
 
-    # PERF: cast string label columns to category dtype — cuts groupby cost ~2x
-    # and shrinks memory ~40%. Safe everywhere downstream (pandas handles ==/isin).
-    for _cat_col in ('sector', 'category', 'industry'):
-        if _cat_col in traj_df.columns and traj_df[_cat_col].dtype == object:
-            try:
-                traj_df[_cat_col] = traj_df[_cat_col].astype('category')
-            except Exception:
-                pass
+    # NOTE: 'category' dtype conversion was reverted — downstream code performs
+    # arithmetic on label columns in places (e.g. NaN-fill + subtract patterns)
+    # that don't handle CategoricalDtype. Keep label columns as object/str.
 
     # Defaults — non-eligible / orphan-sector rows keep these
     traj_df['sector_pct'] = 0.0
@@ -1090,7 +1085,7 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     if eligible_mask.sum() > 0:
         elig = traj_df.loc[eligible_mask, ['sector', 'trajectory_score', 't_percentile']]
         # Vectorized sector size + intra-sector rank
-        _grp = elig.groupby('sector', observed=True)
+        _grp = elig.groupby('sector')
         _counts = _grp['trajectory_score'].transform('size').astype(float)
         _ranks = _grp['trajectory_score'].rank(ascending=False, method='min').astype(float)
         # Sector percentile (100 = best). For solo-stock sectors keep 0 to match
@@ -1160,7 +1155,7 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     # PERF: was df.apply(axis=1) Python row-loop; now vectorized via merge +
     # np.select. ~10x faster.
     sa_cfg = SECTOR_ALPHA
-    sector_stats = traj_df[traj_df['weeks'] >= MIN_WEEKS_DEFAULT].groupby('sector', observed=True)['trajectory_score'].agg(
+    sector_stats = traj_df[traj_df['weeks'] >= MIN_WEEKS_DEFAULT].groupby('sector')['trajectory_score'].agg(
         ['mean', 'count', 'std']
     )
 
