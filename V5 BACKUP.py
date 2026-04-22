@@ -5074,29 +5074,34 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         ], key='rank_view', label_visibility='collapsed')
 
     # ── T-Rank = rank within full universe (stable, never changes with filters) ──
-    @st.cache_data(ttl=300, show_spinner=False)
-    def _build_t_rank_map(rank_rows):
-        rank_df = pd.DataFrame(rank_rows, columns=['ticker', 'trajectory_score', 'confidence', 'consistency'])
-        rank_df = rank_df.sort_values(
-            ['trajectory_score', 'confidence', 'consistency'],
-            ascending=[False, False, False]
-        ).reset_index(drop=True)
-        return {str(t): i + 1 for i, t in enumerate(rank_df['ticker'])}
-
-    _rank_rows = tuple(
-        zip(
+    # R1 FIX: Use canonical upstream t_rank (already sector-blend + bear-tilt aware).
+    # Previously this rebuilt rank from raw trajectory_score, causing a silent
+    # divergence in BEAR regimes where the engine's sector_blend_score had
+    # reordered stocks. Single source of truth = compute_all_trajectories.
+    if 't_rank' in all_local.columns:
+        t_rank_map = dict(zip(
             all_local['ticker'].astype(str),
-            pd.to_numeric(all_local['trajectory_score'], errors='coerce').fillna(0.0),
-            pd.to_numeric(all_local['confidence'], errors='coerce').fillna(0.0),
-            pd.to_numeric(all_local['consistency'], errors='coerce').fillna(0.0),
-        )
+            pd.to_numeric(all_local['t_rank'], errors='coerce').fillna(0).astype(int),
+        ))
+    else:
+        # Defensive fallback if upstream schema changes: rebuild from score.
+        _fallback = all_local[['ticker', 'trajectory_score', 'confidence', 'consistency']].copy()
+        for _c in ('trajectory_score', 'confidence', 'consistency'):
+            _fallback[_c] = pd.to_numeric(_fallback[_c], errors='coerce').fillna(0.0)
+        _fallback = _fallback.sort_values(
+            ['trajectory_score', 'confidence', 'consistency'],
+            ascending=[False, False, False],
+        ).reset_index(drop=True)
+        t_rank_map = {str(t): i + 1 for i, t in enumerate(_fallback['ticker'])}
+    filtered_local['t_rank_universe'] = (
+        filtered_local['ticker'].astype(str).map(t_rank_map).fillna(0).astype(int)
     )
-    t_rank_map = _build_t_rank_map(_rank_rows)
-    filtered_local['t_rank_universe'] = filtered_local['ticker'].astype(str).map(t_rank_map).fillna(0).astype(int)
 
     # ── Sort FIRST, then apply Show Top limit ──
+    # R3 FIX: 'Trajectory Score' sorts by canonical t_rank ASC so the displayed
+    # order matches the displayed rank column (reflects sector-blend + bear-tilt).
     sort_map = {
-        'Trajectory Score': ('trajectory_score', False),
+        'Trajectory Score': ('t_rank', True),
         'Alpha Score': ('alpha_score', False),
         'Positional Quality': ('positional', False),
         'TMI': ('tmi', False),
@@ -6862,11 +6867,19 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
 # UI: EXPORT TAB
 # ============================================
 
-def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories: dict):
+def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories: dict, metadata: Optional[dict] = None):
     """Render export options tab"""
 
     st.markdown("##### 📤 Export Trajectory Data")
     st.markdown("Download trajectory rankings and analysis data in various formats.")
+
+    # E4: Use data's latest_date for filename (not datetime.now) so exports
+    # of old snapshots are correctly labeled. Falls back to today if missing.
+    _meta = metadata or {}
+    _ld_raw = str(_meta.get('latest_date', '') or '').strip()
+    _date_slug = _ld_raw.replace('-', '').replace('/', '').replace(' ', '')[:8]
+    if not _date_slug:
+        _date_slug = datetime.now().strftime('%Y%m%d')
 
     # ── Empty-filter notice (Export still allows 'All Rankings' / 'Custom Selection') ──
     if filtered_df is None or filtered_df.empty:
@@ -6916,45 +6929,76 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
         cols = [c for c in full_cols if c in export_df.columns]
 
     export_data = export_df[cols].copy()
-    # Remove sparkline from export (it's a list column)
-    if 'sparkline' in export_data.columns:
-        export_data = export_data.drop(columns=['sparkline'])
+    # E7: removed dead 'sparkline' drop (never in cols lists).
 
-    # Preview
-    st.markdown(f"##### Preview ({len(export_data)} stocks, {len(cols)} columns)")
-    st.dataframe(export_data.head(20), hide_index=True, use_container_width=True)
+    # E2: Serialize list/dict-type columns to pipe-joined strings so CSV /
+    # Excel / JSON render consistently (users can re-import without parsing
+    # Python repr strings like "['A', 'B']").
+    def _stringify_list_col(v):
+        if isinstance(v, (list, tuple, set)):
+            return ' | '.join(str(x) for x in v)
+        if isinstance(v, dict):
+            return ' | '.join(f"{k}={v[k]}" for k in v)
+        return v
+    for _lc in ('latest_patterns', 'signal_tags'):
+        if _lc in export_data.columns:
+            export_data[_lc] = export_data[_lc].map(_stringify_list_col)
+
+    # E3: Empty-guard — skip preview + downloads when no rows
+    if export_data.empty:
+        st.info("ℹ️ Nothing to export with the current scope + detail combination.")
+        return
+
+    # E9: Preview with clear "first N of total" caption
+    _preview_n = min(20, len(export_data))
+    st.markdown(f"##### Preview ({len(export_data):,} stocks, {len(cols)} columns)")
+    st.caption(f"Showing first **{_preview_n}** of **{len(export_data):,}** rows")
+    st.dataframe(export_data.head(_preview_n), hide_index=True, use_container_width=True)
+
+    # E4: Unified dated filename stem using data's latest_date
+    _fname_stem = f"trajectory_rankings_{_date_slug}"
 
     # Download buttons
     dl_c1, dl_c2, dl_c3 = st.columns(3)
 
     with dl_c1:
-        csv_data = export_data.to_csv(index=False).encode('utf-8')
+        # E1: UTF-8 BOM so Excel shows ₹ and other Unicode correctly
+        csv_data = ('\ufeff' + export_data.to_csv(index=False)).encode('utf-8')
         st.download_button(
             label="📥 Download CSV",
             data=csv_data,
-            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime='text/csv'
+            file_name=f"{_fname_stem}.csv",
+            mime='text/csv',
+            key='exp_dl_csv',
         )
 
     with dl_c2:
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            export_data.to_excel(writer, index=False, sheet_name='Trajectory Rankings')
-        buffer.seek(0)
-        st.download_button(
-            label="📥 Download Excel",
-            data=buffer.getvalue(),
-            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+        # E5: Graceful fallback if openpyxl is missing / broken
+        try:
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                export_data.to_excel(writer, index=False, sheet_name='Trajectory Rankings')
+            buffer.seek(0)
+            st.download_button(
+                label="📥 Download Excel",
+                data=buffer.getvalue(),
+                file_name=f"{_fname_stem}.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                key='exp_dl_xlsx',
+            )
+        except ModuleNotFoundError:
+            st.warning("⚠️ Excel export requires `openpyxl`. Run `pip install openpyxl` to enable this format.")
+        except Exception as _xl_e:
+            st.warning(f"⚠️ Excel export failed: {_xl_e}")
 
     with dl_c3:
         json_data = export_data.to_json(orient='records', indent=2)
         st.download_button(
             label="📥 Download JSON",
             data=json_data,
-            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-            mime='application/json'
+            file_name=f"{_fname_stem}.json",
+            mime='application/json',
+            key='exp_dl_json',
         )
 
     # ── Export individual stock trajectory ──
@@ -6972,12 +7016,14 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
             'percentile': [round((1 - r / max(t, 1)) * 100, 2) for r, t in zip(h['ranks'], h['total_per_week'])]
         })
         st.dataframe(hist_df, hide_index=True, use_container_width=True)
-        csv_hist = hist_df.to_csv(index=False).encode('utf-8')
+        # E8: BOM on individual stock history CSV too
+        csv_hist = ('\ufeff' + hist_df.to_csv(index=False)).encode('utf-8')
         st.download_button(
             label=f"📥 Download {ticker_for_export} History (CSV)",
             data=csv_hist,
-            file_name=f"{ticker_for_export}_trajectory_history.csv",
-            mime='text/csv'
+            file_name=f"{ticker_for_export}_trajectory_history_{_date_slug}.csv",
+            mime='text/csv',
+            key='exp_dl_hist',
         )
 
 
@@ -12836,7 +12882,7 @@ def main():
         render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories)
 
     with tab_export:
-        render_export_tab(filtered_df, traj_df, histories)
+        render_export_tab(filtered_df, traj_df, histories, metadata)
 
     with tab_about:
         render_about_tab()
