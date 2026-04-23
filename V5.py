@@ -11518,13 +11518,13 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     fc1, fc2, fc3 = st.columns([1, 1, 1])
     with fc1:
         min_score = st.slider(
-            "Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore',
-            help="Higher = stricter watch-list. 70+ ≈ elite, 55+ ≈ strong, 40+ ≈ broad.",
+            "Min DNA Score", 30, 90, 30, 5, key='dna_wl_minscore',
+            help="Higher = stricter watch-list. 70+ ≈ elite, 55+ ≈ strong, 30+ ≈ broad.",
         )
     with fc2:
         conv_filter = st.multiselect(
             "Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
-            default=['🔴 HIGH', '🟡 MEDIUM'], key='dna_wl_conv',
+            default=['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'], key='dna_wl_conv',
         )
     with fc3:
         # Sort by hidden numeric columns (always descending — best-first).
