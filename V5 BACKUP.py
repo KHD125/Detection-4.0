@@ -11124,6 +11124,78 @@ def compute_dna_for_ticker(ticker: str, histories: dict) -> dict:
 # UI: DNA WATCHLIST TAB
 # ============================================
 
+# History window for multi-week DNA analytics (4w Δ, 12w Peak, Setup Age).
+# 12 weeks = ~3 months — long enough to capture a complete setup cycle
+# (accumulation → breakout → consolidation) without inflating cache memory.
+_DNA_HISTORY_WEEKS = 12
+# Threshold (= 'on the radar' bar) used to count consecutive weeks for
+# Setup Age. Fixed at 45 (= MEDIUM conviction floor) so the meaning is
+# stable regardless of where the user moves the Min DNA slider.
+_DNA_SETUP_AGE_THRESHOLD = 45
+
+
+def _score_one_week_dna(df_week):
+    """Score every row of a single-week dataframe through its category's DNA scorer.
+
+    Returns: {ticker(str): score(int)} dict. Rows whose category isn't a known
+    cap (or whose scorer raises) are silently skipped — same fail-soft behaviour
+    as the inline scoring loop, so a corrupt row never breaks the watchlist.
+    """
+    out = {}
+    for _, r in df_week.iterrows():
+        tk = str(r['ticker']).strip()
+        cat = str(r.get('category', '')).strip()
+        try:
+            if cat == 'Large Cap':
+                ps, _ = _dna_score_large(r)
+            elif cat == 'Mega Cap':
+                ps, _ = _dna_score_mega(r)
+            elif cat == 'Mid Cap':
+                ps, _, _ = _dna_score_mid(r)
+            elif cat == 'Small Cap':
+                ps, _ = _dna_score_small(r)
+            elif cat == 'Micro Cap':
+                ps, _ = _dna_score_micro(r)
+            else:
+                continue
+            out[tk] = ps
+        except Exception:
+            pass
+    return out
+
+
+def _build_dna_score_history(weekly_data, recent_dates):
+    """Build {ticker: [(date, score), ...]} sorted ascending by date.
+
+    Uses st.session_state as a render-to-render cache keyed on (date, row_count).
+    A new file upload changes row counts (or dates) → cache invalidates cleanly.
+    Avoids the 1–3s cost of re-scoring 12 × ~2,000 rows on every slider tick.
+    """
+    if '_dna_wl_score_cache' not in st.session_state:
+        st.session_state['_dna_wl_score_cache'] = {}
+    cache = st.session_state['_dna_wl_score_cache']
+
+    history = {}
+    for d in recent_dates:
+        df_d = weekly_data[d]
+        # (date, row count) is a cheap, collision-resistant key for our use:
+        # each weekly CSV has a unique date and a stable row count for a given
+        # snapshot. If the user re-uploads with different content, len differs.
+        key = (d, len(df_d))
+        week_scores = cache.get(key)
+        if week_scores is None:
+            week_scores = _score_one_week_dna(df_d)
+            cache[key] = week_scores
+        for tk, sc in week_scores.items():
+            history.setdefault(tk, []).append((d, sc))
+
+    # Defensive sort — recent_dates is already sorted ascending, but a guard
+    # here keeps history correct even if a future caller passes them unordered.
+    for tk in history:
+        history[tk].sort(key=lambda x: x[0])
+    return history
+
+
 def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     """🎯 DNA Watchlist — Category-specific forward-looking winner scanner."""
     st.markdown("### 🎯 DNA Watchlist — Find Winners Before They Win")
@@ -11190,28 +11262,18 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
                 except (ValueError, TypeError):
                     pass
 
-    # Build prev-week DNA score map for DNA trend tracking
+    # Build multi-week DNA score history (last 12 weeks per ticker).
+    # Drives: prev_dna_map (1-week Δ — preserved), DNA 4w Δ, DNA Peak (12w),
+    # and Setup Age. Cached across reruns so slider/filter changes are instant.
+    _hist_dates = dates[-_DNA_HISTORY_WEEKS:]
+    score_history_map = _build_dna_score_history(weekly_data, _hist_dates)
+
+    # Derive prev-week DNA map from history for backward-compatible Δ logic.
+    # The latest week IS in the history; the second-to-last entry is "prev".
     prev_dna_map = {}
-    if prev_df is not None:
-        for _, r in prev_df.iterrows():
-            tk = str(r['ticker']).strip()
-            cat = str(r.get('category', '')).strip()
-            try:
-                if cat == 'Large Cap':
-                    _ps, _ = _dna_score_large(r)
-                elif cat == 'Mega Cap':
-                    _ps, _ = _dna_score_mega(r)
-                elif cat == 'Mid Cap':
-                    _ps, _, _ = _dna_score_mid(r)
-                elif cat == 'Small Cap':
-                    _ps, _ = _dna_score_small(r)
-                elif cat == 'Micro Cap':
-                    _ps, _ = _dna_score_micro(r)
-                else:
-                    continue
-                prev_dna_map[tk] = _ps
-            except Exception:
-                pass
+    for tk, hist in score_history_map.items():
+        if len(hist) >= 2:
+            prev_dna_map[tk] = hist[-2][1]
 
     # Build "new this week" set: tickers in the latest CSV but NOT in the
     # immediately preceding CSV. Strict 1-week semantic to match the label
@@ -11337,14 +11399,73 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         # Raw pattern set for Tier anti-pattern checks
         _pats_raw = ' | '.join(_get_patterns_dna(row))
 
+        # ── Multi-week DNA analytics (uses score_history_map) ─────────────
+        _hist = score_history_map.get(tk, [])
+        _hist_scores = [s for _, s in _hist]
+
+        # 4-week Δ: today − score from exactly 4 weeks ago.
+        # Need ≥ 5 entries (today + 4 prior). Fewer → '—' (not enough data).
+        if len(_hist_scores) >= 5:
+            _d4 = dna_score - _hist_scores[-5]
+            _d4i = int(round(_d4))
+            if _d4i >= 10:
+                dna_4w_delta = f'🚀+{_d4i}'
+            elif _d4i >= 3:
+                dna_4w_delta = f'↑+{_d4i}'
+            elif _d4i <= -10:
+                dna_4w_delta = f'⚠️{_d4i}'
+            elif _d4i <= -3:
+                dna_4w_delta = f'↓{_d4i}'
+            else:
+                dna_4w_delta = '→'
+            dna_4w_delta_num = _d4i
+        else:
+            dna_4w_delta = '—'
+            dna_4w_delta_num = 0
+
+        # 12-week Peak: highest DNA score in the available window (incl. today).
+        # ★ marker when today equals (or is within 1 pt of) the peak — "at peak".
+        if _hist_scores:
+            _peak = max(_hist_scores)
+            _peak_i = int(round(_peak))
+            if dna_score >= _peak - 1:
+                dna_peak_disp = f'★{_peak_i}'      # at-peak: today is the high
+            else:
+                dna_peak_disp = f'{_peak_i}'
+            dna_peak_num = _peak_i
+        else:
+            dna_peak_disp = '—'
+            dna_peak_num = 0
+
+        # Setup Age: consecutive weeks (counting back from today) with score
+        # ≥ _DNA_SETUP_AGE_THRESHOLD. "How long has this stock been on the radar?"
+        # Fresh signal = 1w. Long-brewing setup = 6w+.
+        _age = 0
+        for _s in reversed(_hist_scores):
+            if _s >= _DNA_SETUP_AGE_THRESHOLD:
+                _age += 1
+            else:
+                break
+        if _age == 0:
+            setup_age_disp = '—'
+        elif _age == 1:
+            setup_age_disp = '🆕 1w'
+        elif _age >= 6:
+            setup_age_disp = f'🔥 {_age}w'
+        else:
+            setup_age_disp = f'{_age}w'
+
         results.append({
             'Ticker': tk,
             # Inline 🆕 badge appended to Company name (replaces standalone
-            # "New" column). Truncate name first to keep total length consistent.
-            'Company': (company[:25] + ' 🆕') if is_new else company[:25],
+            # "New" column). Full name preserved — column auto-sizes in dataframe.
+            'Company': (company + ' 🆕') if is_new else company,
             'Category': cat,
             'DNA Score': dna_score,
             'DNA Δ': dna_trend,
+            'DNA 4w Δ': dna_4w_delta,
+            'DNA Peak (12w)': dna_peak_disp,
+            'Setup Age': setup_age_disp,
             'Conviction': conviction,
             'Path': path,
             'State': state,
@@ -11359,6 +11480,9 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             '_is_new': is_new,         # kept as hidden flag for the "New This Week" section
             '_score': dna_score,
             '_dna_delta': dna_delta,
+            '_dna_4w_delta': dna_4w_delta_num,
+            '_dna_peak': dna_peak_num,
+            '_setup_age': _age,
             '_tq': tq_now,
             '_ms': ms,
             '_fh': fh_now,
@@ -11407,15 +11531,18 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         # Maps user-friendly labels to (column, ascending) tuples.
         sort_options = {
             'DNA Score (high → low)': ('_score', False),
-            'DNA Δ — Rising Fastest': ('_dna_delta', False),
+            'DNA Δ — Rising Fastest (1w)': ('_dna_delta', False),
+            'DNA 4w Δ — Trending Up (1m)': ('_dna_4w_delta', False),
+            'DNA Peak (12w) — Strongest Setups': ('_dna_peak', False),
+            'Setup Age — Longest Brewing': ('_setup_age', False),
             'TQ (high → low)': ('_tq', False),
             'Master Score (high → low)': ('_ms', False),
             'Criteria Met (most → least)': ('Criteria Met', False),
         }
         sort_choice = st.selectbox(
             "Sort By", list(sort_options.keys()), index=0, key='dna_wl_sort',
-            help="DNA Δ surfaces stocks whose setup is improving fastest week-over-week — "
-                 "often early-stage opportunities not yet at peak DNA Score.",
+            help="DNA Δ = 1-week change · 4w Δ = 1-month trend · Peak = best score in last 12w · "
+                 "Setup Age = consecutive weeks ≥ 45 (how long it's been on the radar).",
         )
 
     if not conv_filter:
@@ -11427,7 +11554,8 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         (res_df['Conviction'].isin(conv_filter))
     ].sort_values(sort_col, ascending=sort_asc).copy()
 
-    display_cols = ['Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ', 'Conviction',
+    display_cols = ['Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ',
+                    'DNA 4w Δ', 'DNA Peak (12w)', 'Setup Age', 'Conviction',
                     'Path', 'State', 'Criteria Met', 'Key Signals', 'Sector', 'TQ', 'TQ Trend',
                     'Rank', 'Rank Δ', 'MS']
     # Hide the Category column when the user has narrowed to a single category —
@@ -11580,7 +11708,17 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
 
         **Advanced Features:**
         - 🔥 **Pullback Confluence** (+3): When PULLBACK state fires AND 5+ other criteria already met — strongest setups
-        - 📊 **DNA Δ (Trend)**: Week-over-week DNA score change. 🔥+N = rising fast (catching fire), ↑+N = improving, ↓N = fading
+        - 📊 **DNA Δ (1w Trend)**: Week-over-week DNA score change. 🔥+N = rising fast (catching fire), ↑+N = improving, ↓N = fading
+
+        **Multi-Week DNA Analytics** (uses last 12 weeks of uploaded data):
+        - 📈 **DNA 4w Δ** — Score change vs ~4 weeks ago. 🚀+N = sustained 1-month uptrend in setup quality, ⚠️-N = multi-week deterioration. Filters out 1-week noise.
+        - 🏔️ **DNA Peak (12w)** — Highest DNA score in last 12 weeks (incl. today). ★N = today IS the peak (no headroom shown yet); plain N = today is below peak (room to recover OR setup decaying).
+        - ⏳ **Setup Age** — Consecutive weeks DNA ≥ 45 (medium-conviction bar). 🆕 1w = fresh signal, 2-5w = developing, 🔥 6w+ = long-brewing high-quality setup. Tells you *how long* a stock has been on the radar.
+
+        **How to read them together:**
+        - **Best new setups**: 🆕 1w + 🚀 4w Δ + ★ Peak → just turned, sharply rising, currently at its best
+        - **Best mature setups**: 🔥 6w+ + ★ Peak → been on radar for months and still at peak — proven persistence
+        - **Late-stage warnings**: 🔥 6w+ + ⚠️ 4w Δ + Peak ≫ today → was elite, now fading — exit signal
         """)
 
 
