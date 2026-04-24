@@ -109,6 +109,7 @@ import tempfile
 import shutil
 from typing import Dict, List, Tuple, Optional, Any
 from io import BytesIO
+import concurrent.futures as _cf  # PERF: parallel CSV parsing
 
 warnings.filterwarnings('ignore')
 np.seterr(all='ignore')
@@ -560,9 +561,34 @@ st.markdown("""
 
     /* ── Top Movers: compact when sidebar is expanded ── */
     html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-ticker  { display: none !important; }
-    html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-sector  { display: none !important; }
     html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-row     { padding-left: 8px !important; padding-right: 8px !important; gap: 5px !important; }
     html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-grid    { gap: 6px !important; }
+
+    /* ── Tab bar: always reachable ── 10 tabs can overflow when sidebar is
+       open. Make the tablist horizontally scrollable with momentum, hide
+       the ugly scrollbar, and tighten padding so most tabs fit on screen. */
+    div[data-testid="stTabs"] div[role="tablist"] {
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        flex-wrap: nowrap !important;
+        scrollbar-width: thin;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+    }
+    div[data-testid="stTabs"] div[role="tablist"]::-webkit-scrollbar { height: 6px; }
+    div[data-testid="stTabs"] div[role="tablist"]::-webkit-scrollbar-thumb {
+        background: rgba(88,166,255,0.35); border-radius: 3px;
+    }
+    div[data-testid="stTabs"] div[role="tablist"] button[role="tab"] {
+        flex-shrink: 0 !important;
+        white-space: nowrap !important;
+    }
+    /* When sidebar is open, shrink padding & font so MORE tabs are visible */
+    html:has(section[data-testid="stSidebar"][aria-expanded="true"]) div[data-testid="stTabs"] div[role="tablist"] button[role="tab"] {
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+        font-size: 0.86rem !important;
+    }
 
     /* ── Hero Banner ── */
     .hero-banner {
@@ -685,7 +711,10 @@ st.markdown("""
         background: #0d1117; border-radius: 14px; padding: 22px;
         margin-bottom: 16px; border: 1px solid #30363d;
     }
-    div[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+    /* DataFrame: rounded corners only on the inner scroll area, NOT on the
+       outer wrapper — `overflow: hidden` on the wrapper clips Streamlit's
+       hover toolbar (search / download / fullscreen icons in top-right). */
+    div[data-testid="stDataFrame"] > div { border-radius: 8px; overflow: hidden; }
     .stTabs [data-baseweb="tab-list"] { gap: 6px; }
     .stTabs [data-baseweb="tab"] { padding: 8px 20px; font-weight: 600; border-radius: 8px 8px 0 0; }
 
@@ -875,21 +904,84 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
         return None, None, None, None
 
     weekly_data = {}
+    # PERF P4: Parallel CSV parsing. Streamlit UploadedFile is NOT thread-safe
+    # for .read(), so we serially capture bytes first, then parallelize the
+    # heavy pandas parse + numeric coercion across worker threads (pandas
+    # releases the GIL during read_csv, so threading scales well).
+    _payloads = []
     for ufile in uploaded_files:
         date = parse_date_from_filename(ufile.name)
         if date is None:
             continue
         try:
             ufile.seek(0)
-            df = pd.read_csv(ufile)
-            if 'rank' in df.columns and 'ticker' in df.columns:
-                df['ticker'] = df['ticker'].astype(str).str.strip()
-                df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
-                df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
-                df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
-                weekly_data[date] = df
+            _payloads.append((date, ufile.name, ufile.read()))
         except Exception as e:
-            logger.warning(f"Failed to load {ufile.name}: {e}")
+            logger.warning(f"Failed to read {ufile.name}: {e}")
+
+    # PERF P5: Numeric & string column lists used by both the parallel parser
+    # and the vectorized history builder below. Keeping them defined once
+    # eliminates duplication and lets the parser do ALL coercions in-thread.
+    _NUM_COLS = [
+        'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m',
+        'from_high_pct', 'momentum_score', 'volume_score',
+        'position_score', 'acceleration_score', 'breakout_score', 'rvol_score',
+        'pe', 'eps_current', 'eps_change_pct', 'from_low_pct',
+        'ret_1d', 'ret_1y', 'rvol', 'vmi', 'money_flow_mm',
+        'position_tension', 'momentum_harmony', 'overall_market_strength',
+    ]
+    _STR_PER_WEEK = ['market_state', 'patterns', 'eps_tier', 'pe_tier']
+    _STR_LATEST = ['company_name', 'category', 'sector', 'industry']
+
+    def _parse_one(payload):
+        _date, _name, _data = payload
+        try:
+            df = pd.read_csv(BytesIO(_data))
+            if 'rank' not in df.columns or 'ticker' not in df.columns:
+                return None
+            # Vectorized cleanup — drop empty/NaN tickers up-front
+            df['ticker'] = df['ticker'].astype(str).str.strip()
+            df = df[df['ticker'].ne('') & df['ticker'].ne('nan')].copy()
+            _total = len(df)
+            df['rank'] = pd.to_numeric(df['rank'], errors='coerce').fillna(_total)
+            df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
+            df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+            if 'trend_quality' in df.columns:
+                df['trend_quality'] = pd.to_numeric(df['trend_quality'], errors='coerce').fillna(0)
+            else:
+                df['trend_quality'] = 0.0
+            # All numeric tracked columns — vectorized coercion (NaN preserved)
+            for _c in _NUM_COLS:
+                if _c in df.columns:
+                    df[_c] = pd.to_numeric(df[_c], errors='coerce')
+                else:
+                    df[_c] = np.nan
+            # Per-week string columns — fillna('').strip()
+            for _sc in _STR_PER_WEEK:
+                if _sc in df.columns:
+                    df[_sc] = df[_sc].astype('object').where(df[_sc].notna(), '').astype(str).str.strip()
+                else:
+                    df[_sc] = ''
+            # Latest-only string fields (carried for end-of-pipeline display)
+            for _sf in _STR_LATEST:
+                if _sf in df.columns:
+                    df[_sf] = df[_sf].astype('object').where(df[_sf].notna(), '').astype(str).str.strip()
+                else:
+                    df[_sf] = ''
+            df['_date'] = _date.strftime('%Y-%m-%d')
+            df['_total'] = _total
+            return (_date, df)
+        except Exception as e:
+            logger.warning(f"Failed to load {_name}: {e}")
+            return None
+
+    if _payloads:
+        _workers = min(8, len(_payloads))
+        with _cf.ThreadPoolExecutor(max_workers=_workers) as _ex:
+            for _result in _ex.map(_parse_one, _payloads):
+                if _result is not None:
+                    _d, _df = _result
+                    weekly_data[_d] = _df
 
     if not weekly_data:
         return None, None, None, None
@@ -898,103 +990,53 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     dates = sorted(weekly_data.keys())
     dates_iso = [d.strftime('%Y-%m-%d') for d in dates]
 
-    # ── Step 2: Build rank histories ──
+    # ── Step 2: Build rank histories (PERF P5 — vectorized) ──
+    # OLD: for each week, for each row in df.iterrows(): 22-col inner loop.
+    # That was O(weeks * stocks * cols) Python-level dict ops — the dominant
+    # cost of "Computing trajectories...".
+    # NEW: single concat -> groupby('ticker') -> .tolist() per column. Pandas
+    # does the heavy lifting in C. Same data shape, same semantics.
+    _all = pd.concat([weekly_data[d] for d in dates], ignore_index=True, sort=False, copy=False)
+
+    # PERF P5b: Pre-compute "latest non-empty" per ticker per static field in
+    # ONE vectorized pass per field, instead of per-ticker .astype + .ne calls
+    # inside the groupby loop (was 25K+ Series ops on 2K tickers × 6 fields).
+    _LATEST_FIELDS = _STR_LATEST + ['market_state', 'patterns']
+    _latest_meta: dict = {}
+    for _fld in _LATEST_FIELDS:
+        # Strings were already stripped & NaN-coerced to '' in _parse_one.
+        # Boolean mask is now a single C-level numpy op.
+        _ne_mask = _all[_fld].to_numpy(dtype=object) != ''
+        if _ne_mask.any():
+            _sub = _all.loc[_ne_mask, ['ticker', _fld]]
+            _latest_meta[_fld] = (
+                _sub.drop_duplicates('ticker', keep='last')
+                    .set_index('ticker')[_fld]
+                    .to_dict()
+            )
+        else:
+            _latest_meta[_fld] = {}
+
     histories = {}
-    for date in dates:
-        df = weekly_data[date]
-        total = len(df)
-        for _, row in df.iterrows():
-            ticker = str(row.get('ticker', '')).strip()
-            if not ticker or ticker == 'nan':
-                continue
-
-            if ticker not in histories:
-                histories[ticker] = {
-                    'dates': [], 'ranks': [], 'scores': [], 'prices': [],
-                    'total_per_week': [],
-                    'trend_qualities': [],
-                    'market_states': [],
-                    'pattern_history': [],
-                    'ret_7d': [],             # v2.3: Weekly returns (split-adjusted)
-                    'ret_30d': [],            # v2.3: 30-day returns
-                    'ret_3m': [],             # v2.3: 3-month returns
-                    'ret_6m': [],             # v3.0: 6-month returns (institutional horizon)
-                    'from_high_pct': [],      # v2.3: Distance from 52w high
-                    'momentum_score': [],     # v2.3: Wave engine momentum score
-                    'volume_score': [],       # v2.3: Wave engine volume score
-                    # ── v8.0: Wave Signal Fusion — 18 previously ignored columns ──
-                    'position_score': [],     # WAVE's 52-week position scoring
-                    'acceleration_score': [], # WAVE's momentum acceleration
-                    'breakout_score': [],     # WAVE's breakout detection (4 components)
-                    'rvol_score': [],         # WAVE's relative volume quality
-                    'pe': [],                 # Price/Earnings ratio
-                    'eps_current': [],        # Current EPS
-                    'eps_change_pct': [],     # EPS change percentage
-                    'from_low_pct': [],       # Distance from 52-week low
-                    'ret_1d': [],             # 1-day return (intraday momentum)
-                    'ret_1y': [],             # 1-year return (long-term trend)
-                    'rvol': [],               # Raw relative volume
-                    'vmi': [],                # Volume-Momentum Index
-                    'money_flow_mm': [],      # Money flow in millions
-                    'position_tension': [],   # Position tension metric
-                    'momentum_harmony': [],   # Momentum harmony (0-4)
-                    'eps_tier': [],           # EPS tier classification
-                    'pe_tier': [],            # PE tier classification
-                    'overall_market_strength': [],  # Market strength metric
-                    'company_name': '', 'category': '', 'sector': '',
-                    'industry': '', 'market_state': '', 'patterns': ''
-                }
-
-            h = histories[ticker]
-            h['dates'].append(date.strftime('%Y-%m-%d'))
-            h['ranks'].append(float(row['rank']) if pd.notna(row['rank']) else total)
-            h['scores'].append(float(row['master_score']))
-            h['prices'].append(float(row['price']))
-            h['total_per_week'].append(total)
-
-            tq_val = row.get('trend_quality', 0)
-            h['trend_qualities'].append(float(tq_val) if pd.notna(tq_val) else 0)
-            ms_val = row.get('market_state', '')
-            h['market_states'].append(str(ms_val).strip() if pd.notna(ms_val) else '')
-            pat_val = row.get('patterns', '')
-            h['pattern_history'].append(str(pat_val).strip() if pd.notna(pat_val) else '')
-
-            # v2.3: Track return & fundamental data per week
-            for col_name, hist_key in [
-                ('ret_7d', 'ret_7d'), ('ret_30d', 'ret_30d'), ('ret_3m', 'ret_3m'),
-                ('ret_6m', 'ret_6m'),
-                ('from_high_pct', 'from_high_pct'), ('momentum_score', 'momentum_score'),
-                ('volume_score', 'volume_score'),
-                # v8.0: Wave Signal Fusion — 18 previously ignored columns
-                ('position_score', 'position_score'), ('acceleration_score', 'acceleration_score'),
-                ('breakout_score', 'breakout_score'), ('rvol_score', 'rvol_score'),
-                ('pe', 'pe'), ('eps_current', 'eps_current'),
-                ('eps_change_pct', 'eps_change_pct'), ('from_low_pct', 'from_low_pct'),
-                ('ret_1d', 'ret_1d'), ('ret_1y', 'ret_1y'),
-                ('rvol', 'rvol'), ('vmi', 'vmi'),
-                ('money_flow_mm', 'money_flow_mm'), ('position_tension', 'position_tension'),
-                ('momentum_harmony', 'momentum_harmony'),
-                ('overall_market_strength', 'overall_market_strength'),
-            ]:
-                col_val = row.get(col_name, None)
-                if col_val is not None and pd.notna(col_val):
-                    try:
-                        h[hist_key].append(float(col_val))
-                    except (ValueError, TypeError):
-                        h[hist_key].append(float('nan'))
-                else:
-                    h[hist_key].append(float('nan'))
-
-            # Always keep latest info
-            for fld in ['company_name', 'category', 'sector', 'industry', 'market_state', 'patterns']:
-                val = row.get(fld, '')
-                if pd.notna(val) and str(val).strip():
-                    h[fld] = str(val).strip()
-
-            # v8.0: Track tier classifications (string columns)
-            for tier_col in ['eps_tier', 'pe_tier']:
-                tier_val = row.get(tier_col, '')
-                h[tier_col].append(str(tier_val).strip() if pd.notna(tier_val) else '')
+    for ticker, g in _all.groupby('ticker', sort=False):
+        h = {
+            'dates': g['_date'].tolist(),
+            'ranks': g['rank'].tolist(),
+            'scores': g['master_score'].tolist(),
+            'prices': g['price'].tolist(),
+            'total_per_week': g['_total'].tolist(),
+            'trend_qualities': g['trend_quality'].tolist(),
+            'market_states': g['market_state'].tolist(),
+            'pattern_history': g['patterns'].tolist(),
+            'eps_tier': g['eps_tier'].tolist(),
+            'pe_tier': g['pe_tier'].tolist(),
+        }
+        for _c in _NUM_COLS:
+            h[_c] = g[_c].tolist()
+        # Latest-non-empty static metadata: O(1) dict lookup now.
+        for _fld in _LATEST_FIELDS:
+            h[_fld] = _latest_meta[_fld].get(ticker, '')
+        histories[ticker] = h
 
     # ── Step 3: Compute trajectories for all tickers ──
     results = []
@@ -1040,50 +1082,55 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
     traj_df['market_regime'] = market_regime
     traj_df['market_trend_median'] = round(market_trend_median, 1)
 
-    # ── Step 3d: Sector-Relative Blending (v9.0) ──
+    # ── Step 3d: Sector-Relative Blending (v9.0 — PERF P2: vectorized) ──
     # DATA EVIDENCE: sector-relative top10% vs bot10% → +0.59%/wk alpha.
     # Problem: 23 sectors range 7 to 429 stocks. A top-10 stock in a 7-stock
     # sector is NOT comparable to top-10 in a 429-stock sector.
     # Solution: blend universe percentile with sector percentile, dampened by sector size.
+    # PERF: was O(N²) Python loop with .loc assignment per row; now fully vectorized
+    # via groupby.transform + numpy. ~20-50x faster on hot path.
     sr_cfg = SECTOR_RELATIVE
     eligible_mask = traj_df['weeks'] >= MIN_WEEKS_DEFAULT
 
-    # Compute sector percentile for each stock (percentile within sector)
+    # NOTE: 'category' dtype conversion was reverted — downstream code performs
+    # arithmetic on label columns in places (e.g. NaN-fill + subtract patterns)
+    # that don't handle CategoricalDtype. Keep label columns as object/str.
+
+    # Defaults — non-eligible / orphan-sector rows keep these
     traj_df['sector_pct'] = 0.0
-    traj_df['sector_blend_score'] = traj_df['trajectory_score']  # default = universe score
+    traj_df['sector_blend_score'] = traj_df['trajectory_score'].astype(float)
 
     if eligible_mask.sum() > 0:
-        eligible_df = traj_df[eligible_mask]
-        for sector_name, sector_group in eligible_df.groupby('sector'):
-            s_count = len(sector_group)
-            if s_count < 2:
-                continue  # Can't compute percentile with 1 stock
+        elig = traj_df.loc[eligible_mask, ['sector', 'trajectory_score', 't_percentile']]
+        # Vectorized sector size + intra-sector rank
+        _grp = elig.groupby('sector')
+        _counts = _grp['trajectory_score'].transform('size').astype(float)
+        _ranks = _grp['trajectory_score'].rank(ascending=False, method='min').astype(float)
+        # Sector percentile (100 = best). For solo-stock sectors keep 0 to match
+        # original behavior (loop continued without writing).
+        _denom = np.maximum(_counts.values - 1.0, 1.0)
+        _sec_pct = ((_counts.values - _ranks.values) / _denom * 100.0).round(1)
+        _sec_pct = np.where(_counts.values >= 2.0, _sec_pct, 0.0)
 
-            # Rank within sector (1 = best trajectory_score in sector)
-            sector_ranks = sector_group['trajectory_score'].rank(ascending=False, method='min')
-            # Convert to percentile (100 = best)
-            sector_pct = ((s_count - sector_ranks) / max(s_count - 1, 1) * 100).round(1)
-            traj_df.loc[sector_group.index, 'sector_pct'] = sector_pct
+        # Size-dampened blend weight (vectorized)
+        _size_factor = np.minimum(1.0, _counts.values / float(sr_cfg['size_reference']))
+        _small = _counts.values < float(sr_cfg['min_sector_size'])
+        _size_factor = np.where(
+            _small,
+            _size_factor * (_counts.values / float(sr_cfg['min_sector_size'])),
+            _size_factor,
+        )
+        # Singleton sectors contribute zero blend (matches original 'continue')
+        _size_factor = np.where(_counts.values >= 2.0, _size_factor, 0.0)
+        _eff_w = float(sr_cfg['blend_weight']) * _size_factor
 
-            # Size-dampened blending: small sectors get less sector weight
-            size_factor = min(1.0, s_count / sr_cfg['size_reference'])
-            if s_count < sr_cfg['min_sector_size']:
-                size_factor *= (s_count / sr_cfg['min_sector_size'])  # Further dampen tiny sectors
-            effective_weight = sr_cfg['blend_weight'] * size_factor
-            universe_weight = 1.0 - effective_weight
+        # blended_pct - t_pct = eff_w * (sec_pct - t_pct); score_adj = pct_shift * 0.15
+        _t_pct = elig['t_percentile'].astype(float).values
+        _score_adj = _eff_w * (_sec_pct - _t_pct) * 0.15
+        _new_blend = elig['trajectory_score'].astype(float).values + _score_adj
 
-            # Blend: trajectory_score stays, but we create a blended version for re-ranking
-            # Universe percentile uses t_percentile (already computed), sector uses sector_pct
-            # Both are 0-100 scales, combine them, then map back to score range
-            for idx in sector_group.index:
-                uni_pct = traj_df.loc[idx, 't_percentile']
-                sec_pct = traj_df.loc[idx, 'sector_pct']
-                blended_pct = universe_weight * uni_pct + effective_weight * sec_pct
-                # Convert blended percentile back to score scale (preserving original score range)
-                # Adjustment = (blended_pct - uni_pct) * score_range / 100
-                pct_shift = blended_pct - uni_pct  # How much the blend shifts the percentile
-                score_adj = pct_shift * 0.15  # Scale: 1 percentile shift ≈ 0.15 score points
-                traj_df.loc[idx, 'sector_blend_score'] = traj_df.loc[idx, 'trajectory_score'] + score_adj
+        traj_df.loc[elig.index, 'sector_pct'] = _sec_pct
+        traj_df.loc[elig.index, 'sector_blend_score'] = _new_blend
 
         # Re-sort by sector_blend_score and re-assign t_rank
         traj_df = traj_df.sort_values(
@@ -1120,42 +1167,39 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
         traj_df['t_rank'] = range(1, len(traj_df) + 1)
         traj_df['t_percentile'] = ((total_stocks - traj_df['t_rank']) / max(total_stocks - 1, 1) * 100).round(1)
 
-    # ── Step 4: Sector Alpha Post-Processing (v2.3) ──
+    # ── Step 4: Sector Alpha Post-Processing (v2.3 — PERF P6: vectorized) ──
     # Compare each stock's trajectory to its sector average to detect
-    # SECTOR_LEADER vs SECTOR_BETA stocks
+    # SECTOR_LEADER vs SECTOR_BETA stocks.
+    # PERF: was df.apply(axis=1) Python row-loop; now vectorized via merge +
+    # np.select. ~10x faster.
     sa_cfg = SECTOR_ALPHA
     sector_stats = traj_df[traj_df['weeks'] >= MIN_WEEKS_DEFAULT].groupby('sector')['trajectory_score'].agg(
         ['mean', 'count', 'std']
     )
 
-    def _calc_sector_alpha(row):
-        sector = row.get('sector', '')
-        if not sector or sector not in sector_stats.index:
-            return 'NEUTRAL', 0.0
-        stats = sector_stats.loc[sector]
-        if stats['count'] < sa_cfg['min_sector_stocks']:
-            return 'NEUTRAL', 0.0
+    if not sector_stats.empty:
+        _sm = traj_df['sector'].map(sector_stats['mean'])
+        _sc = traj_df['sector'].map(sector_stats['count']).fillna(0).astype(float)
+        _ss = traj_df['sector'].map(sector_stats['std']).fillna(1.0).clip(lower=1.0)
+    else:
+        _sm = pd.Series(np.nan, index=traj_df.index)
+        _sc = pd.Series(0.0, index=traj_df.index)
+        _ss = pd.Series(1.0, index=traj_df.index)
 
-        sect_mean = float(stats['mean'])
-        sect_std = max(float(stats['std']), 1.0)
-        stock_score = float(row['trajectory_score'])
-        alpha = stock_score - sect_mean
-        z = alpha / sect_std
+    _alpha = traj_df['trajectory_score'].astype(float) - _sm
+    _z = _alpha / _ss
+    _valid = _sm.notna() & (_sc >= float(sa_cfg['min_sector_stocks']))
 
-        if z > sa_cfg['leader_z']:
-            return 'SECTOR_LEADER', round(alpha, 1)
-        elif z > sa_cfg['outperform_z']:
-            return 'SECTOR_OUTPERFORM', round(alpha, 1)
-        elif z > sa_cfg['aligned_z']:
-            return 'SECTOR_ALIGNED', round(alpha, 1)
-        elif z > -1.0 and sect_mean > sa_cfg['beta_sector_min']:
-            return 'SECTOR_BETA', round(alpha, 1)
-        else:
-            return 'SECTOR_LAGGARD', round(alpha, 1)
-
-    alpha_results = traj_df.apply(_calc_sector_alpha, axis=1, result_type='expand')
-    traj_df['sector_alpha_tag'] = alpha_results[0]
-    traj_df['sector_alpha_value'] = alpha_results[1]
+    _conditions = [
+        _valid & (_z > float(sa_cfg['leader_z'])),
+        _valid & (_z > float(sa_cfg['outperform_z'])),
+        _valid & (_z > float(sa_cfg['aligned_z'])),
+        _valid & (_z > -1.0) & (_sm > float(sa_cfg['beta_sector_min'])),
+        _valid,  # else within valid → SECTOR_LAGGARD
+    ]
+    _choices = ['SECTOR_LEADER', 'SECTOR_OUTPERFORM', 'SECTOR_ALIGNED', 'SECTOR_BETA', 'SECTOR_LAGGARD']
+    traj_df['sector_alpha_tag'] = np.select(_conditions, _choices, default='NEUTRAL')
+    traj_df['sector_alpha_value'] = np.where(_valid, _alpha.round(1).fillna(0.0), 0.0)
 
     # Add sector alpha tag to signal_tags
     def _add_alpha_signal(row):
@@ -3105,47 +3149,51 @@ def _estimate_hurst(series: List[float]) -> float:
     H < 0.5: Anti-persistent (mean-reverting) — current pattern likely reverses
     
     Uses simplified R/S method suitable for short series (6-25 weeks).
+
+    PERF P6: Vectorized along axis=1 over (n_segs, seg_len) reshaped arrays
+    instead of per-segment Python loops + many tiny np.std/np.mean calls.
+    Reduces ~150 numpy calls per Hurst call to ~6 per seg_len. Same math.
     """
     n = len(series)
     if n < 6:
         return 0.5  # Insufficient data → assume random walk
-    
-    arr = np.array(series, dtype=float)
-    
+
+    arr = np.asarray(series, dtype=float)
+
     # Use multiple sub-series lengths for robust estimation
     rs_values = []
     lengths = []
-    
+
     for seg_len in range(3, n // 2 + 1):
         n_segs = n // seg_len
         if n_segs < 1:
             break
-        rs_seg = []
-        for i in range(n_segs):
-            seg = arr[i * seg_len:(i + 1) * seg_len]
-            mean_seg = np.mean(seg)
-            deviations = seg - mean_seg
-            cumulative = np.cumsum(deviations)
-            r = np.max(cumulative) - np.min(cumulative)  # Range
-            s = np.std(seg, ddof=1) if np.std(seg, ddof=1) > 0 else 1e-10  # Std dev
-            rs_seg.append(r / s)
-        
-        avg_rs = np.mean(rs_seg)
+        # Reshape contiguous prefix into (n_segs, seg_len). All segment-level
+        # ops then run as single vectorized numpy calls along axis=1.
+        mat = arr[:n_segs * seg_len].reshape(n_segs, seg_len)
+        means = mat.mean(axis=1, keepdims=True)
+        deviations = mat - means
+        cumulative = np.cumsum(deviations, axis=1)
+        ranges = cumulative.max(axis=1) - cumulative.min(axis=1)
+        # ddof=1 std along axis; guard against zero
+        stds = mat.std(axis=1, ddof=1)
+        stds = np.where(stds > 0, stds, 1e-10)
+        rs = ranges / stds
+        avg_rs = rs.mean()
         if avg_rs > 0:
             rs_values.append(np.log(avg_rs))
             lengths.append(np.log(seg_len))
-    
+
     if len(rs_values) < 2:
         return 0.5
-    
-    # Linear regression: log(R/S) = H * log(n) + c
-    # H is the slope
-    x = np.array(lengths)
-    y = np.array(rs_values)
+
+    # Linear regression: log(R/S) = H * log(n) + c → H is the slope
+    x = np.asarray(lengths)
+    y = np.asarray(rs_values)
     n_pts = len(x)
-    slope = (n_pts * np.sum(x * y) - np.sum(x) * np.sum(y)) / \
-            max(n_pts * np.sum(x ** 2) - np.sum(x) ** 2, 1e-10)
-    
+    sx = x.sum(); sy = y.sum()
+    slope = (n_pts * (x * y).sum() - sx * sy) / max(n_pts * (x * x).sum() - sx * sx, 1e-10)
+
     # Clamp to valid range [0.1, 0.9]
     return float(np.clip(slope, 0.1, 0.9))
 
@@ -3782,14 +3830,22 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
         change = prev - curr            # Positive = improved
         prices = h.get('prices', [])
         latest_price = prices[-1] if prices and prices[-1] > 0 else 0
+        prev_price = prices[-(weeks + 1)] if len(prices) >= weeks + 1 and prices[-(weeks + 1)] > 0 else 0
+        price_return = ((latest_price / prev_price - 1) * 100) if (latest_price > 0 and prev_price > 0) else None
+        # Market state from latest week
+        ms_list = h.get('market_states', [])
+        latest_ms = ms_list[-1] if ms_list else ''
         movers.append({
             'ticker': ticker,
             'company_name': h['company_name'],
             'category': h['category'],
+            'sector': h.get('sector', ''),
             'prev_rank': prev,
             'current_rank': curr,
             'rank_change': change,
             'price': latest_price,
+            'price_return': price_return,
+            'market_state': latest_ms,
         })
 
     mover_df = pd.DataFrame(movers)
@@ -3799,6 +3855,71 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
     gainers   = mover_df.nlargest(n, 'rank_change')
     decliners = mover_df.nsmallest(n, 'rank_change')
     return gainers, decliners
+
+
+def get_consistent_movers(histories: dict, n: int = 50, weeks: int = 4,
+                          tickers: set = None) -> pd.DataFrame:
+    """Find stocks that climbed (rank improved) in every single week of the window.
+
+    Unlike top movers (which measure net change), this finds *consistency* —
+    stocks whose rank improved week-over-week in *every* week of the window.
+
+    Returns a DataFrame sorted by total rank gain (most consistent first),
+    with columns matching get_top_movers output + ``streak`` (= weeks).
+    """
+    if weeks < 2:
+        return pd.DataFrame()
+
+    results = []
+    for ticker, h in histories.items():
+        if tickers is not None and ticker not in tickers:
+            continue
+        rk = h['ranks']
+        if len(rk) < weeks + 1:
+            continue
+
+        # Check every consecutive week in the window
+        window = rk[-(weeks + 1):]          # weeks+1 rank values → weeks transitions
+        all_improved = True
+        for i in range(1, len(window)):
+            if int(window[i]) >= int(window[i - 1]):   # rank went up (worse) or stayed
+                all_improved = False
+                break
+
+        if not all_improved:
+            continue
+
+        prev = int(rk[-(weeks + 1)])
+        curr = int(rk[-1])
+        change = prev - curr
+
+        prices = h.get('prices', [])
+        latest_price = prices[-1] if prices and prices[-1] > 0 else 0
+        prev_price = prices[-(weeks + 1)] if len(prices) >= weeks + 1 and prices[-(weeks + 1)] > 0 else 0
+        price_return = ((latest_price / prev_price - 1) * 100) if (latest_price > 0 and prev_price > 0) else None
+
+        ms_list = h.get('market_states', [])
+        latest_ms = ms_list[-1] if ms_list else ''
+
+        results.append({
+            'ticker': ticker,
+            'company_name': h['company_name'],
+            'category': h['category'],
+            'sector': h.get('sector', ''),
+            'prev_rank': prev,
+            'current_rank': curr,
+            'rank_change': change,
+            'price': latest_price,
+            'price_return': price_return,
+            'market_state': latest_ms,
+            'streak': weeks,
+        })
+
+    if not results:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(results)
+    return df.nlargest(n, 'rank_change')
 
 # ============================================
 # UI: SIDEBAR
@@ -3850,6 +3971,9 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             'sb_inst_flow': (0, 100), 'sb_harmony': (0, 100), 'sb_fundamental': (0, 100),
             'sb_rank_chg': 'All', 'sb_persist': (0, 20), 'sb_rankvol': 'All',
             'sb_cat': [], 'sb_sector': [], 'sb_industry': [], 'sb_market_state': [],
+            # v10.2 — advanced signal filters (N1-N4) + ticker search (N10)
+            'sb_ticker_search': '', 'sb_pattern_keys': [], 'sb_latest_patterns': [],
+            'sb_market_regime': [], 'sb_sector_alpha': [],
         }
         _sb_keys = list(_defaults.keys())
         # Conditional slider keys (only rendered when Custom Range is chosen)
@@ -3934,10 +4058,22 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                 "Grade", grade_options[1:], default=[], placeholder="All grades",
                 key='sb_grade', help="Letter grade from T-Score")
 
-            # Min Weeks of Data
+            # Min Weeks of Data — safely clamp slider bounds for tiny datasets
+            _tw = int(metadata.get('total_weeks', MIN_WEEKS_DEFAULT) or MIN_WEEKS_DEFAULT)
+            _mw_min = 2
+            _mw_max = max(_mw_min + 1, _tw)
+            _mw_default = max(_mw_min, min(MIN_WEEKS_DEFAULT, _mw_max))
+            # Clamp any stale session value into the new bounds (prevents Streamlit value>max error)
+            if 'sb_weeks' in st.session_state:
+                try:
+                    _cur = int(st.session_state['sb_weeks'])
+                    if _cur < _mw_min or _cur > _mw_max:
+                        st.session_state['sb_weeks'] = _mw_default
+                except Exception:
+                    st.session_state['sb_weeks'] = _mw_default
             min_weeks = st.slider(
-                "Min Weeks of Data", 2, metadata['total_weeks'],
-                MIN_WEEKS_DEFAULT, key='sb_weeks',
+                "Min Weeks of Data", _mw_min, _mw_max,
+                _mw_default, key='sb_weeks',
                 help="Stocks with fewer weeks are excluded")
 
         # ═══════════════════════════════════════════════
@@ -4161,16 +4297,114 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                 selected_market_states = []
 
         # ═══════════════════════════════════════════════
-        # FOOTER — Clear All + version
+        # § 8  📐 ADVANCED SIGNAL FILTERS — N1–N4 + N10
+        # ═══════════════════════════════════════════════
+        with st.expander("📐 Advanced Signal", expanded=False):
+            st.caption("Zero-cost alpha gates from existing data")
+
+            # N10 — Ticker Search Box (also surfaced near top via 'sb_ticker_search')
+            ticker_search = st.text_input(
+                "🔍 Ticker Search", value='', key='sb_ticker_search',
+                placeholder="RELIANCE, TCS, INFY …",
+                help="Comma or newline separated. Filters to listed tickers (case-insensitive).")
+
+            st.markdown("---")
+
+            # N1 — Pattern Key multi-select
+            try:
+                _pat_emoji = {k: v[0] for k, v in PATTERN_DEFS.items()}
+                _pat_label = {k: v[1] for k, v in PATTERN_DEFS.items()}
+            except Exception:
+                _pat_emoji, _pat_label = {}, {}
+            if 'pattern_key' in traj_df.columns:
+                _pat_universe = sorted([str(p) for p in traj_df['pattern_key'].dropna().unique()
+                                        if str(p).strip()])
+                _pat_options_disp = [f"{_pat_emoji.get(p, '•')} {_pat_label.get(p, p)}" for p in _pat_universe]
+                _pat_disp_to_key = dict(zip(_pat_options_disp, _pat_universe))
+                # Prune stale
+                if 'sb_pattern_keys' in st.session_state:
+                    _valid_pk = [p for p in st.session_state['sb_pattern_keys'] if p in _pat_options_disp]
+                    if _valid_pk != list(st.session_state['sb_pattern_keys']):
+                        st.session_state['sb_pattern_keys'] = _valid_pk
+                selected_pat_disp = st.multiselect(
+                    "Detected Patterns", _pat_options_disp, default=[], placeholder="All patterns",
+                    key='sb_pattern_keys',
+                    help="Trajectory-detected patterns (multi-select — OR logic)")
+                selected_pattern_keys = [_pat_disp_to_key[d] for d in selected_pat_disp]
+            else:
+                selected_pattern_keys = []
+
+            # N2 — Latest Patterns from source CSV (BO, VCP, EP, etc.) — substring match
+            if 'latest_patterns' in traj_df.columns:
+                _all_lp_tokens = set()
+                for _v in traj_df['latest_patterns'].dropna().astype(str):
+                    for _t in _v.replace('|', ',').split(','):
+                        _t = _t.strip()
+                        if _t and _t.lower() != 'nan':
+                            _all_lp_tokens.add(_t)
+                _lp_options = sorted(_all_lp_tokens)
+                # Prune stale
+                if 'sb_latest_patterns' in st.session_state:
+                    _valid_lp = [t for t in st.session_state['sb_latest_patterns'] if t in _lp_options]
+                    if _valid_lp != list(st.session_state['sb_latest_patterns']):
+                        st.session_state['sb_latest_patterns'] = _valid_lp
+                if _lp_options:
+                    selected_latest_patterns = st.multiselect(
+                        "Source Patterns (BO / VCP / EP …)", _lp_options, default=[],
+                        placeholder="All source patterns", key='sb_latest_patterns',
+                        help="Institutional setup patterns from source CSV (OR logic, substring match)")
+                else:
+                    selected_latest_patterns = []
+            else:
+                selected_latest_patterns = []
+
+            st.markdown("---")
+
+            # N3 — Market Regime gate
+            if 'market_regime' in traj_df.columns:
+                _mr_universe = sorted([str(r) for r in traj_df['market_regime'].dropna().unique()
+                                       if str(r).strip()])
+                _mr_emoji = {'BULL': '📈', 'BEAR': '📉', 'SIDEWAYS': '➡️', 'NEUTRAL': '➡️', 'VOLATILE': '🌊'}
+                _mr_disp = [f"{_mr_emoji.get(r, '•')} {r}" for r in _mr_universe]
+                _mr_disp_to_key = dict(zip(_mr_disp, _mr_universe))
+                if 'sb_market_regime' in st.session_state:
+                    _valid_mr = [r for r in st.session_state['sb_market_regime'] if r in _mr_disp]
+                    if _valid_mr != list(st.session_state['sb_market_regime']):
+                        st.session_state['sb_market_regime'] = _valid_mr
+                selected_mr_disp = st.multiselect(
+                    "Market Regime", _mr_disp, default=[], placeholder="All regimes",
+                    key='sb_market_regime',
+                    help="Filter to stocks tagged in specific market regime")
+                selected_market_regimes = [_mr_disp_to_key[d] for d in selected_mr_disp]
+            else:
+                selected_market_regimes = []
+
+            # N4 — Sector Alpha Tag multi-select
+            if 'sector_alpha_tag' in traj_df.columns:
+                _sa_universe = sorted([str(t) for t in traj_df['sector_alpha_tag'].dropna().unique()
+                                       if str(t).strip()])
+                _sa_emoji = {'SECTOR_LEADER': '👑', 'SECTOR_OUTPERFORM': '⬆️',
+                             'SECTOR_ALIGNED': '➖', 'SECTOR_BETA': '🏷️',
+                             'SECTOR_LAGGARD': '📉', 'NEUTRAL': '➖'}
+                _sa_disp = [f"{_sa_emoji.get(t, '•')} {t.replace('SECTOR_', '').title()}" for t in _sa_universe]
+                _sa_disp_to_key = dict(zip(_sa_disp, _sa_universe))
+                if 'sb_sector_alpha' in st.session_state:
+                    _valid_sa = [t for t in st.session_state['sb_sector_alpha'] if t in _sa_disp]
+                    if _valid_sa != list(st.session_state['sb_sector_alpha']):
+                        st.session_state['sb_sector_alpha'] = _valid_sa
+                selected_sa_disp = st.multiselect(
+                    "Sector Alpha Tag", _sa_disp, default=[], placeholder="All sector alphas",
+                    key='sb_sector_alpha',
+                    help="Stock's performance vs sector average (👑 Leader → 📉 Laggard)")
+                selected_sector_alphas = [_sa_disp_to_key[d] for d in selected_sa_disp]
+            else:
+                selected_sector_alphas = []
+
+        # ═══════════════════════════════════════════════
+        # FOOTER — version (Clear All lives at the top to avoid duplicate buttons)
         # ═══════════════════════════════════════════════
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
-
-        if st.button("🗑️ Clear All Filters", key='sb_clear_all_bottom', use_container_width=True,
-                     type='primary' if _active > 0 else 'secondary'):
-            st.session_state['_sb_pending_clear'] = True
-            st.rerun()
-
-        st.caption("v10.1 · Alpha Engine · Data-Driven")
+        st.caption("v10.2 · Alpha Engine · Data-Driven")
 
     # ── Return filter dict ──
     return {
@@ -4204,6 +4438,12 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'persist_range': persist_range,
         'rankvol': selected_rankvol,
         'market_states': selected_market_states,
+        # v10.2 — N1-N4 + N10
+        'ticker_search': ticker_search,
+        'pattern_keys': selected_pattern_keys,
+        'latest_patterns': selected_latest_patterns,
+        'market_regimes': selected_market_regimes,
+        'sector_alphas': selected_sector_alphas,
     }
 
 
@@ -4215,19 +4455,50 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     df = traj_df.copy()
 
     # ── § 7: Sector & Category ──
-    if filters['categories']:
+    if filters['categories'] and 'category' in df.columns:
         df = df[df['category'].isin(filters['categories'])]
-    if filters['sectors']:
+    if filters['sectors'] and 'sector' in df.columns:
         df = df[df['sector'].isin(filters['sectors'])]
-    if filters.get('industries'):
+    if filters.get('industries') and 'industry' in df.columns:
         df = df[df['industry'].isin(filters['industries'])]
     if filters.get('market_states') and 'market_state' in df.columns:
         df = df[df['market_state'].isin(filters['market_states'])]
 
+    # ── § 8: Advanced Signal (N1-N4 + N10) — applied early to shrink df fast ──
+    # N10 — Ticker search (case-insensitive, comma/newline separated)
+    _ts = filters.get('ticker_search', '') or ''
+    if _ts.strip() and 'ticker' in df.columns:
+        import re as _re_ts
+        _wanted = {t.strip().upper() for t in _re_ts.split(r'[,\n\r]+', _ts) if t.strip()}
+        if _wanted:
+            df = df[df['ticker'].astype(str).str.upper().isin(_wanted)]
+    # N1 — Pattern keys (multi-select OR)
+    _pks = filters.get('pattern_keys') or []
+    if _pks and 'pattern_key' in df.columns:
+        df = df[df['pattern_key'].isin(_pks)]
+    # N2 — Latest source patterns (substring OR)
+    _lps = filters.get('latest_patterns') or []
+    if _lps and 'latest_patterns' in df.columns:
+        _lp_lower = [str(p).lower() for p in _lps]
+        _col = df['latest_patterns'].fillna('').astype(str).str.lower()
+        _mask = pd.Series(False, index=df.index)
+        for _tok in _lp_lower:
+            _mask = _mask | _col.str.contains(_tok, regex=False, na=False)
+        df = df[_mask]
+    # N3 — Market regime (multi)
+    _mrs = filters.get('market_regimes') or []
+    if _mrs and 'market_regime' in df.columns:
+        df = df[df['market_regime'].isin(_mrs)]
+    # N4 — Sector alpha tag (multi)
+    _sas = filters.get('sector_alphas') or []
+    if _sas and 'sector_alpha_tag' in df.columns:
+        df = df[df['sector_alpha_tag'].isin(_sas)]
+
     # ── § 2: Scoring & Quality ──
     # T-Score range
     s_lo, s_hi = filters.get('min_score', 0), filters.get('max_score', 100)
-    df = df[(df['trajectory_score'] >= s_lo) & (df['trajectory_score'] <= s_hi)]
+    if 'trajectory_score' in df.columns:
+        df = df[(df['trajectory_score'] >= s_lo) & (df['trajectory_score'] <= s_hi)]
 
     # Alpha Score range
     a_lo, a_hi = filters.get('alpha_range', (0, 100))
@@ -4245,7 +4516,8 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         df = df[df['grade'].isin(grades)]
 
     # Min weeks
-    df = df[df['weeks'] >= filters['min_weeks']]
+    if 'weeks' in df.columns:
+        df = df[df['weeks'] >= filters['min_weeks']]
 
     # ── § 3: Signals & Momentum ──
     # Price Alignment
@@ -4387,9 +4659,9 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     elif qf == '⏳ Consolidating':
         df = df[df['pattern_key'] == 'consolidating']
     elif qf == 'Conviction ≥ 65':
-        df = df[df['conviction'] >= 65] if 'conviction' in df.columns else df
+        df = df[df['conviction'] >= 65] if 'conviction' in df.columns else df.head(0)
     elif qf == 'Positional > 80':
-        df = df[df['positional'] > 80]
+        df = df[df['positional'] > 80] if 'positional' in df.columns else df.head(0)
     elif qf == '🧪 EARLY_RIDE_PROVEN (Top 10)':
         if 'rally_stage' in df.columns and 'conviction' in df.columns:
             early = df[df['rally_stage'].isin(['FRESH', 'EARLY', 'RUNNING'])]
@@ -4436,13 +4708,30 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     Uses ONLY pre-computed data from histories/traj_df — zero new API calls.
     """
 
-    n_stocks = len(filtered_df)
+    # Scope selector: filtered view vs full universe (mitigates survivorship bias)
+    pulse_scope = st.radio(
+        "Pulse Scope",
+        options=["Filtered Universe", "Full Universe"],
+        index=0,
+        horizontal=True,
+        key='market_pulse_scope',
+    )
+
+    if pulse_scope == "Full Universe":
+        pulse_df = all_df.copy()
+    else:
+        pulse_df = filtered_df.copy()
+
+    n_stocks = len(pulse_df)
     if n_stocks == 0:
-        st.info("No stocks match the current filters. Adjust sidebar filters to see Market Pulse.")
+        if pulse_scope == "Full Universe":
+            st.info("No stocks available in full universe for Market Pulse.")
+        else:
+            st.info("No stocks match the current filters. Adjust sidebar filters or switch to Full Universe.")
         return
 
     # ── Filter histories to only include tickers in filtered_df ──
-    _filtered_tickers = set(filtered_df['ticker'].unique())
+    _filtered_tickers = set(pulse_df['ticker'].astype(str).str.strip().unique())
     _filtered_hist = {t: h for t, h in histories.items() if t in _filtered_tickers}
     if not _filtered_hist:
         st.info("No history data for filtered stocks.")
@@ -4458,51 +4747,63 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         """
         hist = {k: v for k, v in zip(_hist_keys, _hist_data_tuple)}
         # Discover all dates across tickers
-        date_set: dict = {}  # date_str -> week_index
+        date_set = set()
+        date_idx_map = {}
         for ticker, h in hist.items():
-            for i, d in enumerate(h.get('dates', [])):
+            ds_list = [str(d)[:10] for d in h.get('dates', [])]
+            idx_map = {ds: i for i, ds in enumerate(ds_list)}
+            date_idx_map[ticker] = idx_map
+            for d in ds_list:
                 ds = str(d)[:10]
-                if ds not in date_set:
-                    date_set[ds] = ds
-        sorted_dates = sorted(date_set.keys())
+                date_set.add(ds)
+        sorted_dates = sorted(date_set)
         if not sorted_dates:
             return []
 
+        prev_date_map = {
+            sorted_dates[i]: (sorted_dates[i - 1] if i > 0 else None)
+            for i in range(len(sorted_dates))
+        }
+
         weeks = []
         for wi, ds in enumerate(sorted_dates):
+            prev_ds = prev_date_map.get(ds)
+            # MP-6: Removed dead fields (decay_scores, trend_qualities,
+            # market_strengths, patterns, sectors, grades) — never displayed.
+            # MP-3: prices added so we can compute a true price-based A/D ratio.
             snap = {
                 'date': ds, 'tickers': [], 'scores': [], 'ranks': [],
-                'prev_ranks': [], 'grades': [], 'patterns': [],
-                'sectors': [], 'decay_scores': [], 'trend_qualities': [],
-                'market_strengths': [],
+                'prev_ranks': [], 'prices': [], 'prev_prices': [],
             }
             for ticker, h in hist.items():
-                dates_list = [str(d)[:10] for d in h.get('dates', [])]
-                if ds not in dates_list:
+                idx_map = date_idx_map.get(ticker, {})
+                idx = idx_map.get(ds)
+                if idx is None:
                     continue
-                idx = dates_list.index(ds)
                 snap['tickers'].append(ticker)
                 scores = h.get('scores', [])
                 snap['scores'].append(scores[idx] if idx < len(scores) else 0)
                 ranks = h.get('ranks', [])
-                snap['ranks'].append(ranks[idx] if idx < len(ranks) else 0)
-                prev_r = ranks[idx - 1] if idx > 0 and idx - 1 < len(ranks) else (ranks[idx] if idx < len(ranks) else 0)
-                snap['prev_ranks'].append(prev_r)
-                # Grade from score
-                sc = scores[idx] if idx < len(scores) else 0
-                gr = 'F'
-                for thr, lbl, _ in GRADE_DEFS:
-                    if sc >= thr:
-                        gr = lbl
-                        break
-                snap['grades'].append(gr)
-                pats = h.get('pattern_history', [])
-                snap['patterns'].append(pats[idx] if idx < len(pats) else 'neutral')
-                snap['sectors'].append(h.get('sector', ''))
-                tq = h.get('trend_qualities', [])
-                snap['trend_qualities'].append(tq[idx] if idx < len(tq) else 50)
-                ms = h.get('overall_market_strength', [])
-                snap['market_strengths'].append(ms[idx] if idx < len(ms) else 50)
+                curr_r = ranks[idx] if idx < len(ranks) else 0
+                snap['ranks'].append(curr_r)
+
+                # MP-3 FIX: For newly-listed tickers (no prev week), use NaN
+                # instead of curr_r so they don't pollute improving/declining
+                # counts as silent "unchanged".
+                prev_idx = idx_map.get(prev_ds) if prev_ds is not None else None
+                if prev_idx is not None and prev_idx < len(ranks):
+                    snap['prev_ranks'].append(float(ranks[prev_idx]))
+                else:
+                    snap['prev_ranks'].append(float('nan'))
+
+                # Prices for true price-based A/D ratio (MP-2 real fix)
+                prices = h.get('prices', [])
+                _cp = float(prices[idx]) if idx < len(prices) else float('nan')
+                snap['prices'].append(_cp)
+                if prev_idx is not None and prev_idx < len(prices):
+                    snap['prev_prices'].append(float(prices[prev_idx]))
+                else:
+                    snap['prev_prices'].append(float('nan'))
             weeks.append(snap)
         return weeks
 
@@ -4521,22 +4822,81 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     latest = weekly_snaps[-1]
     n_weeks = len(weekly_snaps)
 
+    def _safe_ad_ratio(adv: int, dec: int):
+        if dec == 0 and adv == 0:
+            return np.nan
+        if dec == 0:
+            return np.inf
+        return adv / dec
+
+    def _fmt_ratio(val):
+        if pd.isna(val):
+            return 'NA'
+        if np.isinf(val):
+            return '∞'
+        return f'{val:.2f}'
+
     # ── Current metrics ──────────────────────────────────────────
-    regime = filtered_df['market_regime'].iloc[0] if 'market_regime' in filtered_df.columns else 'SIDEWAYS'
-    trend_med = float(filtered_df['market_trend_median'].iloc[0]) if 'market_trend_median' in filtered_df.columns else 50.0
-    avg_score = float(filtered_df['trajectory_score'].mean()) if 'trajectory_score' in filtered_df.columns else 0
-    avg_alpha = float(filtered_df['alpha_score'].mean()) if 'alpha_score' in filtered_df.columns else 0
+    # MP-1 FIX: Recompute regime from filtered subset's own trend median so
+    # the BULL/BEAR badge and the breadth KPIs both describe the SAME universe.
+    # The traj_df-level market_regime was computed once on the full universe;
+    # using it when scope="Filtered" mixed scopes and produced contradictory UI.
+    if 'trend' in pulse_df.columns:
+        _tm_series = pd.to_numeric(pulse_df['trend'], errors='coerce').dropna()
+        trend_med = float(_tm_series.median()) if len(_tm_series) > 0 else 50.0
+    elif 'market_trend_median' in pulse_df.columns:
+        _tm = pd.to_numeric(pulse_df['market_trend_median'], errors='coerce').dropna()
+        trend_med = float(_tm.median()) if len(_tm) > 0 else 50.0
+    else:
+        trend_med = 50.0
+
+    if trend_med > 58:
+        regime = 'BULL'
+    elif trend_med < 42:
+        regime = 'BEAR'
+    else:
+        regime = 'SIDEWAYS'
+
+    # MP-4: avg_score sourced from latest snapshot below; avg_alpha from filtered df
+    avg_alpha = float(pulse_df['alpha_score'].mean()) if 'alpha_score' in pulse_df.columns else 0.0
+    if pd.isna(avg_alpha):
+        avg_alpha = 0.0
 
     # Breadth from latest snapshot
     lat_scores = np.array(latest['scores'], dtype=float)
     lat_ranks = np.array(latest['ranks'], dtype=float)
     lat_prev = np.array(latest['prev_ranks'], dtype=float)
-    improving = int(np.sum(lat_ranks < lat_prev))
-    declining = int(np.sum(lat_ranks > lat_prev))
-    unchanged = int(np.sum(lat_ranks == lat_prev))
-    pct_strong = int(100 * np.sum(lat_scores >= 55) / max(len(lat_scores), 1))
-    pct_improving = int(100 * improving / max(len(lat_ranks), 1))
-    ad_ratio = round(improving / max(declining, 1), 2)
+    lat_prices = np.array(latest.get('prices', []), dtype=float)
+    lat_prev_prices = np.array(latest.get('prev_prices', []), dtype=float)
+
+    # MP-3: mask out NaN prev_ranks (newly-listed tickers — no prior week)
+    _rk_valid = ~np.isnan(lat_prev)
+    improving = int(np.sum((lat_ranks < lat_prev) & _rk_valid))
+    declining = int(np.sum((lat_ranks > lat_prev) & _rk_valid))
+    unchanged = int(np.sum((lat_ranks == lat_prev) & _rk_valid))
+    _rk_n = int(_rk_valid.sum())
+
+    # MP-4: avg score sourced from latest snapshot (matches chart endpoint)
+    avg_score = float(np.mean(lat_scores)) if len(lat_scores) > 0 else 0.0
+    if pd.isna(avg_score):
+        avg_score = 0.0
+
+    # MP-5: consistent 1-decimal precision matching the chart
+    pct_strong = round(100.0 * float(np.sum(lat_scores >= 55)) / max(len(lat_scores), 1), 1)
+    pct_improving = round(100.0 * improving / max(_rk_n, 1), 1)
+    ad_ratio = _safe_ad_ratio(improving, declining)  # rank-improvement ratio
+    ad_ratio_disp = _fmt_ratio(ad_ratio)
+
+    # MP-2 REAL FIX: True price-based Advance/Decline ratio (industry standard).
+    # Stocks whose PRICE rose vs previous week / stocks whose price fell.
+    if len(lat_prices) > 0 and len(lat_prev_prices) > 0:
+        _pr_valid = (~np.isnan(lat_prices)) & (~np.isnan(lat_prev_prices)) & (lat_prev_prices > 0)
+        price_adv = int(np.sum((lat_prices > lat_prev_prices) & _pr_valid))
+        price_dec = int(np.sum((lat_prices < lat_prev_prices) & _pr_valid))
+    else:
+        price_adv = price_dec = 0
+    price_ad_ratio = _safe_ad_ratio(price_adv, price_dec)
+    price_ad_disp = _fmt_ratio(price_ad_ratio)
 
     # Regime styling
     regime_cfg = {
@@ -4547,12 +4907,50 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     r_color, r_icon, r_bg = regime_cfg.get(regime, regime_cfg['SIDEWAYS'])
 
     # Strength bar width + color
-    strength_pct = max(0, min(100, trend_med))
+    # MP-7 FIX: Old "Mkt Strength" used trend.median() which is by-design
+    # centered at ~50 (percentile component), so it sat at 50-52 forever and
+    # was useless. Replace with a true composite breadth index that actually
+    # responds to market conditions. Three equal-weight pillars:
+    #   1. % stocks improving in rank (flow / momentum)         neutral=50
+    #   2. % stocks strong B+ rescaled                          neutral=50
+    #      (pct_strong * 2.5 capped — typical 20% B+ ≈ neutral,
+    #       40% ≈ extreme bull, 0% ≈ extreme bear). Without this
+    #       rescale the raw 5-20% range permanently dragged the
+    #       composite into the 30s regardless of market state.
+    #   3. Price A/D balance scaled to 0-100 (real price action) neutral=50
+    if price_adv + price_dec > 0:
+        _pad_pct = 100.0 * price_adv / (price_adv + price_dec)
+    else:
+        _pad_pct = 50.0
+    _imp_score = float(pct_improving)                              # 0-100
+    _str_score = float(np.clip(pct_strong * 2.5, 0.0, 100.0))      # rescaled
+    _pad_score = float(_pad_pct)                                   # 0-100
+    strength_pct = float(np.clip(
+        (_imp_score + _str_score + _pad_score) / 3.0,
+        0.0, 100.0,
+    ))
     s_color = '#3fb950' if strength_pct >= 58 else ('#f85149' if strength_pct < 42 else '#d29922')
 
     # ────────────────────────────────────────────────────────────
     # SECTION 1: PULSE HERO CARD
     # ────────────────────────────────────────────────────────────
+    # MP-8 FIX: Build date_range from the ACTUAL weekly snapshots in scope, not
+    # from engine metadata. metadata['date_range'] reflects the full CSV span;
+    # filtered scope can produce a different first/last week, and n_weeks here
+    # is also from snapshots. Showing both from the same source eliminates the
+    # "18 weeks but Aug 30 → Apr 18" mismatch the user spotted.
+    def _fmt_snap_date(_ds: str) -> str:
+        try:
+            return datetime.strptime(_ds[:10], '%Y-%m-%d').strftime('%b %d, %Y')
+        except Exception:
+            return str(_ds)
+    _first_ds = weekly_snaps[0]['date'] if weekly_snaps else ''
+    _last_ds = weekly_snaps[-1]['date'] if weekly_snaps else ''
+    if _first_ds and _last_ds:
+        _date_range_str = f"{_fmt_snap_date(_first_ds)} → {_fmt_snap_date(_last_ds)}"
+    else:
+        _date_range_str = str(metadata.get('date_range', ''))
+
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#0d1117 0%,#161b22 100%);border-radius:16px;
         padding:22px 28px;margin-bottom:18px;border:1px solid #30363d;
@@ -4562,8 +4960,8 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
           <div style="font-size:1.5rem;font-weight:800;color:#e6edf3;letter-spacing:-0.3px;">
             📡 Market Pulse</div>
           <div style="color:#8b949e;font-size:0.85rem;margin-top:2px;">
-            {metadata.get('date_range','')} &nbsp;·&nbsp; {n_weeks} weeks
-            &nbsp;·&nbsp; {n_stocks} stocks</div>
+            {_date_range_str} &nbsp;·&nbsp; {n_weeks} weeks
+                        &nbsp;·&nbsp; {n_stocks} stocks &nbsp;·&nbsp; {pulse_scope}</div>
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
           <div style="{r_bg};border:1px solid {r_color}33;border-radius:12px;padding:10px 18px;
@@ -4586,16 +4984,16 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
       <!-- 6 KPI chips -->
       <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:16px;">
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-          <div style="color:#3fb950;font-weight:700;font-size:1.15rem;">{pct_improving}%</div>
-          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Improving</div></div>
+          <div style="color:#3fb950;font-weight:700;font-size:1.15rem;">{pct_improving:.1f}%</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Rank ↑</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-          <div style="color:#58a6ff;font-weight:700;font-size:1.15rem;">{pct_strong}%</div>
+          <div style="color:#58a6ff;font-weight:700;font-size:1.15rem;">{pct_strong:.1f}%</div>
           <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Strong (B+)</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-          <div style="color:#e6edf3;font-weight:700;font-size:1.15rem;">{ad_ratio}</div>
-          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">A/D Ratio</div></div>
+                    <div style="color:#e6edf3;font-weight:700;font-size:1.15rem;">{price_ad_disp}</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Price A/D</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
-          <div style="color:#d2a8ff;font-weight:700;font-size:1.15rem;">{avg_score:.0f}</div>
+          <div style="color:#d2a8ff;font-weight:700;font-size:1.15rem;">{avg_score:.1f}</div>
           <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Avg T-Score</div></div>
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
           <div style="color:#FF6B35;font-weight:700;font-size:1.15rem;">{avg_alpha:.0f}</div>
@@ -4603,7 +5001,7 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
           <div style="color:{'#3fb950' if improving > declining else '#f85149'};font-weight:700;font-size:1.15rem;">
             {improving}↑ {declining}↓</div>
-          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Adv / Dec</div></div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Rank A/D</div></div>
       </div>
     </div>""", unsafe_allow_html=True)
 
@@ -4614,18 +5012,32 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     pct_improving_list = []
     pct_strong_list = []
     ad_ratio_list = []
+    ad_ratio_text = []
     avg_score_list = []
-    for snap in weekly_snaps:
+    for _wi, snap in enumerate(weekly_snaps):
         sc_arr = np.array(snap['scores'], dtype=float)
         rk_arr = np.array(snap['ranks'], dtype=float)
         pr_arr = np.array(snap['prev_ranks'], dtype=float)
         n_s = max(len(sc_arr), 1)
-        imp = int(np.sum(rk_arr < pr_arr))
-        dec = int(np.sum(rk_arr > pr_arr))
+        # MP-3: mask out NaN prev_ranks (newly-listed)
+        _v = ~np.isnan(pr_arr)
+        imp = int(np.sum((rk_arr < pr_arr) & _v))
+        dec = int(np.sum((rk_arr > pr_arr) & _v))
+        _vn = int(_v.sum())
         dates_list.append(snap['date'])
-        pct_improving_list.append(round(100 * imp / n_s, 1))
+        # MP-9 FIX: First week has no prev → _vn==0 → skip improving/AD points
+        # entirely (None breaks Plotly line so the chart starts cleanly at
+        # week 2 instead of plunging to 0% / NaN on the first marker).
+        if _vn > 0 and _wi > 0:
+            pct_improving_list.append(round(100 * imp / _vn, 1))
+            _ad_val = _safe_ad_ratio(imp, dec)
+            ad_ratio_list.append(np.nan if np.isinf(_ad_val) else round(_ad_val, 2) if not pd.isna(_ad_val) else np.nan)
+            ad_ratio_text.append(_fmt_ratio(_ad_val))
+        else:
+            pct_improving_list.append(None)
+            ad_ratio_list.append(None)
+            ad_ratio_text.append('NA')
         pct_strong_list.append(round(100 * np.sum(sc_arr >= 55) / n_s, 1))
-        ad_ratio_list.append(round(imp / max(dec, 1), 2))
         avg_score_list.append(round(float(np.mean(sc_arr)), 1))
 
     fig_breadth = go.Figure()
@@ -4648,8 +5060,8 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     fig_breadth.add_trace(go.Scatter(
         x=dates_list, y=ad_ratio_list, name='A/D Ratio',
         mode='lines+markers', line=dict(color='#d29922', width=2, dash='dash'),
-        marker=dict(size=4), yaxis='y2',
-        hovertemplate='%{x}<br>A/D: %{y}<extra></extra>',
+        marker=dict(size=4), yaxis='y2', customdata=ad_ratio_text,
+        hovertemplate='%{x}<br>A/D: %{customdata}<extra></extra>',
     ))
     fig_breadth.update_layout(
         template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
@@ -4667,24 +5079,41 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     st.plotly_chart(fig_breadth, use_container_width=True, key='mp_breadth_chart')
 
     # Breadth sparkline summary
-    if len(pct_improving_list) >= 2:
-        delta_imp = pct_improving_list[-1] - pct_improving_list[-2]
-        delta_str = pct_strong_list[-1] - pct_strong_list[-2]
-        d_i_c = '#3fb950' if delta_imp >= 0 else '#f85149'
-        d_s_c = '#3fb950' if delta_str >= 0 else '#f85149'
-        d_i_sign = '+' if delta_imp >= 0 else ''
-        d_s_sign = '+' if delta_str >= 0 else ''
-        st.markdown(f"""
-        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;">
-          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
-              font-size:0.82rem;color:#c9d1d9;">
-            <span style="color:{d_i_c};font-weight:700;">{d_i_sign}{delta_imp:.1f}%</span>
-            improving vs prev week</div>
-          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
-              font-size:0.82rem;color:#c9d1d9;">
-            <span style="color:{d_s_c};font-weight:700;">{d_s_sign}{delta_str:.1f}%</span>
-            strong (B+) vs prev week</div>
-        </div>""", unsafe_allow_html=True)
+    # MP-9 follow-through: pct_improving_list may contain None for week 1.
+    # Guard the delta calc so we only show "vs prev week" when both endpoints
+    # are real numbers; otherwise omit the chip cleanly.
+    _last_imp = pct_improving_list[-1] if pct_improving_list else None
+    _prev_imp = pct_improving_list[-2] if len(pct_improving_list) >= 2 else None
+    _last_str = pct_strong_list[-1] if pct_strong_list else None
+    _prev_str = pct_strong_list[-2] if len(pct_strong_list) >= 2 else None
+    _imp_ok = isinstance(_last_imp, (int, float)) and isinstance(_prev_imp, (int, float))
+    _str_ok = isinstance(_last_str, (int, float)) and isinstance(_prev_str, (int, float))
+    if _imp_ok or _str_ok:
+        _chips_html = ''
+        if _imp_ok:
+            delta_imp = float(_last_imp) - float(_prev_imp)
+            d_i_c = '#3fb950' if delta_imp >= 0 else '#f85149'
+            d_i_sign = '+' if delta_imp >= 0 else ''
+            _chips_html += (
+                f'<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'
+                f'padding:8px 16px;font-size:0.82rem;color:#c9d1d9;">'
+                f'<span style="color:{d_i_c};font-weight:700;">{d_i_sign}{delta_imp:.1f}%</span>'
+                f' improving vs prev week</div>'
+            )
+        if _str_ok:
+            delta_str = float(_last_str) - float(_prev_str)
+            d_s_c = '#3fb950' if delta_str >= 0 else '#f85149'
+            d_s_sign = '+' if delta_str >= 0 else ''
+            _chips_html += (
+                f'<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;'
+                f'padding:8px 16px;font-size:0.82rem;color:#c9d1d9;">'
+                f'<span style="color:{d_s_c};font-weight:700;">{d_s_sign}{delta_str:.1f}%</span>'
+                f' strong (B+) vs prev week</div>'
+            )
+        st.markdown(
+            f'<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;">{_chips_html}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 # ============================================
@@ -4694,6 +5123,10 @@ def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
 def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                         histories: dict, metadata: dict):
     """Render the main rankings tab — Clean, minimal, maximum signal density."""
+
+    # Work on local copies to avoid cross-tab/session side effects.
+    all_local = all_df.copy()
+    filtered_local = filtered_df.copy()
 
     # ── Ensure all required columns exist (defensive) ──
     for col, default in [('price_tag', ''), ('signal_tags', ''), ('decay_tag', ''),
@@ -4707,36 +5140,38 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                          ('alpha_score', 0), ('conviction', 0), ('tmi', 0),
                          ('rally_gain', 0), ('rally_stage', 'UNKNOWN'),
                          ('rally_leg_pct', 0), ('confidence', 0)]:
-        if col not in all_df.columns:
-            all_df[col] = default
-        if col not in filtered_df.columns:
-            filtered_df[col] = default
+        if col not in all_local.columns:
+            all_local[col] = default
+        if col not in filtered_local.columns:
+            filtered_local[col] = default
 
     # ── Empty state guard ──
-    if filtered_df.empty:
+    if filtered_local.empty:
         st.info("🔍 No stocks match your current filters. Try adjusting or clearing filters.")
         return
 
     # ── Keep full filtered reference for intelligence dashboard ──
-    full_filtered_df = filtered_df.copy()
+    full_filtered_df = filtered_local.copy()
 
     # ── Compute metrics from FULL filtered data (before Show Top truncation) ──
-    total = len(all_df)
-    shown = len(filtered_df)
-    avg_score = filtered_df['trajectory_score'].mean()
-    avg_alpha = filtered_df['alpha_score'].mean()
-    rockets = int((filtered_df['pattern_key'] == 'rocket').sum())
-    elites = int((filtered_df['pattern_key'] == 'stable_elite').sum())
-    confirmed = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum())
-    divergent = int((filtered_df['price_label'] == 'PRICE_DIVERGENT').sum())
-    decay_high = int((filtered_df['decay_label'] == 'DECAY_HIGH').sum())
-    decay_mod = int((filtered_df['decay_label'] == 'DECAY_MODERATE').sum())
-    decay_mild = int((filtered_df['decay_label'] == 'DECAY_MILD').sum())
+    shown = len(filtered_local)
+    avg_score = float(pd.to_numeric(filtered_local['trajectory_score'], errors='coerce').mean())
+    avg_alpha = float(pd.to_numeric(filtered_local['alpha_score'], errors='coerce').mean())
+    if pd.isna(avg_score):
+        avg_score = 0.0
+    if pd.isna(avg_alpha):
+        avg_alpha = 0.0
+    rockets = int((filtered_local['pattern_key'] == 'rocket').sum())
+    confirmed = int((filtered_local['price_label'] == 'PRICE_CONFIRMED').sum())
+    divergent = int((filtered_local['price_label'] == 'PRICE_DIVERGENT').sum())
+    decay_high = int((filtered_local['decay_label'] == 'DECAY_HIGH').sum())
+    decay_mod = int((filtered_local['decay_label'] == 'DECAY_MODERATE').sum())
+    decay_mild = int((filtered_local['decay_label'] == 'DECAY_MILD').sum())
     decay_any = decay_high + decay_mod + decay_mild
     clean_pct = round((1 - decay_any / max(shown, 1)) * 100, 1)
-    sect_leaders = int((filtered_df['sector_alpha_tag'] == 'SECTOR_LEADER').sum())
-    grade_s = int((filtered_df['grade'] == 'S').sum())
-    grade_a = int((filtered_df['grade'] == 'A').sum())
+    sect_leaders = int((filtered_local['sector_alpha_tag'] == 'SECTOR_LEADER').sum())
+    grade_s = int((filtered_local['grade'] == 'S').sum())
+    grade_a = int((filtered_local['grade'] == 'A').sum())
     clean_n = shown - decay_any
 
     # ════════════════════════════════════════════
@@ -4754,9 +5189,9 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         _chip(f'{grade_s + grade_a}', 'S + A Grade', 'm-green'),
         _chip(f'{rockets}', '🚀 Rockets'),
         _chip(f'{confirmed}', '💰 Confirmed', 'm-green'),
-        _chip(f'{decay_high}', '🔻 Traps', 'm-red' if decay_high > 0 else ''),
+        _chip(f'{decay_high}', '🔻 High Decay', 'm-red' if decay_high > 0 else ''),
         _chip(f'{sect_leaders}', '👑 Alpha', 'm-gold'),
-        _chip(f'{metadata["total_weeks"]}', 'Weeks'),
+        _chip(f'{metadata.get("total_weeks", 0)}', 'Weeks'),
     ])
     st.markdown(f'<div class="m-strip">{chips}</div>', unsafe_allow_html=True)
 
@@ -4772,7 +5207,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         display_n_select = st.selectbox("Show Top", show_top_options,
                                          index=3, key='rank_topn',
                                          label_visibility='collapsed')
-        display_n = len(filtered_df) if display_n_select == "All" else display_n_select
+        display_n = len(filtered_local) if display_n_select == "All" else display_n_select
     with ctl1:
         sort_by = st.selectbox("Sort by", [
             'Trajectory Score', 'Alpha Score', 'Current Rank', 'Rank Change', 'TMI',
@@ -4785,16 +5220,34 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         ], key='rank_view', label_visibility='collapsed')
 
     # ── T-Rank = rank within full universe (stable, never changes with filters) ──
-    t_rank_sorted = all_df.sort_values(
-        ['trajectory_score', 'confidence', 'consistency'],
-        ascending=[False, False, False]
-    ).reset_index(drop=True)
-    t_rank_map = {t: i + 1 for i, t in enumerate(t_rank_sorted['ticker'])}
-    filtered_df['t_rank_universe'] = filtered_df['ticker'].map(t_rank_map).fillna(0).astype(int)
+    # R1 FIX: Use canonical upstream t_rank (already sector-blend + bear-tilt aware).
+    # Previously this rebuilt rank from raw trajectory_score, causing a silent
+    # divergence in BEAR regimes where the engine's sector_blend_score had
+    # reordered stocks. Single source of truth = compute_all_trajectories.
+    if 't_rank' in all_local.columns:
+        t_rank_map = dict(zip(
+            all_local['ticker'].astype(str),
+            pd.to_numeric(all_local['t_rank'], errors='coerce').fillna(0).astype(int),
+        ))
+    else:
+        # Defensive fallback if upstream schema changes: rebuild from score.
+        _fallback = all_local[['ticker', 'trajectory_score', 'confidence', 'consistency']].copy()
+        for _c in ('trajectory_score', 'confidence', 'consistency'):
+            _fallback[_c] = pd.to_numeric(_fallback[_c], errors='coerce').fillna(0.0)
+        _fallback = _fallback.sort_values(
+            ['trajectory_score', 'confidence', 'consistency'],
+            ascending=[False, False, False],
+        ).reset_index(drop=True)
+        t_rank_map = {str(t): i + 1 for i, t in enumerate(_fallback['ticker'])}
+    filtered_local['t_rank_universe'] = (
+        filtered_local['ticker'].astype(str).map(t_rank_map).fillna(0).astype(int)
+    )
 
     # ── Sort FIRST, then apply Show Top limit ──
+    # R3 FIX: 'Trajectory Score' sorts by canonical t_rank ASC so the displayed
+    # order matches the displayed rank column (reflects sector-blend + bear-tilt).
     sort_map = {
-        'Trajectory Score': ('trajectory_score', False),
+        'Trajectory Score': ('t_rank', True),
         'Alpha Score': ('alpha_score', False),
         'Positional Quality': ('positional', False),
         'TMI': ('tmi', False),
@@ -4813,15 +5266,23 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Sector Alpha': ('sector_alpha_value', False),
     }
     col_name, ascending = sort_map.get(sort_by, ('trajectory_score', False))
-    display_df = filtered_df.sort_values(col_name, ascending=ascending).head(display_n).reset_index(drop=True)
-    display_df['t_rank'] = range(1, len(display_df) + 1)
+    # B1: Fall back to trajectory_score if the requested sort column is missing
+    if col_name not in filtered_local.columns:
+        col_name, ascending = 'trajectory_score', False
+    display_df = filtered_local.sort_values(col_name, ascending=ascending).head(display_n).reset_index(drop=True)
     table_n = len(display_df)
 
-    # ── Add latest price from histories ──
-    display_df['latest_price'] = display_df['ticker'].apply(
-        lambda t: round(histories.get(t, {}).get('prices', [0])[-1], 2)
-        if histories.get(t, {}).get('prices') else 0
-    )
+    # ── Add latest price from histories (B2: use NaN for missing so cell shows blank, not fake ₹0.00) ──
+    _price_map = {}
+    for _tk in display_df['ticker'].astype(str):
+        _prices = histories.get(_tk, {}).get('prices', [])
+        _price_map[_tk] = round(float(_prices[-1]), 2) if _prices else float('nan')
+    display_df['latest_price'] = display_df['ticker'].astype(str).map(_price_map)
+
+    # ── B3: Coerce numeric format columns to safe defaults so "%+d" / "%d" don't choke on NaN ──
+    for _nc in ('rank_change', 'last_week_change', 'streak'):
+        if _nc in display_df.columns:
+            display_df[_nc] = pd.to_numeric(display_df[_nc], errors='coerce').fillna(0).astype(int)
 
     # ── Column definitions for each view ──
     # Each: (df_col, display_name, tooltip, column_config_or_None)
@@ -4931,7 +5392,7 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         cdef = COL_DEFS.get(col_key)
         if cdef is None:
             continue
-        src_col, disp_name, tooltip, cfg = cdef
+        src_col, disp_name, _tooltip, cfg = cdef
         if src_col not in display_df.columns:
             continue
         df_cols.append(src_col)
@@ -4953,7 +5414,26 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     # ── Dynamic height ──
     tbl_height = min(800, max(180, len(table_df) * 35 + 60))
 
-    st.caption(f"Showing {table_n:,} of {shown:,} filtered stocks · Sorted by **{sort_by}**")
+    # U2: Caption with universe context
+    _univ_n = len(all_local)
+    st.caption(f"Showing **{table_n:,}** of **{shown:,}** filtered · universe **{_univ_n:,}** · sorted by **{sort_by}**")
+
+    # B5: Dedicated CSV download for current view
+    try:
+        _csv_bytes = ('\ufeff' + table_df.to_csv(index=False)).encode('utf-8')
+        _ld = metadata.get('latest_date', '') or ''
+        _ld_safe = str(_ld).replace('-', '').replace('/', '').replace(' ', '')[:8] or 'latest'
+        _view_safe = str(view_mode).lower().replace(' ', '_')
+        st.download_button(
+            label=f"⬇️ Download view ({table_n:,} rows)",
+            data=_csv_bytes,
+            file_name=f"rankings_{_view_safe}_{_ld_safe}.csv",
+            mime="text/csv",
+            key='rank_dl_view',
+            use_container_width=False,
+        )
+    except Exception:
+        pass
 
     st.dataframe(
         table_df, column_config=col_config,
@@ -5194,12 +5674,26 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     # ── Search Input — dropdown shows only filtered stocks ──
     label_map = {}
     for _, r in filtered_df.iterrows():
-        label_map[f"{r['ticker']} — {r['company_name'][:35]}"] = r['ticker']
+        _tk = str(r.get('ticker', '')).strip()
+        if not _tk:
+            continue
+        _nm = str(r.get('company_name', ''))[:35]
+        label_map[f"{_tk} — {_nm}"] = _tk
     labels = sorted(label_map.keys())
+
+    if not labels:
+        st.info("No stocks available under current filters")
+        return
 
     # Clear stale selection if it no longer exists in filtered labels
     if 'search_select' in st.session_state and st.session_state['search_select'] not in labels:
         st.session_state['search_select'] = None
+
+    # Keep a small recent-search memory for faster repeated analysis
+    _recent_key = 'search_recent_labels'
+    if _recent_key not in st.session_state or not isinstance(st.session_state[_recent_key], list):
+        st.session_state[_recent_key] = []
+    st.session_state[_recent_key] = [x for x in st.session_state[_recent_key] if x in labels][:8]
 
     selected_label = st.selectbox("🔍 Search Stock",
                                    labels, index=None,
@@ -5209,6 +5703,12 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     if selected_label is None:
         st.info("👆 Select a stock from the dropdown to view detailed trajectory analysis")
         return
+
+    # Update recent-search trail (max 8)
+    _recent = [selected_label] + [x for x in st.session_state[_recent_key] if x != selected_label]
+    st.session_state[_recent_key] = _recent[:8]
+    if st.session_state[_recent_key]:
+        st.caption("Recent: " + " | ".join(st.session_state[_recent_key][:4]))
 
     ticker = label_map[selected_label]
     matches = filtered_df[filtered_df['ticker'] == ticker]
@@ -5233,8 +5733,8 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         ['trajectory_score', 'confidence', 'consistency'],
         ascending=[False, False, False]
     ).reset_index(drop=True)
-    t_rank_idx = sorted_df[sorted_df['ticker'] == ticker].index
-    t_rank = int(t_rank_idx[0]) + 1 if len(t_rank_idx) > 0 else 0
+    t_rank_map = {tk: i + 1 for i, tk in enumerate(sorted_df['ticker'].tolist())}
+    t_rank = int(t_rank_map.get(ticker, 0))
 
     pattern_key = row.get('pattern_key', 'neutral')
     p_emoji, p_name, p_desc = PATTERN_DEFS.get(pattern_key, ('➖', 'Neutral', ''))
@@ -5332,6 +5832,112 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
         for label, val, sub in kpi_items
     ])
     st.markdown(f'<div class="m-strip">{kpi_html}</div>', unsafe_allow_html=True)
+
+    # ── Last-Week Delta + Action Verdict ────────────────────────
+    prev_rank = int(ranks_list[-2]) if len(ranks_list) >= 2 else int(ranks_list[-1])
+    curr_rank = int(ranks_list[-1])
+    rank_1w_delta = prev_rank - curr_rank if len(ranks_list) >= 2 else 0
+
+    prev_price = float(h['prices'][-2]) if len(h['prices']) >= 2 else float(latest_price)
+    price_1w_delta = float(latest_price) - prev_price if len(h['prices']) >= 2 else 0.0
+    price_1w_ret = ((float(latest_price) / prev_price - 1) * 100) if len(h['prices']) >= 2 and prev_price > 0 and latest_price > 0 else 0.0
+
+    _scores = h.get('scores', [])
+    score_1w_delta = float(_scores[-1] - _scores[-2]) if len(_scores) >= 2 else 0.0
+
+    # Heuristic verdict engine for faster operator decision-making
+    verdict_points = 0
+    verdict_reasons_pos, verdict_reasons_neg = [], []
+
+    if t_score >= 75:
+        verdict_points += 2; verdict_reasons_pos.append("High trajectory score")
+    elif t_score >= 60:
+        verdict_points += 1; verdict_reasons_pos.append("Above-average trajectory score")
+    else:
+        verdict_points -= 1; verdict_reasons_neg.append("Weak trajectory score")
+
+    if alpha >= 65:
+        verdict_points += 2; verdict_reasons_pos.append("Strong alpha")
+    elif alpha >= 50:
+        verdict_points += 1; verdict_reasons_pos.append("Decent alpha")
+    else:
+        verdict_points -= 1; verdict_reasons_neg.append("Low alpha")
+
+    if exit_risk_val <= 30:
+        verdict_points += 2; verdict_reasons_pos.append("Low exit risk")
+    elif exit_risk_val >= 70:
+        verdict_points -= 2; verdict_reasons_neg.append("High exit risk")
+
+    if hot:
+        verdict_points += 1; verdict_reasons_pos.append("Hot streak active")
+
+    _confidence = float(row.get('confidence', 0.0))
+    if _confidence >= 0.75:
+        verdict_points += 1; verdict_reasons_pos.append("High confidence")
+    elif _confidence < 0.45:
+        verdict_points -= 1; verdict_reasons_neg.append("Low confidence")
+
+    if price_label_display == 'PRICE_CONFIRMED':
+        verdict_points += 1; verdict_reasons_pos.append("Price confirms rank trend")
+    elif price_label_display == 'PRICE_DIVERGENT':
+        verdict_points -= 1; verdict_reasons_neg.append("Price-rank divergence")
+
+    if market_regime == 'BULL':
+        verdict_points += 1; verdict_reasons_pos.append("Bull regime tailwind")
+    elif market_regime == 'BEAR':
+        verdict_points -= 1; verdict_reasons_neg.append("Bear regime headwind")
+
+    if verdict_points >= 5:
+        verdict_label, verdict_color = '✅ CONTINUATION CANDIDATE', '#3fb950'
+    elif verdict_points >= 2:
+        verdict_label, verdict_color = '👀 WATCHLIST / SET ALERTS', '#d29922'
+    else:
+        verdict_label, verdict_color = '⚠️ HIGH RISK / AVOID', '#f85149'
+
+    verdict_reasons = (verdict_reasons_pos + verdict_reasons_neg)[:3]
+    verdict_reason_text = ' • '.join([_html.escape(x) for x in verdict_reasons]) if verdict_reasons else 'No dominant signal'
+
+    _rank_delta_txt = f"{rank_1w_delta:+d}"
+    _rank_delta_c = '#3fb950' if rank_1w_delta > 0 else ('#f85149' if rank_1w_delta < 0 else '#8b949e')
+    _price_delta_txt = f"{price_1w_delta:+.1f} ({price_1w_ret:+.1f}%)"
+    _price_delta_c = '#3fb950' if price_1w_delta > 0 else ('#f85149' if price_1w_delta < 0 else '#8b949e')
+    _score_delta_txt = f"{score_1w_delta:+.1f}"
+    _score_delta_c = '#3fb950' if score_1w_delta > 0 else ('#f85149' if score_1w_delta < 0 else '#8b949e')
+
+    st.markdown(f"""
+        <div style="
+                background:linear-gradient(135deg, #0d1117 0%, #121820 100%);
+                border:1px solid #30363d;
+                border-left:4px solid {verdict_color};
+                border-radius:12px;
+                padding:12px 14px;
+                margin:8px 0 10px 0;
+                box-shadow:0 6px 20px rgba(0,0,0,0.22);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                    <span style="background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:0.72rem;color:#8b949e;">
+                        1W Δ Rank <b style="color:{_rank_delta_c};margin-left:4px;">{_rank_delta_txt}</b>
+                    </span>
+                    <span style="background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:0.72rem;color:#8b949e;">
+                        1W Δ Price <b style="color:{_price_delta_c};margin-left:4px;">{_price_delta_txt}</b>
+                    </span>
+                    <span style="background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:0.72rem;color:#8b949e;">
+                        1W Δ Score <b style="color:{_score_delta_c};margin-left:4px;">{_score_delta_txt}</b>
+                    </span>
+                </div>
+                <div style="
+                        background:{verdict_color}22;
+                        color:{verdict_color};
+                        border:1px solid {verdict_color}55;
+                        border-radius:10px;
+                        padding:6px 10px;
+                        font-size:0.78rem;
+                        font-weight:800;
+                        letter-spacing:0.2px;">{verdict_label}</div>
+            </div>
+            <div style="margin-top:8px;color:#9aa4af;font-size:0.73rem;line-height:1.35;">{verdict_reason_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── Exit Warning Banner (if exit risk is high) ──
     if exit_risk_val >= 60:
@@ -5581,6 +6187,65 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
 
     st.markdown("")
 
+    # ── DNA Intelligence ──
+    dna_info = compute_dna_for_ticker(ticker, histories)
+    if dna_info is not None:
+        _dna_sc = dna_info['dna_score']
+        _dna_conv = dna_info['conviction']
+        _dna_icon = dna_info['conv_icon']
+        _dna_color = dna_info['conv_color']
+        _dna_path = dna_info['path']
+        _dna_met = dna_info['criteria_met']
+        _dna_sigs = dna_info['key_signals']
+        _dna_cat = dna_info['category']
+
+        # Score bar color
+        if _dna_sc >= 70:
+            _bar_col = '#26a641'
+        elif _dna_sc >= 50:
+            _bar_col = '#e3b341'
+        else:
+            _bar_col = '#f85149'
+
+        _sig_html = ''.join(f'<span style="display:inline-block;background:#21262d;color:#e6edf3;border-radius:4px;padding:2px 7px;margin:2px 3px;font-size:0.72rem;">{_html.escape(s)}</span>' for s in _dna_sigs[:8])
+
+        _dna_cat_esc = _html.escape(str(_dna_cat))
+
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#161b22 0%,#0d1117 100%);border:1px solid #30363d;border-radius:12px;padding:18px 22px;margin:8px 0 16px 0;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+                <span style="font-size:1.1rem;">🧬</span>
+                <span style="color:#e6edf3;font-weight:700;font-size:1rem;">DNA Intelligence</span>
+                <span style="background:#21262d;color:#8b949e;border-radius:6px;padding:2px 8px;font-size:0.7rem;">{_dna_cat_esc}</span>
+            </div>
+            <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px;">
+                <div>
+                    <div style="color:#8b949e;font-size:0.7rem;margin-bottom:3px;">DNA SCORE</div>
+                    <div style="background:#21262d;border-radius:6px;width:120px;height:12px;overflow:hidden;">
+                        <div style="background:{_bar_col};width:{min(_dna_sc,100)}%;height:100%;border-radius:6px;"></div>
+                    </div>
+                    <span style="color:{_bar_col};font-weight:700;font-size:1.1rem;">{_dna_sc}</span><span style="color:#8b949e;font-size:0.75rem;">/100</span>
+                </div>
+                <div>
+                    <div style="color:#8b949e;font-size:0.7rem;margin-bottom:3px;">CONVICTION</div>
+                    <span style="color:{_dna_color};font-weight:700;font-size:1rem;">{_dna_icon} {_dna_conv}</span>
+                </div>
+                <div>
+                    <div style="color:#8b949e;font-size:0.7rem;margin-bottom:3px;">PATH</div>
+                    <span style="color:#e6edf3;font-weight:600;font-size:0.95rem;">{_dna_path}</span>
+                </div>
+                <div>
+                    <div style="color:#8b949e;font-size:0.7rem;margin-bottom:3px;">CRITERIA MET</div>
+                    <span style="color:#58a6ff;font-weight:700;font-size:1rem;">{_dna_met}</span>
+                </div>
+            </div>
+            <div style="color:#8b949e;font-size:0.7rem;margin-bottom:4px;">KEY SIGNALS</div>
+            <div>{_sig_html if _sig_html else '<span style="color:#484f58;font-size:0.75rem;">No strong signals</span>'}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("")
+
     # ── Week-by-Week History ──
     with st.expander("📅 Week-by-Week History", expanded=False):
         _n_weeks = len(ranks_list)
@@ -5617,6 +6282,15 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             wk_col_config['Ret 30d%'] = st.column_config.NumberColumn(format="%.1f%%")
         st.dataframe(wk_df, column_config=wk_col_config, hide_index=True, use_container_width=True)
 
+        _wk_csv = wk_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label=f"📥 Download {ticker} Week History CSV",
+            data=_wk_csv,
+            file_name=f"Search_{ticker}_Week_History.csv",
+            mime='text/csv',
+            key=f"search_wk_download_{ticker}",
+        )
+
     # ── Compare ──
     with st.expander("⚖️ Compare Stocks", expanded=False):
         compare_labels = [l for l in labels if l != selected_label]
@@ -5624,13 +6298,199 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
             st.info("No other stocks available for comparison with current filters")
         else:
             st.caption("Select up to 4 stocks to compare rank percentile trajectories and key metrics side by side")
-            compare_selections = st.multiselect("Compare with",
-                                                 compare_labels, max_selections=4,
-                                                 key='compare_select',
-                                                 label_visibility='collapsed')
+            compare_selections = st.multiselect(
+                "Compare with",
+                compare_labels,
+                max_selections=4,
+                key='compare_select',
+                label_visibility='collapsed'
+            )
             if compare_selections:
                 compare_tickers = [label_map[l] for l in compare_selections]
                 _render_comparison_chart(ticker, compare_tickers, histories, traj_df)
+
+                # Build compact comparison table
+                comp_rows = []
+                for _tk in [ticker] + compare_tickers:
+                    _r = traj_df[traj_df['ticker'] == _tk]
+                    if _r.empty:
+                        continue
+                    _rw = _r.iloc[0]
+                    _hh = histories.get(_tk, {})
+                    _rk = _hh.get('ranks', [])
+                    _pr = _hh.get('prices', [])
+                    _chg_1w = int(_rk[-2] - _rk[-1]) if len(_rk) >= 2 else 0
+                    _ret_1w = ((_pr[-1] / _pr[-2] - 1) * 100) if len(_pr) >= 2 and _pr[-1] > 0 and _pr[-2] > 0 else np.nan
+                    comp_rows.append({
+                        'Ticker': _tk,
+                        'Company': str(_rw.get('company_name', '')),
+                        'T-Score': float(_rw.get('trajectory_score', 0)),
+                        'Alpha': float(_rw.get('alpha_score', 0)),
+                        'Exit Risk': float(_rw.get('exit_risk', 0)),
+                        'Grade': str(_rw.get('grade', '')),
+                        'Current Rank': int(_rw.get('current_rank', 0)),
+                        '1W Rank Δ': _chg_1w,
+                        '1W Return %': _ret_1w,
+                    })
+
+                if comp_rows:
+                    comp_df = pd.DataFrame(comp_rows)
+
+                    # Sorting / focus controls
+                    c_cmp1, c_cmp2 = st.columns([1, 1])
+                    with c_cmp1:
+                        _cmp_sort_metric = st.selectbox(
+                            "Sort Compare Table By",
+                            options=['T-Score', 'Alpha', '1W Return %', '1W Rank Δ', 'Exit Risk', 'Current Rank'],
+                            index=0,
+                            key='search_compare_sort_metric'
+                        )
+                    with c_cmp2:
+                        _cmp_sort_dir = st.selectbox(
+                            "Sort Direction",
+                            options=['Best First', 'Worst First'],
+                            index=0,
+                            key='search_compare_sort_dir'
+                        )
+
+                    _lower_better = _cmp_sort_metric in ('Exit Risk', 'Current Rank')
+                    _asc = _lower_better if _cmp_sort_dir == 'Best First' else (not _lower_better)
+                    comp_df = comp_df.sort_values(_cmp_sort_metric, ascending=_asc, na_position='last').reset_index(drop=True)
+
+                    # Leader snapshot cards
+                    _leader = comp_df.iloc[0]
+                    _leader_tk = str(_leader.get('Ticker', '—'))
+                    _leader_cmp = str(_leader.get('Company', ''))[:28]
+                    _safest_idx = comp_df['Exit Risk'].idxmin() if len(comp_df) else None
+                    _momentum_idx = comp_df['1W Return %'].fillna(-1e9).idxmax() if len(comp_df) else None
+                    _safest_tk = str(comp_df.loc[_safest_idx, 'Ticker']) if _safest_idx is not None else '—'
+                    _momentum_tk = str(comp_df.loc[_momentum_idx, 'Ticker']) if _momentum_idx is not None else '—'
+
+                    st.markdown(f"""
+                    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:6px 0 10px 0;">
+                      <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:9px 10px;">
+                        <div style="color:#8b949e;font-size:0.66rem;text-transform:uppercase;">Top by {_cmp_sort_metric}</div>
+                        <div style="color:#e6edf3;font-weight:800;font-size:0.95rem;">🏆 {_html.escape(_leader_tk)}</div>
+                        <div style="color:#6e7681;font-size:0.68rem;">{_html.escape(_leader_cmp)}</div>
+                      </div>
+                      <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:9px 10px;">
+                        <div style="color:#8b949e;font-size:0.66rem;text-transform:uppercase;">Safest Exit Profile</div>
+                        <div style="color:#58a6ff;font-weight:800;font-size:0.95rem;">🛡️ {_html.escape(_safest_tk)}</div>
+                        <div style="color:#6e7681;font-size:0.68rem;">Lowest exit risk in selection</div>
+                      </div>
+                      <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:9px 10px;">
+                        <div style="color:#8b949e;font-size:0.66rem;text-transform:uppercase;">Strongest 1W Momentum</div>
+                        <div style="color:#3fb950;font-weight:800;font-size:0.95rem;">⚡ {_html.escape(_momentum_tk)}</div>
+                        <div style="color:#6e7681;font-size:0.68rem;">Highest 1W return in selection</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    st.dataframe(
+                        comp_df,
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config={
+                            'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format='%.1f'),
+                            'Alpha': st.column_config.ProgressColumn('Alpha', min_value=0, max_value=100, format='%.1f'),
+                            'Exit Risk': st.column_config.ProgressColumn('Exit Risk', min_value=0, max_value=100, format='%.1f'),
+                            'Current Rank': st.column_config.NumberColumn(format='#%d'),
+                            '1W Rank Δ': st.column_config.NumberColumn(format='%+d'),
+                            '1W Return %': st.column_config.NumberColumn(format='%.1f%%'),
+                        },
+                    )
+
+                    # Head-to-head: selected ticker edge versus each comparator
+                    _base_row = next((x for x in comp_rows if x.get('Ticker') == ticker), None)
+                    _hh_rows = []
+                    if _base_row is not None:
+                        _b_ts = float(_base_row.get('T-Score', 0))
+                        _b_alpha = float(_base_row.get('Alpha', 0))
+                        _b_exit = float(_base_row.get('Exit Risk', 0))
+                        _b_rank = int(_base_row.get('Current Rank', 0))
+                        _b_rchg = int(_base_row.get('1W Rank Δ', 0))
+                        _b_ret = _base_row.get('1W Return %', np.nan)
+                        _b_ret = float(_b_ret) if pd.notna(_b_ret) else np.nan
+
+                        for _cmp in comp_rows:
+                            _tk_cmp = str(_cmp.get('Ticker', ''))
+                            if _tk_cmp == ticker:
+                                continue
+
+                            _c_ts = float(_cmp.get('T-Score', 0))
+                            _c_alpha = float(_cmp.get('Alpha', 0))
+                            _c_exit = float(_cmp.get('Exit Risk', 0))
+                            _c_rank = int(_cmp.get('Current Rank', 0))
+                            _c_rchg = int(_cmp.get('1W Rank Δ', 0))
+                            _c_ret = _cmp.get('1W Return %', np.nan)
+                            _c_ret = float(_c_ret) if pd.notna(_c_ret) else np.nan
+
+                            _edge_ts = _b_ts - _c_ts
+                            _edge_alpha = _b_alpha - _c_alpha
+                            _edge_exit = _c_exit - _b_exit  # positive = selected has lower exit risk
+                            _edge_rank = _c_rank - _b_rank  # positive = selected has better (lower) rank
+                            _edge_rchg = _b_rchg - _c_rchg
+                            _edge_ret = (_b_ret - _c_ret) if pd.notna(_b_ret) and pd.notna(_c_ret) else np.nan
+
+                            _valid_edges = [_edge_ts, _edge_alpha, _edge_exit, _edge_rank, _edge_rchg]
+                            if pd.notna(_edge_ret):
+                                _valid_edges.append(_edge_ret)
+                            _wins = sum(1 for _e in _valid_edges if _e > 0)
+                            _total = len(_valid_edges)
+                            _status = 'LEADING' if _wins >= max(1, int(np.ceil(_total / 2))) else 'LAGGING'
+
+                            _hh_rows.append({
+                                'Selected': ticker,
+                                'Vs': _tk_cmp,
+                                'Edge T-Score': _edge_ts,
+                                'Edge Alpha': _edge_alpha,
+                                'Edge ExitSafe': _edge_exit,
+                                'Edge RankPos': _edge_rank,
+                                'Edge 1W RankΔ': _edge_rchg,
+                                'Edge 1W Return%': _edge_ret,
+                                'Wins': f'{_wins}/{_total}',
+                                'Status': _status,
+                            })
+
+                    if _hh_rows:
+                        hh_df = pd.DataFrame(_hh_rows).sort_values(['Status', 'Wins', 'Edge T-Score'], ascending=[False, False, False])
+                        _lead_count = int((hh_df['Status'] == 'LEADING').sum())
+                        _lag_count = int((hh_df['Status'] == 'LAGGING').sum())
+                        st.markdown(
+                            f'<div style="margin:8px 0 6px 0;color:#8b949e;font-size:0.75rem;">'
+                            f'⚔️ <b>{_html.escape(ticker)}</b> head-to-head: '
+                            f'<span style="color:#3fb950;">{_lead_count} leading</span> · '
+                            f'<span style="color:#f85149;">{_lag_count} lagging</span></div>',
+                            unsafe_allow_html=True
+                        )
+                        st.dataframe(
+                            hh_df,
+                            hide_index=True,
+                            use_container_width=True,
+                            column_config={
+                                'Edge T-Score': st.column_config.NumberColumn(format='%+.1f'),
+                                'Edge Alpha': st.column_config.NumberColumn(format='%+.1f'),
+                                'Edge ExitSafe': st.column_config.NumberColumn(format='%+.1f'),
+                                'Edge RankPos': st.column_config.NumberColumn(format='%+d'),
+                                'Edge 1W RankΔ': st.column_config.NumberColumn(format='%+d'),
+                                'Edge 1W Return%': st.column_config.NumberColumn(format='%+.1f'),
+                            },
+                        )
+                        st.download_button(
+                            label="📥 Download Head-to-Head CSV",
+                            data=hh_df.to_csv(index=False).encode('utf-8'),
+                            file_name=f"Search_HeadToHead_{ticker}.csv",
+                            mime='text/csv',
+                            key=f"search_h2h_download_{ticker}",
+                        )
+
+                    st.download_button(
+                        label="📥 Download Compare Snapshot CSV",
+                        data=comp_df.to_csv(index=False).encode('utf-8'),
+                        file_name=f"Search_Compare_{ticker}.csv",
+                        mime='text/csv',
+                        key=f"search_compare_download_{ticker}",
+                    )
 
 
 def _render_rank_chart(h: dict, ticker: str):
@@ -5877,6 +6737,11 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
     """
     import html as _html
 
+    # ── Empty-filter guard ──
+    if filtered_df is None or filtered_df.empty:
+        st.info("🔍 No stocks match the current sidebar filters. Loosen the sidebar filters to see Top Movers.")
+        return
+
     # ── Ensure columns ──
     for col, default in [('grade', 'F'), ('grade_emoji', '📉'), ('company_name', ''),
                          ('sector', ''), ('weeks', 0), ('trajectory_score', 0)]:
@@ -5890,7 +6755,7 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
     week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len] or [1]
     week_labels = {1: '1 Week', 2: '2 Weeks', 4: '4 Weeks', 8: '8 Weeks', 12: '12 Weeks'}
 
-    c_wk, c_ct, _ = st.columns([1, 1, 2])
+    c_wk, c_ct, c_side, c_sec = st.columns([1, 1, 1, 1.4])
     with c_wk:
         mv_weeks = st.selectbox(
             'Time Window', options=week_options,
@@ -5902,62 +6767,43 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             'Stocks Per Side', options=[50, 100, 150],
             index=0, key='movers_tab_count',
         )
+    with c_side:
+        mv_side = st.selectbox(
+            'View', options=['⬆️ Biggest Climbers', '⬇️ Biggest Decliners', '🔄 Consistent Movers'],
+            index=0, key='movers_tab_side',
+        )
+    with c_sec:
+        # Sector filter: built from the sectors actually present in the
+        # currently filtered universe so users can never pick an empty bucket.
+        if 'sector' in filtered_df.columns:
+            _sec_pool = (
+                filtered_df['sector'].dropna().astype(str).str.strip()
+                .replace('', pd.NA).dropna().unique().tolist()
+            )
+            _sec_pool = sorted(_sec_pool)
+        else:
+            _sec_pool = []
+        mv_sectors = st.multiselect(
+            'Sector', options=_sec_pool, default=[],
+            placeholder='All sectors', key='movers_tab_sectors',
+        )
+
+    # Narrow the candidate ticker set BEFORE calling get_top_movers so the
+    # n=50/100/150 cap operates on the sector-filtered universe (otherwise
+    # we'd compute the global top-N then drop most rows post-hoc).
+    if mv_sectors:
+        _sec_mask = filtered_df['sector'].astype(str).str.strip().isin(mv_sectors)
+        _filtered_tickers = set(filtered_df.loc[_sec_mask, 'ticker'].tolist())
+        if not _filtered_tickers:
+            st.info(f"No stocks match selected sector{'s' if len(mv_sectors) != 1 else ''}: "
+                    + ", ".join(mv_sectors))
+            return
 
     # ── Fetch movers ─────────────────────────────────────────────
     gainers, decliners = get_top_movers(histories, n=mv_count, weeks=mv_weeks,
                                          tickers=_filtered_tickers)
-
-    # ── Detect pattern flips + new entries/exits over the same window ──
-    new_rockets, new_crashes, new_entries, exited_tickers = [], [], [], []
-    for ticker, h in histories.items():
-        if _filtered_tickers is not None and ticker not in _filtered_tickers:
-            continue
-        pats = h.get('pattern_history', [])
-        ranks = h.get('ranks', [])
-        n_weeks = len(ranks)
-        # Pattern flips: compare current vs N weeks ago
-        if len(pats) >= mv_weeks + 1:
-            cur_pat = pats[-1]
-            prev_pat = pats[-(mv_weeks + 1)]
-            if cur_pat == 'rocket' and prev_pat != 'rocket':
-                new_rockets.append(ticker)
-            if cur_pat == 'crash' and prev_pat != 'crash':
-                new_crashes.append(ticker)
-        # New entries: present in latest week but absent N weeks ago
-        dates = h.get('dates', [])
-        if n_weeks >= 1 and n_weeks < mv_weeks + 1:
-            new_entries.append(ticker)
-    # Exited: had data N weeks ago but not in latest week
-    for ticker, h in histories.items():
-        if _filtered_tickers is not None and ticker not in _filtered_tickers:
-            continue
-        ranks = h.get('ranks', [])
-        dates = h.get('dates', [])
-        if len(ranks) >= mv_weeks + 1:
-            # This ticker has old data — check if it's missing from the latest snapshot
-            pass  # still present, not exited
-        # Tickers that disappeared: were in prev but not in latest
-    # Simpler approach: use the actual date lists
-    _all_dates = set()
-    for h in histories.values():
-        for d in h.get('dates', []):
-            _all_dates.add(str(d)[:10])
-    _sorted_dates = sorted(_all_dates)
-    if len(_sorted_dates) >= mv_weeks + 1:
-        _latest_date = _sorted_dates[-1]
-        _prev_date = _sorted_dates[-(mv_weeks + 1)]
-        _latest_tickers = set()
-        _prev_tickers = set()
-        for ticker, h in histories.items():
-            if _filtered_tickers is not None and ticker not in _filtered_tickers:
-                continue
-            ds = [str(d)[:10] for d in h.get('dates', [])]
-            if _latest_date in ds:
-                _latest_tickers.add(ticker)
-            if _prev_date in ds:
-                _prev_tickers.add(ticker)
-        new_entries = sorted(_latest_tickers - _prev_tickers)
-        exited_tickers = sorted(_prev_tickers - _latest_tickers)
+    consistent = get_consistent_movers(histories, n=mv_count, weeks=mv_weeks,
+                                        tickers=_filtered_tickers)
 
     # ── Header Card (uses actual data) ───────────────────────────
     _safe = _html.escape
@@ -5995,14 +6841,20 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
     # ── Summary stats ────────────────────────────────────────────
     def _stats(df_mv):
         if df_mv.empty:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0.0
         rc = df_mv['rank_change']
-        return len(df_mv), int(rc.mean()), int(rc.median()), int(rc.iloc[0])
+        pr = df_mv['price_return'].dropna()
+        avg_pr = float(pr.mean()) if len(pr) > 0 else 0.0
+        return len(df_mv), int(rc.mean()), int(rc.median()), int(rc.iloc[0]), avg_pr
 
-    g_cnt, g_avg, g_med, g_best = _stats(gainers)
-    d_cnt, d_avg, d_med, d_worst = _stats(decliners)
+    g_cnt, g_avg, g_med, g_best, g_ret = _stats(gainers)
+    d_cnt, d_avg, d_med, d_worst, d_ret = _stats(decliners)
+    _g_ret_sign = '+' if g_ret > 0 else ''
+    _d_ret_sign = '+' if d_ret > 0 else ''
+    _g_ret_color = '#3fb950' if g_ret > 0 else ('#f85149' if g_ret < 0 else '#8b949e')
+    _d_ret_color = '#3fb950' if d_ret > 0 else ('#f85149' if d_ret < 0 else '#8b949e')
     st.markdown(f"""
-    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px;">
+    <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:14px;">
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
         <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">{g_cnt}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Climbers</div></div>
@@ -6013,6 +6865,9 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
         <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">+{g_best}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Best Climb</div></div>
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:{_g_ret_color};font-weight:700;font-size:1.1rem;">{_g_ret_sign}{g_ret:.1f}%</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Avg Return</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
         <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_cnt}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Decliners</div></div>
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
@@ -6021,73 +6876,18 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
       <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
         <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_worst}</div>
         <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Worst Drop</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:{_d_ret_color};font-weight:700;font-size:1.1rem;">{_d_ret_sign}{d_ret:.1f}%</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Avg Return</div></div>
     </div>""", unsafe_allow_html=True)
 
-    # ── Pattern Flips + New Entries/Exits ─────────────────────────
-    _n_rockets = len(new_rockets)
-    _n_crashes = len(new_crashes)
-    _n_entries = len(new_entries)
-    _n_exited = len(exited_tickers)
-    _has_signals = _n_rockets + _n_crashes + _n_entries + _n_exited > 0
-
-    if _has_signals:
-        # Build compact pill lists for rockets and crashes
-        def _ticker_pills(tickers, color, limit=12):
-            if not tickers:
-                return '<span style="color:#6e7681;font-size:0.75rem;">None</span>'
-            pills = []
-            for tk in tickers[:limit]:
-                pills.append(
-                    f'<span style="display:inline-block;padding:2px 8px;border-radius:8px;'
-                    f'font-size:0.72rem;font-weight:600;color:{color};'
-                    f'background:{color}12;border:1px solid {color}30;margin:2px;">'
-                    f'{_safe(tk)}</span>')
-            if len(tickers) > limit:
-                pills.append(f'<span style="color:#6e7681;font-size:0.72rem;">+{len(tickers) - limit} more</span>')
-            return ' '.join(pills)
-
-        rocket_pills = _ticker_pills(new_rockets, '#FF4500')
-        crash_pills = _ticker_pills(new_crashes, '#DC143C')
-        entry_pills = _ticker_pills(new_entries, '#58a6ff')
-        exit_pills = _ticker_pills(exited_tickers, '#8b949e')
-
-        st.markdown(f"""
-        <div style="background:#0d1117;border-radius:12px;padding:16px 20px;margin-bottom:14px;
-            border:1px solid #30363d;">
-          <div style="font-size:0.82rem;font-weight:700;color:#c9d1d9;margin-bottom:10px;
-              letter-spacing:0.3px;">⚡ Pattern Flips & Universe Changes
-            <span style="color:#6e7681;font-weight:400;font-size:0.75rem;margin-left:8px;">
-              (over {wk_label})</span></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-            <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;">
-              <div style="display:flex;align-items:center;gap:4px;">
-                <span style="color:#FF4500;font-weight:800;font-size:1rem;">{_n_rockets}</span>
-                <span style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">New 🚀</span></div>
-              <div>{rocket_pills}</div>
-              <div style="display:flex;align-items:center;gap:4px;">
-                <span style="color:#DC143C;font-weight:800;font-size:1rem;">{_n_crashes}</span>
-                <span style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">New 💥</span></div>
-              <div>{crash_pills}</div>
-            </div>
-            <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;">
-              <div style="display:flex;align-items:center;gap:4px;">
-                <span style="color:#58a6ff;font-weight:800;font-size:1rem;">{_n_entries}</span>
-                <span style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Entered</span></div>
-              <div>{entry_pills}</div>
-              <div style="display:flex;align-items:center;gap:4px;">
-                <span style="color:#8b949e;font-weight:800;font-size:1rem;">{_n_exited}</span>
-                <span style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Exited</span></div>
-              <div>{exit_pills}</div>
-            </div>
-          </div>
-        </div>""", unsafe_allow_html=True)
-
-    # ── Mover Table Builder ──────────────────────────────────────
+    # ── Enrichment lookup (used by table) ────────────────────────
     enrich_cols = ['ticker', 'trajectory_score', 'grade', 'sector']
     enrich_df = filtered_df[
         [c for c in enrich_cols if c in filtered_df.columns]
     ].drop_duplicates('ticker')
 
+    # ── Mover Table Builder ──────────────────────────────────────
     scroll_h = {50: 580, 100: 1050, 150: 1500}.get(mv_count, 580)
 
     def _mover_table_html(df_mv, accent, icon, label):
@@ -6103,7 +6903,9 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                     'border:1px solid #30363d;border-top:0;text-align:center;color:#6e7681;'
                     'font-size:0.88rem;">No movers detected for this window</div>')
 
-        enriched = df_mv.merge(enrich_df, on='ticker', how='left')
+        enriched = df_mv.merge(
+            enrich_df.drop(columns=[c for c in ['sector'] if c in enrich_df.columns], errors='ignore'),
+            on='ticker', how='left')
 
         col_hdr = (
             '<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
@@ -6114,9 +6916,18 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             '<span style="flex:1;">Stock</span>'
             '<span class="mv-sector" style="min-width:72px;text-align:left;">Sector</span>'
             '<span style="min-width:56px;text-align:right;">Price</span>'
+            '<span style="min-width:56px;text-align:right;">Return</span>'
             '<span style="min-width:80px;text-align:center;">Prev → Now</span>'
+            '<span style="min-width:68px;text-align:center;">State</span>'
             '<span style="min-width:32px;text-align:center;">Grd</span>'
             '<span style="min-width:36px;text-align:right;">Score</span></div>')
+
+        _MS_MAP = {
+            'STRONG_UPTREND': ('▲▲', '#3fb950'), 'UPTREND': ('▲', '#3fb950'),
+            'BOUNCE': ('↗', '#58a6ff'), 'PULLBACK': ('↘', '#e3b341'),
+            'SIDEWAYS': ('━', '#8b949e'), 'ROTATION': ('⟳', '#d2a8ff'),
+            'DOWNTREND': ('▼', '#f85149'), 'STRONG_DOWNTREND': ('▼▼', '#f85149'),
+        }
 
         rows_html = [col_hdr]
         for i, (_, m) in enumerate(enriched.iterrows()):
@@ -6143,6 +6954,21 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
             ticker_esc = _safe(str(m.get('ticker', '')))
             comp_esc = _safe(str(m.get('company_name', '') if pd.notna(m.get('company_name')) else '')[:22])
 
+            pr_raw = m.get('price_return')
+            if pr_raw is not None and not (isinstance(pr_raw, float) and np.isnan(pr_raw)):
+                pr_val = float(pr_raw)
+                pr_color = '#3fb950' if pr_val > 0 else ('#f85149' if pr_val < 0 else '#8b949e')
+                pr_sign = '+' if pr_val > 0 else ''
+                pr_str = f'{pr_sign}{pr_val:.1f}%'
+            else:
+                pr_color = '#6e7681'
+                pr_str = '—'
+
+            # Market state pill
+            _ms_raw = str(m.get('market_state', '') if pd.notna(m.get('market_state', '')) else '')
+            _ms_icon, _ms_color = _MS_MAP.get(_ms_raw, ('—', '#6e7681'))
+            _ms_label = _safe(_ms_raw.replace('_', ' ').title()[:12]) if _ms_raw else '—'
+
             rows_html.append(
                 f'<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
                 f'background:{stripe};border-bottom:1px solid #21262d;">'
@@ -6157,8 +6983,13 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'white-space:nowrap;text-overflow:ellipsis;">{sector_short}</span>'
                 f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:56px;'
                 f'text-align:right;font-variant-numeric:tabular-nums;">{price_str}</span>'
+                f'<span style="color:{pr_color};font-weight:700;font-size:0.82rem;min-width:56px;'
+                f'text-align:right;font-variant-numeric:tabular-nums;">{pr_str}</span>'
                 f'<span style="color:#8b949e;font-size:0.8rem;min-width:80px;text-align:center;'
                 f'font-variant-numeric:tabular-nums;">{prev_r} → {curr_r}</span>'
+                f'<span title="{_ms_label}" style="color:{_ms_color};font-size:0.74rem;min-width:68px;'
+                f'text-align:center;font-weight:600;overflow:hidden;white-space:nowrap;'
+                f'text-overflow:ellipsis;">{_ms_icon} {_ms_label}</span>'
                 f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:32px;'
                 f'text-align:center;">{_safe(gr)}</span>'
                 f'<span style="color:#FF6B35;font-weight:600;font-size:0.82rem;min-width:36px;'
@@ -6169,22 +7000,62 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                 f'{"".join(rows_html)}</div>')
         return hdr + body
 
-    g_html = _mover_table_html(gainers, '#3fb950', '⬆️', 'Biggest Climbers')
-    d_html = _mover_table_html(decliners, '#f85149', '⬇️', 'Biggest Decliners')
-    st.markdown(
-        f'<div class="mv-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
-        f'<div>{g_html}</div><div>{d_html}</div></div>', unsafe_allow_html=True)
+    if mv_side == '⬆️ Biggest Climbers':
+        mv_html = _mover_table_html(gainers, '#3fb950', '⬆️', 'Biggest Climbers')
+        _dl_df = gainers
+    elif mv_side == '⬇️ Biggest Decliners':
+        mv_html = _mover_table_html(decliners, '#f85149', '⬇️', 'Biggest Decliners')
+        _dl_df = decliners
+    else:
+        if consistent.empty:
+            st.info(f'No stocks improved their rank in every single week of the {wk_label} window. '
+                    'Try a shorter time window.')
+            mv_html = ''
+            _dl_df = pd.DataFrame()
+        else:
+            mv_html = _mover_table_html(consistent, '#58a6ff', '🔄',
+                                         f'Consistent Movers ({wk_label})')
+            _dl_df = consistent
+    if mv_html:
+        st.markdown(mv_html, unsafe_allow_html=True)
+
+    # ── Download Button ──────────────────────────────────────────
+    if not _dl_df.empty:
+        _dl_cols = [c for c in ['ticker', 'company_name', 'category', 'sector',
+                                'rank_change', 'prev_rank', 'current_rank',
+                                'price', 'price_return', 'market_state'] if c in _dl_df.columns]
+        _dl_csv = _dl_df[_dl_cols].to_csv(index=False).encode('utf-8')
+        _dl_label = mv_side.split(' ', 1)[-1].replace(' ', '_')
+        st.download_button(
+            label=f'📥 Download {mv_side.split(" ", 1)[-1]} CSV',
+            data=_dl_csv,
+            file_name=f'Top_Movers_{_dl_label}_{wk_label.replace(" ", "_")}.csv',
+            mime='text/csv',
+            key='movers_download_btn',
+        )
 
 
 # ============================================
 # UI: EXPORT TAB
 # ============================================
 
-def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories: dict):
+def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories: dict, metadata: Optional[dict] = None):
     """Render export options tab"""
 
     st.markdown("##### 📤 Export Trajectory Data")
     st.markdown("Download trajectory rankings and analysis data in various formats.")
+
+    # E4: Use data's latest_date for filename (not datetime.now) so exports
+    # of old snapshots are correctly labeled. Falls back to today if missing.
+    _meta = metadata or {}
+    _ld_raw = str(_meta.get('latest_date', '') or '').strip()
+    _date_slug = _ld_raw.replace('-', '').replace('/', '').replace(' ', '')[:8]
+    if not _date_slug:
+        _date_slug = datetime.now().strftime('%Y%m%d')
+
+    # ── Empty-filter notice (Export still allows 'All Rankings' / 'Custom Selection') ──
+    if filtered_df is None or filtered_df.empty:
+        st.warning("⚠️ **Filtered Rankings is empty** under the current sidebar filters. Switch scope to 'All Rankings' or 'Custom Selection' below, or loosen the sidebar filters.")
 
     # Export scope
     exp_c1, exp_c2 = st.columns(2)
@@ -6230,45 +7101,76 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
         cols = [c for c in full_cols if c in export_df.columns]
 
     export_data = export_df[cols].copy()
-    # Remove sparkline from export (it's a list column)
-    if 'sparkline' in export_data.columns:
-        export_data = export_data.drop(columns=['sparkline'])
+    # E7: removed dead 'sparkline' drop (never in cols lists).
 
-    # Preview
-    st.markdown(f"##### Preview ({len(export_data)} stocks, {len(cols)} columns)")
-    st.dataframe(export_data.head(20), hide_index=True, use_container_width=True)
+    # E2: Serialize list/dict-type columns to pipe-joined strings so CSV /
+    # Excel / JSON render consistently (users can re-import without parsing
+    # Python repr strings like "['A', 'B']").
+    def _stringify_list_col(v):
+        if isinstance(v, (list, tuple, set)):
+            return ' | '.join(str(x) for x in v)
+        if isinstance(v, dict):
+            return ' | '.join(f"{k}={v[k]}" for k in v)
+        return v
+    for _lc in ('latest_patterns', 'signal_tags'):
+        if _lc in export_data.columns:
+            export_data[_lc] = export_data[_lc].map(_stringify_list_col)
+
+    # E3: Empty-guard — skip preview + downloads when no rows
+    if export_data.empty:
+        st.info("ℹ️ Nothing to export with the current scope + detail combination.")
+        return
+
+    # E9: Preview with clear "first N of total" caption
+    _preview_n = min(20, len(export_data))
+    st.markdown(f"##### Preview ({len(export_data):,} stocks, {len(cols)} columns)")
+    st.caption(f"Showing first **{_preview_n}** of **{len(export_data):,}** rows")
+    st.dataframe(export_data.head(_preview_n), hide_index=True, use_container_width=True)
+
+    # E4: Unified dated filename stem using data's latest_date
+    _fname_stem = f"trajectory_rankings_{_date_slug}"
 
     # Download buttons
     dl_c1, dl_c2, dl_c3 = st.columns(3)
 
     with dl_c1:
-        csv_data = export_data.to_csv(index=False).encode('utf-8')
+        # E1: UTF-8 BOM so Excel shows ₹ and other Unicode correctly
+        csv_data = ('\ufeff' + export_data.to_csv(index=False)).encode('utf-8')
         st.download_button(
             label="📥 Download CSV",
             data=csv_data,
-            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime='text/csv'
+            file_name=f"{_fname_stem}.csv",
+            mime='text/csv',
+            key='exp_dl_csv',
         )
 
     with dl_c2:
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            export_data.to_excel(writer, index=False, sheet_name='Trajectory Rankings')
-        buffer.seek(0)
-        st.download_button(
-            label="📥 Download Excel",
-            data=buffer.getvalue(),
-            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+        # E5: Graceful fallback if openpyxl is missing / broken
+        try:
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                export_data.to_excel(writer, index=False, sheet_name='Trajectory Rankings')
+            buffer.seek(0)
+            st.download_button(
+                label="📥 Download Excel",
+                data=buffer.getvalue(),
+                file_name=f"{_fname_stem}.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                key='exp_dl_xlsx',
+            )
+        except ModuleNotFoundError:
+            st.warning("⚠️ Excel export requires `openpyxl`. Run `pip install openpyxl` to enable this format.")
+        except Exception as _xl_e:
+            st.warning(f"⚠️ Excel export failed: {_xl_e}")
 
     with dl_c3:
         json_data = export_data.to_json(orient='records', indent=2)
         st.download_button(
             label="📥 Download JSON",
             data=json_data,
-            file_name=f"trajectory_rankings_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-            mime='application/json'
+            file_name=f"{_fname_stem}.json",
+            mime='application/json',
+            key='exp_dl_json',
         )
 
     # ── Export individual stock trajectory ──
@@ -6286,32 +7188,39 @@ def render_export_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame, histories
             'percentile': [round((1 - r / max(t, 1)) * 100, 2) for r, t in zip(h['ranks'], h['total_per_week'])]
         })
         st.dataframe(hist_df, hide_index=True, use_container_width=True)
-        csv_hist = hist_df.to_csv(index=False).encode('utf-8')
+        # E8: BOM on individual stock history CSV too
+        csv_hist = ('\ufeff' + hist_df.to_csv(index=False)).encode('utf-8')
         st.download_button(
             label=f"📥 Download {ticker_for_export} History (CSV)",
             data=csv_hist,
-            file_name=f"{ticker_for_export}_trajectory_history.csv",
-            mime='text/csv'
+            file_name=f"{ticker_for_export}_trajectory_history_{_date_slug}.csv",
+            mime='text/csv',
+            key='exp_dl_hist',
         )
 
 
 # ============================================
-# STRATEGY BACKTEST ENGINE (v8.0)
+# STRATEGY BACKTEST ENGINE (v11.0 — ALL TIME BEST)
 # ============================================
-# Walk-forward backtest that proves which selection strategy
-# generates the best ACTUAL returns using your CSV data.
-# Tests 8 strategies from "buy everything" to "max filter".
+# Walk-forward backtest with MULTI-HORIZON returns (1w/4w/8w/13w),
+# 19 strategies + 3 DNA strategies, per-strategy ticker lists,
+# head-to-head comparison, and strategy correlation.
 # Uses price-based forward returns — no lookahead bias.
 
-def _run_strategy_backtest(uploaded_files, progress_callback=None):
+def _run_strategy_backtest(uploaded_files, progress_callback=None,
+                           filter_cats=None, filter_sects=None, filter_tickers=None):
     """
-    Walk-forward strategy backtest.
+    Walk-forward strategy backtest v11.0.
 
     For each week N (where N >= min_history):
       1. Build histories using ONLY weeks 1..N (no future data)
       2. Compute trajectory scores at that point
-      3. Apply 8 different selection strategies
-      4. Measure ACTUAL forward returns from week N+1 prices
+      3. Apply selection strategies including DNA scoring
+      4. Measure ACTUAL forward returns at 1w/4w/8w/13w horizons
+
+    filter_cats / filter_sects: lists of category/sector strings to include.
+    filter_tickers: set of ticker strings to include.
+    When any filter is provided, each weekly DataFrame is restricted before processing.
 
     Returns dict with results per strategy, or None if insufficient data.
     """
@@ -6329,6 +7238,12 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
                 df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
                 df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
                 df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+                for nc in ['position_score', 'volume_score', 'momentum_score', 'acceleration_score',
+                           'breakout_score', 'rvol_score', 'trend_quality', 'from_high_pct', 'from_low_pct',
+                           'position_tension', 'money_flow_mm', 'momentum_harmony',
+                           'ret_1d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y', 'rvol', 'vmi']:
+                    if nc in df.columns:
+                        df[nc] = pd.to_numeric(df[nc], errors='coerce')
                 weekly_data[date] = df
         except Exception as e:
             logger.warning(f"Backtest: Failed to load {ufile.name}: {e}")
@@ -6338,7 +7253,82 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
     if n_weeks < 4:  # Need 2 history + 1 test + 1 forward minimum
         return None
 
+    # ── Apply scope filters (category / sector / ticker) ──
+    _has_filter = bool(filter_cats) or bool(filter_sects) or bool(filter_tickers)
+    if _has_filter:
+        for d in list(weekly_data.keys()):
+            df_f = weekly_data[d]
+            mask = pd.Series(True, index=df_f.index)
+            if filter_cats:
+                mask &= df_f['category'].astype(str).str.strip().isin(filter_cats)
+            if filter_sects:
+                mask &= df_f['sector'].astype(str).str.strip().isin(filter_sects)
+            if filter_tickers:
+                mask &= df_f['ticker'].astype(str).str.strip().isin(filter_tickers)
+            filtered = df_f[mask]
+            if len(filtered) > 0:
+                weekly_data[d] = filtered
+            else:
+                del weekly_data[d]
+        dates = sorted(weekly_data.keys())
+        n_weeks = len(dates)
+        if n_weeks < 4:
+            return None
+
     min_history = 2  # Minimum weeks of data before first test (trajectory needs ≥2 points)
+
+    # ── Build price matrix for multi-horizon lookups ──
+    price_matrix = {}  # {ticker: {date_idx: price}}
+    for d_idx, d in enumerate(dates):
+        df = weekly_data[d]
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            p = float(row['price']) if pd.notna(row.get('price')) and float(row.get('price', 0)) > 0 else 0
+            if p > 0:
+                if t not in price_matrix:
+                    price_matrix[t] = {}
+                price_matrix[t][d_idx] = p
+
+    # ── Multi-horizon forward return computation ──
+    horizons_weeks = {'1w': 1, '4w': 4, '8w': 8, '13w': 13}
+
+    def _find_nearest_idx(entry_idx, weeks_ahead):
+        target = entry_idx + weeks_ahead
+        if target >= n_weeks:
+            return None
+        best_idx, best_dist = None, 999
+        for c in range(max(entry_idx + 1, target - 1), min(n_weeks, target + 2)):
+            dist = abs(c - target)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = c
+        return best_idx
+
+    def _compute_multi_horizon_returns(tickers, entry_idx):
+        """Compute avg returns at each horizon for a list of tickers."""
+        result = {}
+        for h_name, h_weeks in horizons_weeks.items():
+            fwd_idx = _find_nearest_idx(entry_idx, h_weeks)
+            if fwd_idx is None:
+                result[f'avg_ret_{h_name}'] = None
+                result[f'hit_rate_{h_name}'] = None
+                result[f'n_valid_{h_name}'] = 0
+                continue
+            rets = []
+            for t in tickers:
+                ep = price_matrix.get(t, {}).get(entry_idx, 0)
+                fp = price_matrix.get(t, {}).get(fwd_idx, 0)
+                if ep > 0 and fp > 0:
+                    rets.append((fp / ep - 1) * 100)
+            if rets:
+                result[f'avg_ret_{h_name}'] = float(np.mean(rets))
+                result[f'hit_rate_{h_name}'] = sum(1 for r in rets if r > 0) / len(rets) * 100
+                result[f'n_valid_{h_name}'] = len(rets)
+            else:
+                result[f'avg_ret_{h_name}'] = None
+                result[f'hit_rate_{h_name}'] = None
+                result[f'n_valid_{h_name}'] = 0
+        return result
 
     strategy_names = [
         'S1: Universe Avg',
@@ -6348,7 +7338,6 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         'S2b: Top 10 T-Score',
         'S3b: Top 20 T-Score',
         'S5: T-Score ≥ 70',
-        'S6: T-Score ≥ 70 + No Decay',
         'S7: Conviction ≥ 65',
         'S8: Full Signal',
         'S9: Conviction-Weighted',
@@ -6359,11 +7348,12 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         'S14: Bounce Recovery',
         'S15: Quality GARP',
         'S16: Pattern Flip Alpha',
-        'S17: Stealth Alpha',
-        'S18: Near-High Breakout',
         'S19: Winner DNA Momentum',
         'S20: Winner DNA Contrarian',
         'S21: Winner DNA Composite',
+        'D1: DNA HIGH Conviction',
+        'D2: DNA MEDIUM+ Conviction',
+        'D3: DNA All Scored',
     ]
     all_results = {name: [] for name in strategy_names}
 
@@ -6454,6 +7444,11 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
                               f"Testing week {date.strftime('%Y-%m-%d')} ({window_num + 1}/{total_windows}) · {n_weeks} CSVs loaded")
 
         forward_date = dates[week_idx + 1]
+        # Actual calendar gap between decision week and forward week.
+        # CSV cadence is irregular (gaps from 4 to 14+ days), so we cannot assume
+        # every "1w" entry is exactly 7 days. Tracked per-window for accurate
+        # CAGR annualization downstream.
+        gap_days = max(1, (forward_date - date).days)
         forward_df = weekly_data[forward_date]
 
         # ── Compute PRICE-BASED forward returns (ground truth) ──
@@ -6489,26 +7484,23 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         # S3: Top 20 by rank (broader basket — tests concentration vs diversification)
         s3_tickers = df.nsmallest(20, 'rank')['ticker'].astype(str).str.strip().tolist()
 
-        # S4: Persistent top 50 — rank in top 50 for last 4 consecutive weeks
+        # S4: Persistent Top 50 — rank ≤ 50 for last 4 consecutive weeks.
+        # Use ABSOLUTE rank (not percentile) so the rule is filter-safe:
+        # under category/sector filters the CSV `rank` is still the GLOBAL rank
+        # (1–2100), so a percentile of `rank/filtered_total` becomes meaningless.
         s4_tickers = []
         for t, h_dict in histories.items():
             ranks_list = h_dict['ranks']
-            totals_list = h_dict['total_per_week']
-            if len(ranks_list) >= 4:
-                last4_pcts = [(1 - ranks_list[-(i+1)] / max(totals_list[-(i+1)], 1)) * 100
-                              for i in range(4)]
-                if all(p >= 97.5 for p in last4_pcts):  # Top ~50 out of ~2100
-                    s4_tickers.append(t)
-        # Relax to top 100 if too few
+            if len(ranks_list) >= 4 and all(ranks_list[-(i+1)] <= 50 for i in range(4)):
+                s4_tickers.append(t)
+        # Relax to top 100 if too few qualify (small filtered universes / early weeks)
         if len(s4_tickers) < 5:
             for t, h_dict in histories.items():
+                if t in s4_tickers:
+                    continue
                 ranks_list = h_dict['ranks']
-                totals_list = h_dict['total_per_week']
-                if len(ranks_list) >= 4 and t not in s4_tickers:
-                    last4_pcts = [(1 - ranks_list[-(i+1)] / max(totals_list[-(i+1)], 1)) * 100
-                                  for i in range(4)]
-                    if all(p >= 95 for p in last4_pcts):
-                        s4_tickers.append(t)
+                if len(ranks_list) >= 4 and all(ranks_list[-(i+1)] <= 100 for i in range(4)):
+                    s4_tickers.append(t)
 
         # ── TRAJECTORY strategies (need full computation) ──
         traj = {}
@@ -6522,10 +7514,9 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         # S5: T-Score >= 70
         s5_tickers = [t for t, r in traj.items() if r['trajectory_score'] >= 70]
 
-        # S6: T-Score >= 70 + No Decay (trap filter)
-        s6_tickers = [t for t, r in traj.items()
-                      if r['trajectory_score'] >= 70
-                      and r.get('decay_label', '') not in ('DECAY_HIGH', 'DECAY_MODERATE')]
+        # NOTE: S6 (T-Score>=70 + No Decay) was removed in v11.1
+        # — cross-cap backtest confirmed it produces IDENTICAL picks to S5 in all 5 caps
+        # (the No-Decay filter never excludes a T-Score>=70 stock in practice).
 
         # S7: Conviction >= 65 (HIGH or above)
         s7_tickers = [t for t, r in traj.items() if r.get('conviction', 0) >= 65]
@@ -6684,28 +7675,6 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
                             s16_tickers.append(t)
                             break
 
-        # ── S17: Stealth Alpha (Stealth+Rank≤100: +0.10%, 48% WR in bear market) ──
-        # Under-the-radar stocks with STEALTH pattern + strong rank.
-        # Stealth = accumulation without price movement — leads to breakouts.
-        s17_tickers = []
-        for _, row in df.iterrows():
-            t = str(row['ticker']).strip()
-            pats_str = str(row.get('patterns', ''))
-            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
-            if 'STEALTH' in pats_str and rk <= 100 and t in forward_rets:
-                s17_tickers.append(t)
-
-        # ── S18: Near-High Breakout (Near High+Breakout≥70: -0.13%, 45.6% WR) ──
-        # Stocks within 10% of 52-week high + strong breakout score.
-        # Large-N screen (4335 obs) — relative strength filter.
-        s18_tickers = []
-        for _, row in df.iterrows():
-            t = str(row['ticker']).strip()
-            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
-            brk_val = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
-            if fh > -10 and brk_val >= 70 and t in forward_rets:
-                s18_tickers.append(t)
-
         # ── S19: Winner DNA — Momentum Path ──
         # From deep analysis of 200 best 6-month winners: trending leaders with
         # high TQ/Score/Breakout, near highs, UPTREND state, leadership patterns.
@@ -6793,7 +7762,21 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         s21_scored.sort(key=lambda x: x[1], reverse=True)
         s21_tickers = _sector_cap([t for t, _ in s21_scored], 3)[:20]
 
-        # ── Measure forward returns for each strategy ──
+        # ── DNA Strategies — score every ticker with actual DNA system ──
+        d1_tickers, d2_tickers, d3_tickers = [], [], []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            if t not in forward_rets:
+                continue
+            dna_result = _score_row_dna(row.to_dict())
+            if dna_result and dna_result['dna_score'] > 0:
+                d3_tickers.append(t)
+                if dna_result['conviction'] in ('HIGH', 'MEDIUM'):
+                    d2_tickers.append(t)
+                if dna_result['conviction'] == 'HIGH':
+                    d1_tickers.append(t)
+
+        # ── Measure forward returns for each strategy (multi-horizon) ──
         strategy_picks = {
             'S1: Universe Avg': s1_tickers,
             'S2: Top 10 WAVE Rank': s2_tickers,
@@ -6802,7 +7785,6 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             'S2b: Top 10 T-Score': s2b_capped,
             'S3b: Top 20 T-Score': s3b_capped,
             'S5: T-Score ≥ 70': s5_tickers,
-            'S6: T-Score ≥ 70 + No Decay': s6_tickers,
             'S7: Conviction ≥ 65': s7_tickers,
             'S8: Full Signal': s8_tickers,
             'S10: Regime-Adaptive': s10_tickers,
@@ -6812,29 +7794,40 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             'S14: Bounce Recovery': s14_tickers,
             'S15: Quality GARP': s15_tickers,
             'S16: Pattern Flip Alpha': s16_tickers,
-            'S17: Stealth Alpha': s17_tickers,
-            'S18: Near-High Breakout': s18_tickers,
             'S19: Winner DNA Momentum': s19_tickers,
             'S20: Winner DNA Contrarian': s20_tickers,
             'S21: Winner DNA Composite': s21_tickers,
+            'D1: DNA HIGH Conviction': d1_tickers,
+            'D2: DNA MEDIUM+ Conviction': d2_tickers,
+            'D3: DNA All Scored': d3_tickers,
         }
 
         week_label = date.strftime('%Y-%m-%d')
 
         for sname, tickers in strategy_picks.items():
+            # 1-week return (backward compatible)
             valid_rets = [forward_rets[t] for t in tickers if t in forward_rets]
             avg_ret = float(np.mean(valid_rets)) if valid_rets else 0.0
             med_ret = float(np.median(valid_rets)) if valid_rets else 0.0
-            all_results[sname].append({
+
+            entry = {
                 'week': week_label,
                 'forward_week': forward_date.strftime('%Y-%m-%d'),
+                'gap_days': gap_days,
                 'avg_return': avg_ret,
                 'median_return': med_ret,
                 'n_stocks': len(valid_rets),
                 'n_positive': sum(1 for r in valid_rets if r > 0),
                 'best': max(valid_rets) if valid_rets else 0,
                 'worst': min(valid_rets) if valid_rets else 0,
-            })
+                'tickers': tickers[:],  # store ticker list for correlation
+            }
+
+            # Multi-horizon returns
+            mh = _compute_multi_horizon_returns(tickers, week_idx)
+            entry.update(mh)
+
+            all_results[sname].append(entry)
 
         # ── S9: Conviction-Weighted (special — weighted average return) ──
         s9_valid = [(forward_rets[t], s9_candidates[t].get('conviction', 50))
@@ -6848,41 +7841,70 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         else:
             s9_avg, s9_med, s9_n = 0.0, 0.0, 0
             s9_rets = []
-        all_results['S9: Conviction-Weighted'].append({
+        s9_tickers_list = [t for t in s9_candidates if t in forward_rets]
+        s9_entry = {
             'week': week_label,
             'forward_week': forward_date.strftime('%Y-%m-%d'),
+            'gap_days': gap_days,
             'avg_return': s9_avg,
             'median_return': s9_med,
             'n_stocks': s9_n,
             'n_positive': sum(1 for r in s9_rets if r > 0),
             'best': max(s9_rets) if s9_rets else 0,
             'worst': min(s9_rets) if s9_rets else 0,
-        })
+            'tickers': s9_tickers_list,
+        }
+        s9_entry.update(_compute_multi_horizon_returns(s9_tickers_list, week_idx))
+        all_results['S9: Conviction-Weighted'].append(s9_entry)
 
-        # ── S12: Max Alpha (alpha_score-weighted, like S9 but using alpha_score) ──
+        # ── S12: Max Alpha (alpha_score-weighted across ALL horizons) ──
+        # Bug fix: previously only the 1-week return was alpha-weighted while
+        # 4w/8w/13w stayed equal-weighted (inconsistent). Now weight every horizon
+        # using the same `s12_weights` mapping so the strategy is internally coherent.
         s12_valid = [(forward_rets[t], s12_weights.get(t, 50))
                      for t in s12_tickers if t in forward_rets]
         if s12_valid:
             s12_rets, s12_wts = zip(*s12_valid)
-            s12_total_wt = sum(s12_wts)
-            s12_avg = sum(r * w for r, w in zip(s12_rets, s12_wts)) / max(s12_total_wt, 1)
+            s12_total_wt = sum(s12_wts) or 1.0
+            s12_avg = sum(r * w for r, w in zip(s12_rets, s12_wts)) / s12_total_wt
             s12_med = float(np.median(s12_rets))
             s12_n = len(s12_valid)
         else:
             s12_avg, s12_med, s12_n = 0.0, 0.0, 0
             s12_rets = []
-        # Override the equal-weighted S12 entry with alpha-weighted version
         if all_results['S12: Max Alpha'] and all_results['S12: Max Alpha'][-1]['week'] == week_label:
-            all_results['S12: Max Alpha'][-1] = {
-                'week': week_label,
-                'forward_week': forward_date.strftime('%Y-%m-%d'),
-                'avg_return': s12_avg,
-                'median_return': s12_med,
-                'n_stocks': s12_n,
-                'n_positive': sum(1 for r in s12_rets if r > 0),
-                'best': max(s12_rets) if s12_rets else 0,
-                'worst': min(s12_rets) if s12_rets else 0,
-            }
+            entry_s12 = all_results['S12: Max Alpha'][-1]
+            entry_s12['avg_return'] = s12_avg
+            entry_s12['median_return'] = s12_med
+            entry_s12['n_stocks'] = s12_n
+            entry_s12['n_positive'] = sum(1 for r in s12_rets if r > 0)
+            entry_s12['best'] = max(s12_rets) if s12_rets else 0
+            entry_s12['worst'] = min(s12_rets) if s12_rets else 0
+
+            # Re-weight EVERY horizon (not just 1w) for methodological consistency
+            for h_name, h_weeks in horizons_weeks.items():
+                fwd_idx = _find_nearest_idx(week_idx, h_weeks)
+                if fwd_idx is None:
+                    entry_s12[f'avg_ret_{h_name}'] = None
+                    entry_s12[f'hit_rate_{h_name}'] = None
+                    entry_s12[f'n_valid_{h_name}'] = 0
+                    continue
+                h_pairs = []
+                for t in s12_tickers:
+                    ep = price_matrix.get(t, {}).get(week_idx, 0)
+                    fp = price_matrix.get(t, {}).get(fwd_idx, 0)
+                    if ep > 0 and fp > 0:
+                        h_pairs.append(((fp / ep - 1) * 100, s12_weights.get(t, 50)))
+                if h_pairs:
+                    h_rets, h_wts = zip(*h_pairs)
+                    h_total = sum(h_wts) or 1.0
+                    entry_s12[f'avg_ret_{h_name}'] = sum(r * w for r, w in zip(h_rets, h_wts)) / h_total
+                    entry_s12[f'hit_rate_{h_name}'] = sum(1 for r in h_rets if r > 0) / len(h_rets) * 100
+                    entry_s12[f'n_valid_{h_name}'] = len(h_rets)
+                else:
+                    entry_s12[f'avg_ret_{h_name}'] = None
+                    entry_s12[f'hit_rate_{h_name}'] = None
+                    entry_s12[f'n_valid_{h_name}'] = 0
 
     if progress_callback:
         progress_callback(1.0, "Backtest complete!")
@@ -6895,20 +7917,78 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
 # ============================================
 
 def render_backtest_tab(uploaded_files):
-    """Render strategy backtest validation tab"""
+    """Render strategy backtest validation tab — v11.0 Multi-Horizon Advanced"""
     st.markdown("### 📊 Strategy Backtest — Walk-Forward Validation")
+    st.info("📌 **Sidebar filters do NOT apply here.** This tab runs walk-forward analysis on the full historical universe — use the Categories / Sectors / Tickers row below to scope the backtest.")
     st.markdown("""
     <div style="background:#161b22; border-radius:10px; padding:16px; border:1px solid #30363d; margin-bottom:16px;">
         <div style="font-size:0.85rem; color:#8b949e;">
             <b>What this does:</b> For each week, it computes scores using ONLY past data,
-            then checks what ACTUALLY happened to the selected stocks next week.
+            then checks what ACTUALLY happened at <b>multiple horizons</b> (1w / 4w / 8w / 13w).
             No lookahead bias — pure walk-forward validation using real price returns.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Filter Bar: Category / Sector / Tickers ──
+    st.markdown("""
+    <div style="background:#161b22; border-radius:8px; padding:10px 16px; margin-bottom:12px;
+                border:1px solid #30363d;">
+        <span style="color:#8b949e; font-size:0.82rem; font-weight:600;">🎛️ BACKTEST SCOPE</span>
+    </div>
+    """, unsafe_allow_html=True)
+    # Parse latest CSV for filter dropdown options
+    _bt_latest_df = None
+    for ufile in sorted(uploaded_files, key=lambda f: f.name, reverse=True):
+        try:
+            ufile.seek(0)
+            _bt_latest_df = pd.read_csv(ufile)
+            break
+        except Exception:
+            pass
+    if _bt_latest_df is not None and 'category' in _bt_latest_df.columns:
+        _bt_all_cats = sorted([str(c).strip() for c in _bt_latest_df['category'].dropna().unique()
+                               if str(c).strip() and str(c).strip() != 'nan'])
+    else:
+        _bt_all_cats = []
+    if _bt_latest_df is not None and 'sector' in _bt_latest_df.columns:
+        _bt_all_sects = sorted([str(v).strip() for v in _bt_latest_df['sector'].dropna().unique()
+                                if str(v).strip() and str(v).strip() != 'nan'])
+    else:
+        _bt_all_sects = []
+
+    bt_fc1, bt_fc2, bt_fc3 = st.columns([2, 2, 3])
+    with bt_fc1:
+        bt_filter_cats = st.multiselect("📂 Categories", _bt_all_cats, default=[], key='bt_flt_cat',
+                                        placeholder="All Categories")
+    with bt_fc2:
+        bt_filter_sects = st.multiselect("🏭 Sectors", _bt_all_sects, default=[], key='bt_flt_sect',
+                                         placeholder="All Sectors")
+    with bt_fc3:
+        bt_filter_tickers = st.text_area("🔍 Specific Tickers", value='', key='bt_flt_tk', height=68,
+                                         placeholder="Paste tickers — one per line or comma-separated")
+
+    # Parse ticker filter
+    _bt_tk_set = set()
+    if bt_filter_tickers.strip():
+        import re as _re_bt
+        _bt_tk_set = {t.strip() for t in _re_bt.split(r'[,\n\r]+', bt_filter_tickers) if t.strip()}
+
+    _bt_filter_active = bool(bt_filter_cats) or bool(bt_filter_sects) or bool(_bt_tk_set)
+    if _bt_filter_active:
+        _bt_filter_desc = []
+        if bt_filter_cats:
+            _bt_filter_desc.append(f"Categories: {', '.join(bt_filter_cats)}")
+        if bt_filter_sects:
+            _bt_filter_desc.append(f"Sectors: {', '.join(bt_filter_sects)}")
+        if _bt_tk_set:
+            _bt_filter_desc.append(f"Tickers: {', '.join(sorted(_bt_tk_set))}")
+        st.caption(f"🎛️ Filter active: {' | '.join(_bt_filter_desc)}")
+
+    _bt_flt_key = (tuple(sorted(bt_filter_cats)), tuple(sorted(bt_filter_sects)), tuple(sorted(_bt_tk_set)))
+
     # Check cache
-    bt_cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
+    bt_cache_key = (tuple(sorted((f.name, f.size) for f in uploaded_files)), _bt_flt_key)
     cached = st.session_state.get('_bt_result')
     cached_key = st.session_state.get('_bt_key')
 
@@ -6918,16 +7998,17 @@ def render_backtest_tab(uploaded_files):
         bt_results = None
 
     n_files = len(uploaded_files)
-    n_possible_windows = max(n_files - 3, 0)  # 2 for history + 1 forward
+    n_possible_windows = max(n_files - 3, 0)
 
     col_run, col_info = st.columns([1, 3])
     with col_run:
         run_btn = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
     with col_info:
+        _flt_tag = " (filtered)" if _bt_filter_active else ""
         if bt_results is None:
-            st.caption(f"📁 {n_files} CSVs loaded → up to **{n_possible_windows}** test windows")
+            st.caption(f"📁 {n_files} CSVs loaded → up to **{n_possible_windows}** test windows{_flt_tag}")
         else:
-            st.caption(f"✅ Backtest loaded ({n_files} CSVs). Click Run to refresh.")
+            st.caption(f"✅ Backtest loaded ({n_files} CSVs, {n_possible_windows} windows){_flt_tag}. Click Run to refresh.")
 
     if run_btn:
         progress_bar = st.progress(0, text="Initializing backtest...")
@@ -6936,7 +8017,9 @@ def render_backtest_tab(uploaded_files):
             progress_bar.progress(min(pct, 1.0), text=text)
 
         with st.spinner("Running walk-forward backtest..."):
-            result = _run_strategy_backtest(uploaded_files, progress_callback=_progress)
+            result = _run_strategy_backtest(uploaded_files, progress_callback=_progress,
+                                            filter_cats=bt_filter_cats, filter_sects=bt_filter_sects,
+                                            filter_tickers=_bt_tk_set)
 
         progress_bar.empty()
 
@@ -6952,25 +8035,34 @@ def render_backtest_tab(uploaded_files):
     if bt_results is None:
         return
 
-    # ── Build Summary Statistics ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 1: Multi-Horizon Summary Statistics
+    # ═══════════════════════════════════════════════════
+    horizons = ['1w', '4w', '8w', '13w']
     summary_rows = []
     for sname, weeks in bt_results.items():
         if not weeks:
             continue
-        returns = [w['avg_return'] for w in weeks]
-        n_weeks_tested = len(returns)
-        avg_weekly = np.mean(returns)
-        cumulative = np.prod([1 + r / 100 for r in returns]) * 100 - 100
-        win_rate = sum(1 for r in returns if r > 0) / max(n_weeks_tested, 1) * 100
-        avg_stocks = np.mean([w['n_stocks'] for w in weeks])
-        std_ret = np.std(returns) if len(returns) > 1 else 0.001
-        sharpe = avg_weekly / max(std_ret, 0.001) * np.sqrt(52)  # Annualized
-        worst_week = min(returns)
-        best_week = max(returns)
 
-        # Max Drawdown — peak-to-trough of cumulative equity curve
+        # 0-stock guard: a strategy that NEVER picks any stock (e.g. CAPITULATION/QUALITY GARP
+        # under a small filtered universe) records every week as avg_return=0 with n_stocks=0.
+        # Treating those zeros as real returns produces misleading -22% alpha vs Universe.
+        # Mark such strategies as N/A so they are excluded from rating logic.
+        avg_n_stocks = float(np.mean([w['n_stocks'] for w in weeks]))
+        is_empty_strategy = avg_n_stocks < 0.5  # < 1 stock per week on average
+
+        returns_1w = [w['avg_return'] for w in weeks]
+        n_weeks_tested = len(returns_1w)
+        avg_weekly = np.mean(returns_1w)
+        cumulative = np.prod([1 + r / 100 for r in returns_1w]) * 100 - 100
+        win_rate_1w = sum(1 for r in returns_1w if r > 0) / max(n_weeks_tested, 1) * 100
+        avg_stocks = avg_n_stocks
+        std_ret = np.std(returns_1w) if len(returns_1w) > 1 else 0.001
+        sharpe = avg_weekly / max(std_ret, 0.001) * np.sqrt(52)
+
+        # Max Drawdown from 1w equity curve
         equity = [100.0]
-        for r in returns:
+        for r in returns_1w:
             equity.append(equity[-1] * (1 + r / 100))
         peak = equity[0]
         max_dd = 0.0
@@ -6981,18 +8073,53 @@ def render_backtest_tab(uploaded_files):
             if dd < max_dd:
                 max_dd = dd
 
-        summary_rows.append({
+        # CAGR (annualized): use ACTUAL calendar days covered, not assumed 7-day weeks.
+        # CSV cadence is irregular (e.g. 4-day gap, missing weeks), so a naive
+        # `52 / n_weeks_tested` assumption over-annualizes when gaps exist.
+        # Sum the real per-window gap_days for a methodologically correct CAGR.
+        total_days = sum(int(w.get('gap_days', 7)) for w in weeks)
+        if is_empty_strategy or n_weeks_tested == 0 or total_days <= 0:
+            cagr = None
+        else:
+            try:
+                cagr = ((1 + cumulative / 100) ** (365.25 / total_days) - 1) * 100
+            except (ValueError, ZeroDivisionError, OverflowError):
+                cagr = None
+
+        # Profit Factor: sum(positive returns) / |sum(negative returns)|.
+        # Far more informative than Sharpe at small N for selection systems.
+        pos_sum = sum(r for r in returns_1w if r > 0)
+        neg_sum = abs(sum(r for r in returns_1w if r < 0))
+        if is_empty_strategy:
+            profit_factor = None
+        elif neg_sum > 0:
+            profit_factor = pos_sum / neg_sum
+        elif pos_sum > 0:
+            profit_factor = float('inf')
+        else:
+            profit_factor = None
+
+        row_data = {
             'Strategy': sname,
-            'Weeks Tested': n_weeks_tested,
-            'Avg Stocks/Wk': round(avg_stocks, 0),
-            'Avg Wk Return %': round(avg_weekly, 2),
-            'Cumulative %': round(cumulative, 2),
-            'Win Rate %': round(win_rate, 1),
-            'Sharpe (Ann.)': round(sharpe, 2),
-            'Max DD %': round(max_dd, 2),
-            'Best Wk %': round(best_week, 2),
-            'Worst Wk %': round(worst_week, 2),
-        })
+            'Weeks': n_weeks_tested,
+            'Avg Stocks': round(avg_stocks, 0),
+            'Avg 1w %': None if is_empty_strategy else round(avg_weekly, 2),
+            'Cum 1w %': None if is_empty_strategy else round(cumulative, 2),
+            'CAGR %': None if cagr is None else round(cagr, 1),
+            'WR 1w %': None if is_empty_strategy else round(win_rate_1w, 1),
+            'Sharpe': None if is_empty_strategy else round(sharpe, 2),
+            'PF': None if profit_factor is None else (round(profit_factor, 2) if profit_factor != float('inf') else 999.0),
+            'Max DD %': None if is_empty_strategy else round(max_dd, 2),
+        }
+
+        # Multi-horizon averages
+        for h in horizons[1:]:  # 4w, 8w, 13w
+            h_rets = [w.get(f'avg_ret_{h}') for w in weeks if w.get(f'avg_ret_{h}') is not None]
+            h_hrs = [w.get(f'hit_rate_{h}') for w in weeks if w.get(f'hit_rate_{h}') is not None]
+            row_data[f'Avg {h} %'] = round(np.mean(h_rets), 2) if h_rets else None
+            row_data[f'WR {h} %'] = round(np.mean(h_hrs), 1) if h_hrs else None
+
+        summary_rows.append(row_data)
 
     if not summary_rows:
         st.warning("No test windows available. Need more week coverage.")
@@ -7000,34 +8127,34 @@ def render_backtest_tab(uploaded_files):
 
     summary_df = pd.DataFrame(summary_rows)
 
-    # ── Compute Alpha vs Universe & Recommendations ──
-    universe_cum = summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Cumulative %']
-    universe_val = float(universe_cum.iloc[0]) if len(universe_cum) > 0 else 0
+    # ── Compute Alpha vs Universe (skip empty strategies) ──
+    universe_cum = summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Cum 1w %']
+    universe_val = float(universe_cum.iloc[0]) if len(universe_cum) > 0 and pd.notna(universe_cum.iloc[0]) else 0
+    summary_df['Alpha %'] = summary_df['Cum 1w %'].apply(
+        lambda c: round(c - universe_val, 2) if pd.notna(c) else None
+    )
 
-    summary_df['Alpha %'] = round(summary_df['Cumulative %'] - universe_val, 2)
-
-    # Assign recommendations based on data-driven analysis
+    # ── Assign Ratings (empty strategies tagged "N/A — No Picks") ──
     def _get_recommendation(row):
         name = row['Strategy']
         alpha = row['Alpha %']
-        win = row['Win Rate %']
-        dd = row['Max DD %']
-        avg_stocks = row['Avg Stocks/Wk']
+        win = row['WR 1w %']
         if name == 'S1: Universe Avg':
             return '📊 Baseline'
-        # Best alpha overall
-        if alpha == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Alpha %'].max():
+        if pd.isna(alpha) or pd.isna(win):
+            return '⚫ N/A — No Picks'
+        non_uni = summary_df[(summary_df['Strategy'] != 'S1: Universe Avg')
+                              & summary_df['Alpha %'].notna()]
+        if len(non_uni) == 0:
+            return '➖ Marginal'
+        if alpha == non_uni['Alpha %'].max():
             return '⭐ BEST ALPHA'
-        # Best win rate
-        if win == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Win Rate %'].max() and win > 50:
+        if win == non_uni['WR 1w %'].max() and win > 50:
             return '🎯 TOP WIN RATE'
-        # Best drawdown protection
-        if dd == summary_df.loc[summary_df['Strategy'] != 'S1: Universe Avg', 'Max DD %'].max() and alpha > 0:
+        if pd.notna(row['Max DD %']) and row['Max DD %'] == non_uni['Max DD %'].max() and alpha > 0:
             return '🛡️ SAFEST'
-        # Danger zone — worse than universe
         if alpha < -2:
             return '⚠️ HIGH RISK'
-        # Modest alpha
         if alpha > 3:
             return '✅ Good Alpha'
         if alpha > 0:
@@ -7036,60 +8163,75 @@ def render_backtest_tab(uploaded_files):
 
     summary_df['Rating'] = summary_df.apply(_get_recommendation, axis=1)
 
-    # Reorder columns for clarity
-    col_order = ['Strategy', 'Rating', 'Weeks Tested', 'Avg Stocks/Wk',
-                 'Avg Wk Return %', 'Cumulative %', 'Alpha %', 'Win Rate %',
-                 'Sharpe (Ann.)', 'Max DD %', 'Best Wk %', 'Worst Wk %']
-    summary_df = summary_df[col_order]
-
-    best_strat = summary_df.loc[summary_df['Alpha %'].idxmax()]
-    worst_strat = summary_df.loc[summary_df['Alpha %'].idxmin()]
+    # Ranking-related rows: only consider strategies that actually picked stocks.
+    _ranked_df = summary_df[summary_df['Alpha %'].notna()]
+    if len(_ranked_df) == 0:
+        st.warning("No strategies produced any stock picks under the current filter.")
+        return
+    best_strat = _ranked_df.loc[_ranked_df['Alpha %'].idxmax()]
+    worst_strat = _ranked_df.loc[_ranked_df['Alpha %'].idxmin()]
     best_name = best_strat['Strategy']
-    best_cum = best_strat['Cumulative %']
+    best_cum = best_strat['Cum 1w %']
     best_alpha = best_strat['Alpha %']
-    best_win = best_strat['Win Rate %']
+    best_win = best_strat['WR 1w %']
 
-    # Find strategy with best win rate, safest (best max DD), and best broad
-    non_uni = summary_df[summary_df['Strategy'] != 'S1: Universe Avg']
-    safest_row = non_uni.loc[non_uni['Max DD %'].idxmax()]  # Max DD is negative, so max = least negative
-    top_wr_row = non_uni.loc[non_uni['Win Rate %'].idxmax()]
-    # Best broad = high alpha among strategies with avg stocks > 50
-    broad_df = non_uni[non_uni['Avg Stocks/Wk'] > 50]
+    non_uni = _ranked_df[_ranked_df['Strategy'] != 'S1: Universe Avg']
+    if len(non_uni) == 0:
+        # Only Universe has picks under the current filter — nothing to compare/rank.
+        st.warning(
+            "⚠️ Only the Universe baseline produced picks under the current filter. "
+            "Loosen category/sector/ticker scope to enable strategy comparison."
+        )
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        return
+    safest_row = non_uni.loc[non_uni['Max DD %'].idxmax()]
+    broad_df = non_uni[non_uni['Avg Stocks'] > 50]
     best_broad_row = broad_df.loc[broad_df['Alpha %'].idxmax()] if len(broad_df) > 0 else None
 
-    # ── Key Finding: Top 3 Recommendations ──
-    reco_cards = ''
+    # Multi-horizon best: best avg 13w return (long-term alpha)
+    if 'Avg 13w %' in summary_df.columns:
+        long_df = non_uni.dropna(subset=['Avg 13w %'])
+        best_long_row = long_df.loc[long_df['Avg 13w %'].idxmax()] if len(long_df) > 0 else None
+    else:
+        best_long_row = None
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 2: Top Recommendation Cards
+    # ═══════════════════════════════════════════════════
     recommendations = []
-
-    # Card 1: Best Alpha
     recommendations.append({
-        'icon': '⭐', 'label': 'BEST ALPHA',
+        'icon': '⭐', 'label': 'BEST 1-WEEK ALPHA',
         'name': best_name, 'color': '#3fb950',
-        'detail': f"Alpha: +{best_alpha:.1f}% | Cumulative: {best_cum:+.1f}% | Win Rate: {best_win:.0f}%",
-        'note': f"{int(best_strat['Avg Stocks/Wk'])} stocks/wk — focused portfolio"
+        'detail': f"Alpha: +{best_alpha:.1f}% | Cum: {best_cum:+.1f}% | WR: {best_win:.0f}%",
+        'note': f"{int(best_strat['Avg Stocks'])} stocks/wk"
     })
-
-    # Card 2: Best Broad Strategy
+    if best_long_row is not None and best_long_row['Strategy'] != best_name:
+        _wr13 = best_long_row.get('WR 13w %')
+        _wr13_txt = f"{_wr13:.0f}%" if pd.notna(_wr13) else "—"
+        recommendations.append({
+            'icon': '🏆', 'label': 'BEST 13-WEEK',
+            'name': best_long_row['Strategy'], 'color': '#bc8cff',
+            'detail': f"Avg 13w: {best_long_row['Avg 13w %']:+.1f}% | WR 13w: {_wr13_txt}",
+            'note': 'Long-term conviction hold'
+        })
     if best_broad_row is not None:
         recommendations.append({
             'icon': '🛡️', 'label': 'BEST BROAD',
             'name': best_broad_row['Strategy'], 'color': '#58a6ff',
-            'detail': f"Alpha: +{best_broad_row['Alpha %']:.1f}% | Win Rate: {best_broad_row['Win Rate %']:.0f}% | {int(best_broad_row['Avg Stocks/Wk'])} stocks",
-            'note': 'Maximum diversification with alpha'
+            'detail': f"Alpha: +{best_broad_row['Alpha %']:.1f}% | WR: {best_broad_row['WR 1w %']:.0f}% | {int(best_broad_row['Avg Stocks'])} stocks",
+            'note': 'Maximum diversification'
         })
-
-    # Card 3: Safest Strategy
     recommendations.append({
         'icon': '🔰', 'label': 'SAFEST',
         'name': safest_row['Strategy'], 'color': '#ffa657',
-        'detail': f"Max DD: {safest_row['Max DD %']:.1f}% | Alpha: +{safest_row['Alpha %']:.1f}% | Win Rate: {safest_row['Win Rate %']:.0f}%",
-        'note': 'Lowest drawdown — capital preservation'
+        'detail': f"Max DD: {safest_row['Max DD %']:.1f}% | Alpha: +{safest_row['Alpha %']:.1f}%",
+        'note': 'Capital preservation'
     })
 
     reco_html = '<div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px;">'
     for r in recommendations:
         reco_html += f"""
-        <div style="flex:1; min-width:220px; background:linear-gradient(135deg, #0d1117, #161b22);
+        <div style="flex:1; min-width:200px; background:linear-gradient(135deg, #0d1117, #161b22);
                     border-radius:12px; padding:16px; border:2px solid {r['color']};">
             <div style="font-size:0.75rem; font-weight:800; color:{r['color']}; letter-spacing:1px;">
                 {r['icon']} {r['label']}
@@ -7102,121 +8244,206 @@ def render_backtest_tab(uploaded_files):
         </div>"""
     reco_html += '</div>'
 
-    n_test_weeks = summary_rows[0]['Weeks Tested']
+    n_test_weeks = summary_rows[0]['Weeks']
     market_verdict = 'BEAR MARKET' if universe_val < -5 else ('BULL MARKET' if universe_val > 5 else 'SIDEWAYS MARKET')
     market_color = '#ff7b72' if universe_val < -5 else ('#3fb950' if universe_val > 5 else '#ffa657')
+
+    # ── N/A banner: surface skipped strategies so user understands the filter impact ──
+    _na_strats = summary_df.loc[summary_df['Rating'] == '⚫ N/A — No Picks', 'Strategy'].tolist()
+    if _na_strats:
+        st.info(
+            f"⚫ **{len(_na_strats)} strateg{'y' if len(_na_strats) == 1 else 'ies'} "
+            f"produced no picks under the current scope** — excluded from rankings: "
+            f"{', '.join(_na_strats)}"
+        )
+
+    # ── Sample-size warning: alpha gaps below noise floor are statistically meaningless ──
+    if n_test_weeks < 26:
+        st.caption(
+            f"⚠️ Small sample ({n_test_weeks} weeks) — alpha differences below ±3% "
+            f"are within statistical noise. Treat rankings as directional, not definitive."
+        )
+
+    # ── CSV cadence warning: irregular spacing means "1w" labels are nominal ──
+    _all_gaps = []
+    for _w_list in bt_results.values():
+        for _w in _w_list:
+            _gd = _w.get('gap_days')
+            if _gd is not None:
+                _all_gaps.append(int(_gd))
+            break  # one sample per strategy is enough
+    # Inspect first strategy's full window list for true cadence variation
+    _first_strat = next((s for s, w in bt_results.items() if w), None)
+    if _first_strat:
+        _gaps_full = [int(w.get('gap_days', 7)) for w in bt_results[_first_strat]]
+        if _gaps_full:
+            _gap_min, _gap_max = min(_gaps_full), max(_gaps_full)
+            # Flag if cadence varies meaningfully (e.g. mix of 4-day and 14-day gaps)
+            if _gap_max - _gap_min > 3 or _gap_max > 9:
+                _avg_gap = sum(_gaps_full) / len(_gaps_full)
+                st.caption(
+                    f"📅 CSV cadence is irregular (gaps {_gap_min}–{_gap_max} days, "
+                    f"avg {_avg_gap:.1f}). \"1w\" returns are per-window (next CSV), "
+                    f"not strict 7-day. CAGR uses actual day counts for correct annualization."
+                )
 
     st.markdown(f"""
     <div style="background:linear-gradient(135deg, #0d1117, #161b22); border-radius:12px;
                 padding:20px; border:2px solid #30363d; margin-bottom:10px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-            <div style="font-size:1.2rem; font-weight:800; color:#e6edf3;">📊 BACKTEST RESULTS</div>
+            <div style="font-size:1.2rem; font-weight:800; color:#e6edf3;">📊 BACKTEST RESULTS v11.0</div>
             <div style="display:flex; gap:16px;">
                 <span style="font-size:0.8rem; color:#8b949e;">
-                    {n_test_weeks} test windows · Universe: <span style="color:{market_color}; font-weight:700;">{universe_val:+.1f}% ({market_verdict})</span>
+                    {n_test_weeks} windows · Universe: <span style="color:{market_color}; font-weight:700;">{universe_val:+.1f}% ({market_verdict})</span>
                 </span>
             </div>
         </div>
-        <div style="font-size:0.85rem; color:#8b949e; margin-bottom:14px;">Top strategy recommendations ranked by data-driven backtest performance:</div>
+        <div style="font-size:0.85rem; color:#8b949e; margin-bottom:14px;">
+            Multi-horizon validation (1w / 4w / 8w / 13w) — top recommendations:
+        </div>
         {reco_html}
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Strategy Performance Table ──
-    st.markdown("#### 📋 Strategy Comparison")
+    # ═══════════════════════════════════════════════════
+    # SECTION 3: Multi-Horizon Performance Table
+    # ═══════════════════════════════════════════════════
+    st.markdown("#### 📋 Multi-Horizon Strategy Comparison")
 
-    # Color the key columns
-    def _highlight_returns(val):
-        if isinstance(val, (int, float)):
-            if val > 0:
-                return 'color: #3fb950; font-weight: 700'
-            elif val < 0:
-                return 'color: #ff7b72; font-weight: 700'
-        return ''
+    horizon_tab_1w, horizon_tab_4w, horizon_tab_8w, horizon_tab_13w = st.tabs(
+        ["⚡ 1-Week", "📅 4-Week", "📈 8-Week", "🏆 13-Week"]
+    )
 
-    styled_df = summary_df.style.applymap(
-        _highlight_returns,
-        subset=['Avg Wk Return %', 'Cumulative %', 'Alpha %', 'Max DD %', 'Best Wk %', 'Worst Wk %']
-    ).format({
-        'Avg Wk Return %': '{:+.2f}',
-        'Cumulative %': '{:+.2f}',
-        'Alpha %': '{:+.2f}',
-        'Win Rate %': '{:.0f}',
-        'Sharpe (Ann.)': '{:.2f}',
-        'Max DD %': '{:.2f}',
-        'Best Wk %': '{:+.2f}',
-        'Worst Wk %': '{:+.2f}',
-        'Avg Stocks/Wk': '{:.0f}',
-    })
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    def _display_horizon_table(tab_obj, h_label, ret_col, wr_col, is_1w=False):
+        with tab_obj:
+            if is_1w:
+                cols_display = ['Strategy', 'Rating', 'Weeks', 'Avg Stocks',
+                                'Avg 1w %', 'Cum 1w %', 'CAGR %', 'Alpha %', 'WR 1w %',
+                                'Sharpe', 'PF', 'Max DD %']
+            else:
+                cols_display = ['Strategy', 'Rating', 'Weeks', 'Avg Stocks',
+                                ret_col, wr_col, 'Alpha %', 'Avg 1w %', 'WR 1w %']
+            avail_cols = [c for c in cols_display if c in summary_df.columns]
+            display_df = summary_df[avail_cols].copy()
 
-    # ── Strategy Insights (data-driven) ──
+            def _hl_rets(val):
+                if isinstance(val, (int, float)):
+                    if val > 0:
+                        return 'color: #3fb950; font-weight: 700'
+                    elif val < 0:
+                        return 'color: #ff7b72; font-weight: 700'
+                return ''
+
+            fmt_dict = {}
+            for c in avail_cols:
+                if c == 'CAGR %':
+                    fmt_dict[c] = '{:+.1f}'
+                elif '%' in c and c not in ('WR 1w %', 'WR 4w %', 'WR 8w %', 'WR 13w %'):
+                    fmt_dict[c] = '{:+.2f}'
+                elif 'WR' in c:
+                    fmt_dict[c] = '{:.0f}'
+                elif c == 'Sharpe':
+                    fmt_dict[c] = '{:.2f}'
+                elif c == 'PF':
+                    fmt_dict[c] = '{:.2f}'
+                elif c == 'Avg Stocks':
+                    fmt_dict[c] = '{:.0f}'
+
+            ret_subset = [c for c in avail_cols if '%' in c and c not in ('WR 1w %', 'WR 4w %', 'WR 8w %', 'WR 13w %')]
+            styled = display_df.style.map(_hl_rets, subset=ret_subset).format(fmt_dict, na_rep='—')
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    _display_horizon_table(horizon_tab_1w, '1w', 'Avg 1w %', 'WR 1w %', is_1w=True)
+    _display_horizon_table(horizon_tab_4w, '4w', 'Avg 4w %', 'WR 4w %')
+    _display_horizon_table(horizon_tab_8w, '8w', 'Avg 8w %', 'WR 8w %')
+    _display_horizon_table(horizon_tab_13w, '13w', 'Avg 13w %', 'WR 13w %')
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 4: Strategy Insights (Data-Driven)
+    # ═══════════════════════════════════════════════════
     with st.expander("🔬 Strategy Insights (Data-Driven Analysis)", expanded=True):
-        # Find key patterns from actual data
         insights = []
 
-        # Insight 1: Concentration risk — compare S2b vs S3b
+        # Insight: Concentration — S2b vs S3b
         s2b_row = summary_df[summary_df['Strategy'].str.contains('S2b')]
         s3b_row = summary_df[summary_df['Strategy'].str.contains('S3b')]
-        if len(s2b_row) > 0 and len(s3b_row) > 0:
-            s2b_cum = float(s2b_row['Cumulative %'].iloc[0])
-            s3b_cum = float(s3b_row['Cumulative %'].iloc[0])
+        if len(s2b_row) > 0 and len(s3b_row) > 0 and pd.notna(s2b_row['Cum 1w %'].iloc[0]) and pd.notna(s3b_row['Cum 1w %'].iloc[0]):
+            s2b_cum = float(s2b_row['Cum 1w %'].iloc[0])
+            s3b_cum = float(s3b_row['Cum 1w %'].iloc[0])
             spread = s3b_cum - s2b_cum
             if abs(spread) > 3:
                 if spread > 0:
-                    insights.append(('⚡', 'Concentration Risk', f'Top 20 T-Score ({s3b_cum:+.1f}%) beat Top 10 T-Score ({s2b_cum:+.1f}%) by **{spread:+.1f}%**. Broader baskets absorb single-stock blow-ups better.', '#ffa657'))
+                    insights.append(('⚡', 'Concentration Risk', f'Top 20 T-Score ({s3b_cum:+.1f}%) beat Top 10 ({s2b_cum:+.1f}%) by **{spread:+.1f}%**.', '#ffa657'))
                 else:
-                    insights.append(('⚡', 'Concentration Pays', f'Top 10 T-Score ({s2b_cum:+.1f}%) beat Top 20 ({s3b_cum:+.1f}%) by **{abs(spread):.1f}%**. Concentrated picks are working.', '#3fb950'))
+                    insights.append(('⚡', 'Concentration Pays', f'Top 10 T-Score ({s2b_cum:+.1f}%) beat Top 20 ({s3b_cum:+.1f}%) by **{abs(spread):.1f}%**.', '#3fb950'))
 
-        # Insight 2: T-Score vs WAVE Rank
-        s2_row = summary_df[summary_df['Strategy'] == 'S2: Top 10 WAVE Rank']
-        s3_row = summary_df[summary_df['Strategy'] == 'S3: Top 20 WAVE Rank']
-        if len(s2_row) > 0 and len(s2b_row) > 0:
-            wave_best = max(float(s2_row['Cumulative %'].iloc[0]), float(s3_row['Cumulative %'].iloc[0])) if len(s3_row) > 0 else float(s2_row['Cumulative %'].iloc[0])
-            tscore_best = max(float(s2b_row['Cumulative %'].iloc[0]), float(s3b_row['Cumulative %'].iloc[0])) if len(s3b_row) > 0 else float(s2b_row['Cumulative %'].iloc[0])
+        # Insight: T-Score vs WAVE Rank
+        s2_r = summary_df[summary_df['Strategy'] == 'S2: Top 10 WAVE Rank']
+        s3_r = summary_df[summary_df['Strategy'] == 'S3: Top 20 WAVE Rank']
+        def _safe_cum(rdf):
+            return float(rdf['Cum 1w %'].iloc[0]) if len(rdf) > 0 and pd.notna(rdf['Cum 1w %'].iloc[0]) else None
+        s2_cum, s3_cum = _safe_cum(s2_r), _safe_cum(s3_r)
+        s2b_cum_v = _safe_cum(s2b_row); s3b_cum_v = _safe_cum(s3b_row)
+        wave_vals = [v for v in (s2_cum, s3_cum) if v is not None]
+        ts_vals = [v for v in (s2b_cum_v, s3b_cum_v) if v is not None]
+        if wave_vals and ts_vals:
+            wave_best = max(wave_vals)
+            tscore_best = max(ts_vals)
             gap = tscore_best - wave_best
             if abs(gap) > 2:
                 if gap > 0:
-                    insights.append(('🧠', 'T-Score Ranking Superior', f'Best T-Score strategy ({tscore_best:+.1f}%) outperformed best WAVE Rank strategy ({wave_best:+.1f}%) by **{gap:+.1f}%**. Trajectory Engine scoring adds real value.', '#3fb950'))
+                    insights.append(('🧠', 'T-Score Superior', f'Best T-Score ({tscore_best:+.1f}%) outperformed best WAVE Rank ({wave_best:+.1f}%) by **{gap:+.1f}%**.', '#3fb950'))
                 else:
-                    insights.append(('🧠', 'WAVE Rank Still Competitive', f'Best WAVE Rank ({wave_best:+.1f}%) beat best T-Score ({tscore_best:+.1f}%) by **{abs(gap):.1f}%**.', '#58a6ff'))
+                    insights.append(('🧠', 'WAVE Rank Competitive', f'Best WAVE Rank ({wave_best:+.1f}%) beat best T-Score ({tscore_best:+.1f}%) by **{abs(gap):.1f}%**.', '#58a6ff'))
 
-        # Insight 3: Conviction signal effectiveness
+        # Insight: Conviction effectiveness
         s7_data = summary_df[summary_df['Strategy'].str.contains('S7')]
-        if len(s7_data) > 0:
-            s7_wr = float(s7_data['Win Rate %'].iloc[0])
-            s7_dd = float(s7_data['Max DD %'].iloc[0])
-            uni_wr = float(summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'Win Rate %'].iloc[0])
+        uni_wr_row = summary_df.loc[summary_df['Strategy'] == 'S1: Universe Avg', 'WR 1w %']
+        if len(s7_data) > 0 and pd.notna(s7_data['WR 1w %'].iloc[0]) and len(uni_wr_row) > 0 and pd.notna(uni_wr_row.iloc[0]):
+            s7_wr = float(s7_data['WR 1w %'].iloc[0])
+            uni_wr = float(uni_wr_row.iloc[0])
             if s7_wr > uni_wr:
-                insights.append(('🎯', 'Conviction Signal Works', f'Conviction ≥ 65 achieved **{s7_wr:.0f}% win rate** (vs universe {uni_wr:.0f}%), with the **best Max DD ({s7_dd:.1f}%)**. Conviction is the most protective filter.', '#3fb950'))
+                insights.append(('🎯', 'Conviction Works', f'Conviction ≥ 65 achieved **{s7_wr:.0f}% win rate** (vs universe {uni_wr:.0f}%).', '#3fb950'))
 
-        # Insight 4: Regime-Adaptive performance
+        # Insight: DNA strategies vs traditional
+        dna_strats = summary_df[summary_df['Strategy'].str.startswith('D') & summary_df['Alpha %'].notna()]
+        if len(dna_strats) > 0:
+            best_dna = dna_strats.loc[dna_strats['Alpha %'].idxmax()]
+            dna_name = best_dna['Strategy']
+            dna_alpha = best_dna['Alpha %']
+            dna_4w = best_dna.get('Avg 4w %')
+            detail = f'Best DNA strategy: **{dna_name}** with **{dna_alpha:+.1f}% alpha**.'
+            # pd.notna() correctly rejects both Python None AND numpy NaN
+            # (`np.nan is not None` is True — would produce "+nan%" in output).
+            if pd.notna(dna_4w):
+                detail += f' 4-week avg: **{dna_4w:+.1f}%**.'
+            col = '#3fb950' if dna_alpha > 0 else '#ff7b72'
+            insights.append(('🧬', 'DNA Scoring Performance', detail, col))
+
+        # Insight: Multi-horizon consistency — which strategy is best at ALL horizons?
+        if 'Avg 13w %' in summary_df.columns:
+            consistent = non_uni.dropna(subset=['Avg 4w %', 'Avg 8w %', 'Avg 13w %'])
+            if len(consistent) > 0:
+                consistent = consistent.copy()
+                consistent['_mh_score'] = (
+                    consistent['Alpha %'].fillna(0)
+                    + consistent['Avg 4w %'].fillna(0) * 0.5
+                    + consistent['Avg 8w %'].fillna(0) * 0.3
+                    + consistent['Avg 13w %'].fillna(0) * 0.2
+                )
+                top_mh = consistent.loc[consistent['_mh_score'].idxmax()]
+                insights.append(('🌟', 'Most Consistent Across Horizons',
+                    f"**{top_mh['Strategy']}** — 1w: {top_mh['Avg 1w %']:+.1f}%, 4w: {top_mh['Avg 4w %']:+.1f}%, "
+                    f"8w: {top_mh['Avg 8w %']:+.1f}%, 13w: {top_mh['Avg 13w %']:+.1f}%.",
+                    '#bc8cff'))
+
+        # Insight: Regime-Adaptive
         s10_data = summary_df[summary_df['Strategy'].str.contains('S10')]
-        if len(s10_data) > 0:
-            s10_wr = float(s10_data['Win Rate %'].iloc[0])
+        if len(s10_data) > 0 and pd.notna(s10_data['WR 1w %'].iloc[0]) and pd.notna(s10_data['Alpha %'].iloc[0]):
+            s10_wr = float(s10_data['WR 1w %'].iloc[0])
             s10_alpha = float(s10_data['Alpha %'].iloc[0])
             if s10_wr >= 50:
-                insights.append(('🔄', 'Regime Detection Effective', f'Regime-Adaptive achieved **{s10_wr:.0f}% win rate** (highest) with **{s10_alpha:+.1f}% alpha**. Switching between bull/bear modes adds value.', '#bc8cff'))
-
-        # Insight 5: No Decay filter check
-        s5_data = summary_df[summary_df['Strategy'].str.contains('S5:')]
-        s6_data = summary_df[summary_df['Strategy'].str.contains('S6:')]
-        if len(s5_data) > 0 and len(s6_data) > 0:
-            s5_cum = float(s5_data['Cumulative %'].iloc[0])
-            s6_cum = float(s6_data['Cumulative %'].iloc[0])
-            diff = s6_cum - s5_cum
-            if diff < -0.5:
-                insights.append(('🔍', 'Decay Filter Drag', f'Adding No-Decay filter made results **{abs(diff):.1f}% worse** ({s6_cum:+.1f}% vs {s5_cum:+.1f}%). In downtrends, this filter removes bounce candidates.', '#ff7b72'))
-            elif diff > 0.5:
-                insights.append(('🔍', 'Decay Filter Helps', f'No-Decay filter improved results by **{diff:.1f}%** ({s6_cum:+.1f}% vs {s5_cum:+.1f}%).', '#3fb950'))
-
-        # Insight 6: Full Signal overfiltering check
-        s8_data = summary_df[summary_df['Strategy'].str.contains('S8:')]
-        if len(s8_data) > 0:
-            s8_alpha = float(s8_data['Alpha %'].iloc[0])
-            s8_stocks = float(s8_data['Avg Stocks/Wk'].iloc[0])
-            if s8_alpha < 2 and s8_stocks < 100:
-                insights.append(('⚙️', 'Full Signal Overfilters', f'Full Signal (S8) has only **{s8_alpha:+.1f}% alpha** with ~{s8_stocks:.0f} stocks. Stacking T-Score + Conviction + No Decay + WAVE filters together cancels out alpha.', '#ff7b72'))
+                insights.append(('🔄', 'Regime Detection', f'Regime-Adaptive: **{s10_wr:.0f}% WR** with **{s10_alpha:+.1f}% alpha**.', '#bc8cff'))
 
         if insights:
             for icon, title, detail, color in insights:
@@ -7230,7 +8457,9 @@ def render_backtest_tab(uploaded_files):
         else:
             st.info("Not enough data variance to generate insights. Add more CSV weeks.")
 
-    # ── Risk Warning for dangerous strategies ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 5: Risk Warning
+    # ═══════════════════════════════════════════════════
     worst_name = worst_strat['Strategy']
     worst_alpha = worst_strat['Alpha %']
     worst_dd = worst_strat['Max DD %']
@@ -7240,17 +8469,17 @@ def render_backtest_tab(uploaded_files):
                     border:1px solid #6e3630; margin-bottom:16px;">
             <span style="color:#ff7b72; font-weight:700;">⚠️ RISK WARNING:</span>
             <span style="color:#c9d1d9; font-size:0.85rem;">
-                <b>{worst_name}</b> underperformed the universe by <b>{worst_alpha:.1f}%</b>
-                with a max drawdown of <b>{worst_dd:.1f}%</b>.
-                Concentrated portfolios with few stocks carry severe single-stock blow-up risk.
+                <b>{worst_name}</b> underperformed by <b>{worst_alpha:.1f}%</b>
+                with max DD <b>{worst_dd:.1f}%</b>.
             </span>
         </div>
         """, unsafe_allow_html=True)
 
-    # ── Cumulative Return Chart ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 6: Cumulative Return Chart (plotly)
+    # ═══════════════════════════════════════════════════
     st.markdown("#### 📈 Cumulative Return Over Time")
 
-    fig = go.Figure()
     strat_colors = {
         'S1: Universe Avg': '#484f58',
         'S2: Top 10 WAVE Rank': '#8b949e',
@@ -7259,25 +8488,36 @@ def render_backtest_tab(uploaded_files):
         'S2b: Top 10 T-Score': '#58a6ff',
         'S3b: Top 20 T-Score': '#388bfd',
         'S5: T-Score ≥ 70': '#ffa657',
-        'S6: T-Score ≥ 70 + No Decay': '#f0883e',
         'S7: Conviction ≥ 65': '#3fb950',
         'S8: Full Signal': '#FFD700',
         'S9: Conviction-Weighted': '#f778ba',
         'S10: Regime-Adaptive': '#bc8cff',
         'S11: Momentum-Quality': '#56d364',
         'S12: Max Alpha': '#e3b341',
+        'S13: Capitulation Contrarian': '#ff7b72',
+        'S14: Bounce Recovery': '#a5d6ff',
+        'S15: Quality GARP': '#7ee787',
+        'S16: Pattern Flip Alpha': '#ffa198',
+        'S19: Winner DNA Momentum': '#d2a8ff',
+        'S20: Winner DNA Contrarian': '#f0883e',
+        'S21: Winner DNA Composite': '#FFD700',
+        'D1: DNA HIGH Conviction': '#56d364',
+        'D2: DNA MEDIUM+ Conviction': '#79c0ff',
+        'D3: DNA All Scored': '#d2a8ff',
     }
 
-    # Highlight: best alpha, best broad, and safest strategies
     highlight_names = {best_name, safest_row['Strategy'], 'S1: Universe Avg'}
     if best_broad_row is not None:
         highlight_names.add(best_broad_row['Strategy'])
 
+    fig = go.Figure()
+    # Skip strategies that never picked any stock (avoids flat-zero clutter on chart)
+    _empty_strategies = set(summary_df.loc[summary_df['Alpha %'].isna(), 'Strategy'])
     for sname, weeks in bt_results.items():
-        if not weeks:
+        if not weeks or sname in _empty_strategies:
             continue
         cum_vals = []
-        cum = 100  # Start at 100
+        cum = 100
         x_dates = []
         for w in weeks:
             cum = cum * (1 + w['avg_return'] / 100)
@@ -7312,39 +8552,156 @@ def render_backtest_tab(uploaded_files):
     fig.add_hline(y=100, line_dash='dot', line_color='#484f58', opacity=0.5)
     st.plotly_chart(fig, use_container_width=True, key='bt_cumulative_chart')
 
-    # ── Weekly Breakdown ──
-    with st.expander("📅 Weekly Breakdown", expanded=False):
-        # Create a combined table: rows = weeks, columns = strategies
-        if bt_results:
-            first_strat = list(bt_results.keys())[0]
-            week_labels = [w['week'] for w in bt_results[first_strat]]
+    # ═══════════════════════════════════════════════════
+    # SECTION 7: Head-to-Head Comparison
+    # ═══════════════════════════════════════════════════
+    with st.expander("⚔️ Head-to-Head Strategy Comparison", expanded=False):
+        # Exclude empty strategies (would compare two flat-zero curves — meaningless)
+        all_strat_names = [s for s in bt_results.keys()
+                           if bt_results[s] and s not in _empty_strategies]
+        if len(all_strat_names) < 2:
+            st.info("Need at least 2 strategies with picks under the current filter for H2H.")
+            all_strat_names = []
+        col_a, col_b = st.columns(2)
+        with col_a:
+            strat_a = st.selectbox("Strategy A", all_strat_names,
+                                   index=min(1, len(all_strat_names) - 1), key='h2h_a')
+        with col_b:
+            default_b = min(6, len(all_strat_names) - 1)
+            strat_b = st.selectbox("Strategy B", all_strat_names,
+                                   index=default_b, key='h2h_b')
 
-            breakdown_data = {'Decision Week': week_labels}
-            for sname in bt_results:
-                breakdown_data[sname] = [f"{w['avg_return']:+.2f}% ({w['n_stocks']})"
-                                         for w in bt_results[sname]]
+        if strat_a and strat_b and strat_a != strat_b:
+            weeks_a = bt_results[strat_a]
+            weeks_b = bt_results[strat_b]
+            n_common = min(len(weeks_a), len(weeks_b))
 
-            breakdown_df = pd.DataFrame(breakdown_data)
-            st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
+            h2h_rows = []
+            a_wins, b_wins = 0, 0
+            for i in range(n_common):
+                ra = weeks_a[i]['avg_return']
+                rb = weeks_b[i]['avg_return']
+                winner = strat_a if ra > rb else (strat_b if rb > ra else 'Tie')
+                if ra > rb:
+                    a_wins += 1
+                elif rb > ra:
+                    b_wins += 1
+                h2h_rows.append({
+                    'Week': weeks_a[i]['week'],
+                    f'{strat_a} %': f'{ra:+.2f}',
+                    f'{strat_b} %': f'{rb:+.2f}',
+                    'Spread %': f'{ra - rb:+.2f}',
+                    'Winner': winner,
+                })
 
-    # ── Excess Return vs Universe ──
+            st.markdown(f"""
+            <div style="display:flex; gap:20px; margin-bottom:12px;">
+                <div style="background:#161b22; border-radius:8px; padding:12px 20px; border:1px solid #30363d;">
+                    <span style="color:#3fb950; font-weight:700;">{strat_a}</span> wins
+                    <span style="font-size:1.2rem; font-weight:800; color:#e6edf3;"> {a_wins}</span> weeks
+                </div>
+                <div style="background:#161b22; border-radius:8px; padding:12px 20px; border:1px solid #30363d;">
+                    <span style="color:#58a6ff; font-weight:700;">{strat_b}</span> wins
+                    <span style="font-size:1.2rem; font-weight:800; color:#e6edf3;"> {b_wins}</span> weeks
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Multi-horizon comparison
+            mh_compare = []
+            for h in horizons:
+                a_vals = [w.get(f'avg_ret_{h}') for w in weeks_a if w.get(f'avg_ret_{h}') is not None]
+                b_vals = [w.get(f'avg_ret_{h}') for w in weeks_b if w.get(f'avg_ret_{h}') is not None]
+                a_hr = [w.get(f'hit_rate_{h}') for w in weeks_a if w.get(f'hit_rate_{h}') is not None]
+                b_hr = [w.get(f'hit_rate_{h}') for w in weeks_b if w.get(f'hit_rate_{h}') is not None]
+                mh_compare.append({
+                    'Horizon': h,
+                    f'{strat_a} Avg %': f"{np.mean(a_vals):+.2f}" if a_vals else '—',
+                    f'{strat_b} Avg %': f"{np.mean(b_vals):+.2f}" if b_vals else '—',
+                    f'{strat_a} WR %': f"{np.mean(a_hr):.0f}" if a_hr else '—',
+                    f'{strat_b} WR %': f"{np.mean(b_hr):.0f}" if b_hr else '—',
+                })
+            st.markdown("**Multi-Horizon Comparison:**")
+            st.dataframe(pd.DataFrame(mh_compare), use_container_width=True, hide_index=True)
+
+            st.markdown("**Week-by-Week:**")
+            st.dataframe(pd.DataFrame(h2h_rows), use_container_width=True, hide_index=True)
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 8: Strategy Correlation Matrix
+    # ═══════════════════════════════════════════════════
+    with st.expander("🔗 Strategy Overlap (Correlation)", expanded=False):
+        st.markdown("""
+        <div style="font-size:0.82rem; color:#8b949e; margin-bottom:10px;">
+            Shows how often strategies pick the <b>same stocks</b> — high overlap means
+            little diversification benefit from combining them.
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Build overlap matrix as MEAN Jaccard across ALL weeks (not just last week).
+        # Single-week snapshots are noisy, especially under filters. Skip empty strategies.
+        overlap_strats = [s for s in bt_results
+                          if bt_results[s] and s not in _empty_strategies
+                          and 'tickers' in bt_results[s][-1]]
+        if len(overlap_strats) >= 2:
+            # Pre-build per-week ticker sets per strategy keyed by decision week
+            per_week_sets = {}  # {strategy: {week_label: set}}
+            for s in overlap_strats:
+                per_week_sets[s] = {w['week']: set(w.get('tickers', []))
+                                    for w in bt_results[s]}
+
+            overlap_data = []
+            for s_row in overlap_strats:
+                row_vals = {}
+                for s_col in overlap_strats:
+                    weeks_a = per_week_sets[s_row]
+                    weeks_b = per_week_sets[s_col]
+                    common_weeks = set(weeks_a.keys()) & set(weeks_b.keys())
+                    jaccards = []
+                    for wk in common_weeks:
+                        a_set, b_set = weeks_a[wk], weeks_b[wk]
+                        union = len(a_set | b_set)
+                        if union > 0:
+                            jaccards.append(len(a_set & b_set) / union * 100)
+                        # If both empty that week, skip (don't bias toward 0 or 100)
+                    row_vals[s_col] = round(float(np.mean(jaccards)), 0) if jaccards else 0
+                overlap_data.append(row_vals)
+
+            overlap_df = pd.DataFrame(overlap_data, index=overlap_strats)
+
+            def _color_overlap(val):
+                if isinstance(val, (int, float)):
+                    if val >= 80:
+                        return 'background-color: #3fb950; color: #0d1117; font-weight:700'
+                    elif val >= 40:
+                        return 'background-color: #1a3a1f; color: #3fb950'
+                    elif val > 0:
+                        return 'color: #8b949e'
+                return ''
+
+            styled_overlap = overlap_df.style.map(_color_overlap).format('{:.0f}%')
+            st.dataframe(styled_overlap, use_container_width=True)
+        else:
+            st.info("Need backtest data with ticker lists to compute overlap.")
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 9: Excess Return vs Universe (Alpha Chart)
+    # ═══════════════════════════════════════════════════
     st.markdown("#### 🎯 Excess Return vs Universe (Alpha)")
 
     fig2 = go.Figure()
     universe_returns = [w['avg_return'] for w in bt_results.get('S1: Universe Avg', [])]
 
     for sname, weeks in bt_results.items():
-        if sname == 'S1: Universe Avg' or not weeks:
+        if sname == 'S1: Universe Avg' or not weeks or sname in _empty_strategies:
             continue
         excess = [w['avg_return'] - ur for w, ur in zip(weeks, universe_returns)]
         x_dates = [w['forward_week'] for w in weeks]
         avg_excess = np.mean(excess) if excess else 0
 
-        colors = ['#3fb950' if e >= 0 else '#ff7b72' for e in excess]
-
         fig2.add_trace(go.Bar(
             x=x_dates, y=excess,
-            name=f"{sname} (avg: {avg_excess:+.2f}%)",
+            name=f"{sname} ({avg_excess:+.2f}%)",
             marker_color=strat_colors.get(sname, '#8b949e'),
             opacity=0.7,
             visible=True if sname == best_name else 'legendonly',
@@ -7359,120 +8716,126 @@ def render_backtest_tab(uploaded_files):
         margin=dict(l=40, r=20, t=30, b=40),
         legend=dict(orientation='h', yanchor='bottom', y=-0.4, xanchor='center', x=0.5,
                     font=dict(size=10)),
-        yaxis=dict(title='Excess Return vs Universe %', gridcolor='#21262d', zeroline=True,
+        yaxis=dict(title='Excess Return %', gridcolor='#21262d', zeroline=True,
                    zerolinecolor='#484f58'),
         xaxis=dict(title='Week', gridcolor='#21262d'),
         barmode='group',
     )
     st.plotly_chart(fig2, use_container_width=True, key='bt_alpha_chart')
 
-    # ── Strategy Descriptions ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 10: Weekly Breakdown
+    # ═══════════════════════════════════════════════════
+    with st.expander("📅 Weekly Breakdown", expanded=False):
+        if bt_results:
+            first_strat = list(bt_results.keys())[0]
+            week_labels = [w['week'] for w in bt_results[first_strat]]
+            breakdown_data = {'Decision Week': week_labels}
+            for sname in bt_results:
+                breakdown_data[sname] = [f"{w['avg_return']:+.2f}% ({w['n_stocks']})"
+                                         for w in bt_results[sname]]
+            st.dataframe(pd.DataFrame(breakdown_data), use_container_width=True, hide_index=True)
+
+    # ═══════════════════════════════════════════════════
+    # SECTION 11: Strategy Definitions
+    # ═══════════════════════════════════════════════════
     with st.expander("📖 Strategy Definitions", expanded=False):
         st.markdown("""
-        | Strategy | Selection Rule | Tests |
-        |----------|---------------|-------|
-        | **S1: Universe Avg** | Buy all stocks equally | Baseline — market average |
-        | **S2: Top 10 WAVE Rank** | 10 lowest WAVE rank numbers | Does raw ranking predict? |
-        | **S3: Top 20 WAVE Rank** | 20 lowest WAVE rank numbers | Does broader selection reduce risk? |
-        | **S4: Persistent Top 50** | Top ~2.5% for 4+ consecutive weeks | Does persistence add value? |
-        | **S2b: Top 10 T-Score** | Top 10 by Trajectory Score (sector-capped ≤2/sector) | Does T-Score beat raw rank? |
-        | **S3b: Top 20 T-Score** | Top 20 by Trajectory Score (sector-capped ≤3/sector) | Broader T-Score basket with diversification |
-        | **S5: T-Score ≥ 70** | Full Trajectory Engine score ≥ 70 | Does the 8-component system work? |
-        | **S6: T-Score ≥ 70 + No Decay** | S5 + no momentum decay trap | Does trap detection help? |
-        | **S7: Conviction ≥ 65** | Multi-signal conviction score ≥ 65 | Does conviction predict returns? |
-        | **S8: Full Signal** | T-Score ≥ 70 + Conviction ≥ 65 + No Decay + WAVE Confirmed/Strong | Does max filtering produce best results? |
-        | **S9: Conviction-Weighted** | T-Score ≥ 60, conviction ≥ 40, weighted by conviction score | Does weighting by conviction add alpha? |
-        | **S10: Regime-Adaptive** | Bull: Top T-Score + no decay; Bear: Conviction ≥ 65 + persistent + no decay | Does regime adaptation help? |
-        | **S11: Momentum-Quality** | ret_1y ≥ 25% + from_low ≥ 50% + Conviction ≥ 50 + no decay, sector-capped | Do 12-month momentum + low-distance signals add alpha? |
-        | **S12: Max Alpha** | Top 20 by Alpha Score (≥40), alpha-weighted returns, sector-capped ≤2/sector | Does a pure forward-predictor score maximize future returns? |
-        | **S13: Capitulation Contrarian** | Stocks with 💣 CAPITULATION pattern (extreme selling exhaustion) | Backtest-proven: +2.99% avg, 60% WR. Mean reversion signal. |
-        | **S14: Bounce Recovery** | BOUNCE/PULLBACK market state + Score ≥ 50 | BOUNCE is the #1 market state: +3.56% avg, 54.2% WR. |
-        | **S15: Quality GARP** | QUALITY LEADER or GARP pattern + Score ≥ 65 | Quality + fundamentals: +0.98% avg (Quality), +1.00% avg (GARP). |
-        | **S16: Pattern Flip Alpha** | CAPITULATION or VOL EXPLOSION+Score≥60 NEWLY appeared this week | Fresh pattern signal: NEW Capitulation +3.06%, 60.8% WR. |
-        | **S17: Stealth Alpha** | 🤫 STEALTH pattern + Rank ≤ 100 | Stealth accumulation in top ranks: +0.10% in bear market, 48% WR. |
-        | **S18: Near-High Breakout** | Within 10% of 52w high + Breakout score ≥ 70 | Relative strength: largest N screen (4335 obs), 45.6% WR. |
-        | **S19: Winner DNA Momentum** | TQ≥50 + Score≥50 + Brk≥40 + Pos≥40 + Rank≤800 + Near High>-25% + UPTREND/PULLBACK + Leadership pattern + No Micro/Hidden Gem | Momentum path from deep 200-winner analysis. Trending leaders archetype. |
-        | **S20: Winner DNA Contrarian** | DOWNTREND + Rank≤1000 + From High -40% to -15% + Reversal pattern (VOL EXPLOSION/RANGE COMPRESS/CAPITULATION/PULLBACK SUPPORT) + No Micro/Hidden Gem | Contrarian path from 200-winner analysis. Mean-reversion archetype. |
-        | **S21: Winner DNA Composite** | Top 20 by Winner DNA Score (RF-weighted: position, TQ, from-high, rank, volume, score, breakout + pattern bonuses). Sector-capped 3/sector. | ML-derived composite score (RF AUC=0.928). Both paths combined. |
-
-        **Forward Return:** Actual price change from current week to next week. Computed from price data, not ret_7d.
-
-        **Walk-Forward:** At each test point, only data available UP TO that week is used. No future information leaks into the scoring.
-        
-        **Sector Cap (S2b/S3b):** Max 2-3 stocks per sector prevents concentration risk from destroying returns in sector-specific crashes.
-        
-        **Conviction-Weighted (S9):** Instead of equal-weight, each stock's return is weighted by its conviction score. High-conviction picks get more capital.
-        
-        **Regime-Adaptive (S10):** Automatically switches between aggressive (momentum-focused) in bull markets and defensive (conviction+persistence) in bear markets based on median T-Score.
-        
-        **Momentum-Quality (S11):** Filters for stocks with strong 12-month returns (≥25%), far from 52-week low (≥50%), minimum conviction (≥50), and no momentum decay. Sector-capped at 3/sector. Tests whether long-term momentum + structural uptrend confirmation adds alpha.
-        
-        **Max Alpha (S12):** Uses Alpha Score — a purpose-built forward-return predictor combining ONLY factors with proven next-week alpha: near-high proximity (+0.55%/wk), breakout quality (+0.44%/wk), persistence (+3.91%/wk), position strength (+0.34%/wk), market state (BOUNCE +1.17%/wk), no-decay, wave fusion, and early rally stage. Returns are alpha-score-weighted (higher alpha_score = more capital). Sector-capped at 2/sector for diversification.
-        
-        **Winner DNA Momentum (S19):** Derived from forensic analysis of the 200 stocks with the highest 6-month returns. These winners had significantly higher trend quality (+10.5, p<0.001), position score (+9.2), breakout score (+6.6), and were closer to highs (+5.6pp). S19 captures the "momentum leadership" archetype: already strong stocks (Score≥50, TQ≥50, Rank≤800) in UPTREND/PULLBACK with leadership patterns (CAT/MARKET/LIQUID LEADER, 52W HIGH APPROACH, PREMIUM MOMENTUM, RUNAWAY GAP). Excludes Micro Cap (-25.7% under-represented in winners) and HIDDEN GEM (0% in winners).
-        
-        **Winner DNA Contrarian (S20):** The second winner archetype from the same analysis — beaten-down stocks that staged massive comebacks. Examples: MTARTECH (+198%, Rank 1401, DOWNTREND), 513599 (+131%, Rank 887, DOWNTREND). S20 captures these contrarian plays: DOWNTREND state with Rank≤1000, From High -40% to -15% (beaten but not dead), and reversal signals (VOL EXPLOSION 1.6x enriched, RANGE COMPRESS 4.3x combo enrichment, CAPITULATION, PULLBACK SUPPORT 2.1x enriched).
-        
-        **Winner DNA Composite (S21):** Uses a Winner DNA Score derived from Random Forest feature importances (AUC=0.928) from the 200-winner analysis. The RF identified money_flow, position_score, trend_quality, from_high_pct, rank, volume_score, master_score, and breakout_score as the strongest discriminators. Pattern bonuses from chi-squared enrichment: RUNAWAY GAP (+9.7x enriched), 52W HIGH APPROACH (+3.6x), MARKET/CAT LEADER (+1.8x/1.5x). Top 20 by DNA score, sector-capped at 3/sector.
+        | Strategy | Selection Rule |
+        |----------|---------------|
+        | **S1: Universe Avg** | Buy all stocks equally — baseline |
+        | **S2: Top 10 WAVE Rank** | 10 lowest WAVE rank numbers |
+        | **S3: Top 20 WAVE Rank** | 20 lowest WAVE rank numbers |
+        | **S4: Persistent Top 50** | Top ~2.5% for 4+ consecutive weeks |
+        | **S2b: Top 10 T-Score** | Top 10 by Trajectory Score (sector-capped ≤2/sector) |
+        | **S3b: Top 20 T-Score** | Top 20 by Trajectory Score (sector-capped ≤3/sector) |
+        | **S5: T-Score ≥ 70** | Full Trajectory Engine score ≥ 70 |
+        | **S7: Conviction ≥ 65** | Multi-signal conviction score ≥ 65 |
+        | **S8: Full Signal** | T-Score ≥ 70 + Conviction ≥ 65 + No Decay + WAVE Confirmed/Strong |
+        | **S9: Conviction-Weighted** | T-Score ≥ 60, conviction ≥ 40, weighted by conviction score |
+        | **S10: Regime-Adaptive** | Bull: Top T-Score; Bear: Conviction ≥ 65 + persistent |
+        | **S11: Momentum-Quality** | ret_1y ≥ 25% + from_low ≥ 50% + Conviction ≥ 50, sector-capped |
+        | **S12: Max Alpha** | Top 20 by Alpha Score (≥40), alpha-weighted, sector-capped |
+        | **S13: Capitulation Contrarian** | Stocks with CAPITULATION pattern (mean reversion) |
+        | **S14: Bounce Recovery** | BOUNCE/PULLBACK state + Score ≥ 50 |
+        | **S15: Quality GARP** | QUALITY LEADER or GARP pattern + Score ≥ 65 |
+        | **S16: Pattern Flip Alpha** | NEW Capitulation or VOL EXPLOSION this week |
+        | **S19: Winner DNA Momentum** | Trending leaders: TQ≥50, Score≥50, UPTREND, leadership patterns |
+        | **S20: Winner DNA Contrarian** | Beaten-down reversals: DOWNTREND, -40% to -15%, reversal patterns |
+        | **S21: Winner DNA Composite** | Top 20 by RF-derived DNA Score (AUC=0.928), sector-capped |
+        | **D1: DNA HIGH Conviction** | All tickers scored HIGH by the 5-cap DNA system |
+        | **D2: DNA MEDIUM+ Conviction** | All tickers scored MEDIUM or HIGH by DNA system |
+        | **D3: DNA All Scored** | Every ticker with a positive DNA score |
         """)
 
-    # ── Download Backtest Results ──
+    # ═══════════════════════════════════════════════════
+    # SECTION 12: Downloads (Multi-Horizon)
+    # ═══════════════════════════════════════════════════
     st.markdown("#### 📥 Download Results")
     dl1, dl2, dl3 = st.columns(3)
 
     with dl1:
-        # Summary CSV — drop Rating column for clean data export
         export_df = summary_df.drop(columns=['Rating'], errors='ignore')
-        summary_csv = export_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="📋 Summary Table (CSV)",
-            data=summary_csv,
-            file_name="backtest_summary.csv",
+            label="📋 Summary (CSV)",
+            data=export_df.to_csv(index=False).encode('utf-8'),
+            file_name="backtest_summary_v11.csv",
             mime="text/csv",
             use_container_width=True,
             key='bt_dl_summary',
         )
 
     with dl2:
-        # Weekly breakdown CSV — one row per strategy × week
         weekly_rows = []
         for sname, weeks in bt_results.items():
+            # Skip empty strategies entirely from the export (they'd write
+            # a long sheet of misleading zero rows under filtered scopes).
+            if sname in _empty_strategies:
+                continue
             for w in weeks:
-                weekly_rows.append({
+                row_dl = {
                     'Strategy': sname,
                     'Decision_Week': w['week'],
                     'Forward_Week': w['forward_week'],
-                    'Avg_Return_%': round(w['avg_return'], 4),
+                    'Gap_Days': int(w.get('gap_days', 7)),
+                    'Avg_Return_1w_%': round(w['avg_return'], 4),
                     'Median_Return_%': round(w['median_return'], 4),
                     'N_Stocks': w['n_stocks'],
                     'N_Positive': w['n_positive'],
                     'Best_%': round(w['best'], 4),
                     'Worst_%': round(w['worst'], 4),
-                })
-        weekly_csv = pd.DataFrame(weekly_rows).to_csv(index=False).encode('utf-8')
+                }
+                # Preserve None for unavailable horizons (last weeks have no forward data).
+                # Writing 0.0000 there would be a silent lie in downstream analysis.
+                for h in horizons:
+                    _avg_h = w.get(f'avg_ret_{h}')
+                    _hr_h = w.get(f'hit_rate_{h}')
+                    row_dl[f'Avg_Ret_{h}_%'] = round(_avg_h, 4) if _avg_h is not None else None
+                    row_dl[f'Hit_Rate_{h}_%'] = round(_hr_h, 1) if _hr_h is not None else None
+                weekly_rows.append(row_dl)
         st.download_button(
-            label="📅 Weekly Breakdown (CSV)",
-            data=weekly_csv,
-            file_name="backtest_weekly.csv",
+            label="📅 Weekly Multi-Horizon (CSV)",
+            data=pd.DataFrame(weekly_rows).to_csv(index=False).encode('utf-8'),
+            file_name="backtest_weekly_multihorizon.csv",
             mime="text/csv",
             use_container_width=True,
             key='bt_dl_weekly',
         )
 
     with dl3:
-        # Full combined report — summary + blank row + weekly detail
         import io
         buf = io.StringIO()
-        buf.write("=== BACKTEST SUMMARY ===\n")
+        buf.write("=== BACKTEST SUMMARY v11.0 (Multi-Horizon) ===\n")
         summary_df.to_csv(buf, index=False)
         buf.write("\n\n=== WEEKLY DETAIL (per strategy per week) ===\n")
         pd.DataFrame(weekly_rows).to_csv(buf, index=False)
 
-        # Excess returns section
         universe_rets_dl = [w['avg_return'] for w in bt_results.get('S1: Universe Avg', [])]
         excess_rows = []
         for sname, weeks in bt_results.items():
-            if sname == 'S1: Universe Avg' or not weeks:
+            # Empty strategies have avg_return=0 every week — writing them
+            # produces fake "-X% alpha" rows. Same lie we fixed in the UI.
+            if sname == 'S1: Universe Avg' or not weeks or sname in _empty_strategies:
                 continue
             for w, ur in zip(weeks, universe_rets_dl):
                 excess_rows.append({
@@ -7486,11 +8849,10 @@ def render_backtest_tab(uploaded_files):
             buf.write("\n\n=== EXCESS RETURNS (Alpha vs Universe) ===\n")
             pd.DataFrame(excess_rows).to_csv(buf, index=False)
 
-        full_csv = buf.getvalue().encode('utf-8')
         st.download_button(
             label="📊 Full Report (CSV)",
-            data=full_csv,
-            file_name="backtest_full_report.csv",
+            data=buf.getvalue().encode('utf-8'),
+            file_name="backtest_full_report_v11.csv",
             mime="text/csv",
             use_container_width=True,
             key='bt_dl_full',
@@ -7504,6 +8866,7 @@ def render_backtest_tab(uploaded_files):
 def render_pattern_analyser_tab(uploaded_files):
     """Data-driven pattern intelligence across all loaded CSVs."""
     st.markdown("### 🔬 Pattern Analyser — Data-Driven Intelligence")
+    st.info("📌 **Sidebar filters do NOT apply here.** Pattern statistics are computed on the full historical universe — use the Categories / Sectors / Tickers row below to scope the analysis.")
     st.markdown("""
     <div style="background:linear-gradient(135deg,#0d1117,#161b22); border-radius:10px;
                 padding:16px; border:1px solid #30363d; margin-bottom:16px;">
@@ -7538,23 +8901,125 @@ def render_pattern_analyser_tab(uploaded_files):
         st.warning("Need at least 3 weekly CSVs for pattern analysis.")
         return
 
-    pa_cache_key = ('PA', tuple(sorted((f.name, f.size) for f in uploaded_files)))
+    # ── Filter Bar: Category / Sector / Tickers ──
+    st.markdown("""
+    <div style="background:#161b22; border-radius:8px; padding:10px 16px; margin-bottom:12px;
+                border:1px solid #30363d;">
+        <span style="color:#8b949e; font-size:0.82rem; font-weight:600;">🎛️ ANALYSIS SCOPE</span>
+    </div>
+    """, unsafe_allow_html=True)
+    # Collect all categories and sectors from latest CSV — DEFENSIVE:
+    # Older / partial CSVs may not have these columns. Previously the bare
+    # `_latest_df['category']` access raised KeyError and crashed the whole tab.
+    _latest_df = weekly_data[dates[-1]]
+    if 'category' in _latest_df.columns:
+        _all_cats = sorted([str(c).strip() for c in _latest_df['category'].dropna().unique()
+                            if str(c).strip() and str(c).strip().lower() != 'nan'])
+    else:
+        _all_cats = []
+    if 'sector' in _latest_df.columns:
+        _all_sects = sorted([str(v).strip() for v in _latest_df['sector'].dropna().unique()
+                             if str(v).strip() and str(v).strip().lower() != 'nan'])
+    else:
+        _all_sects = []
+
+    flt_c1, flt_c2, flt_c3 = st.columns([2, 2, 3])
+    with flt_c1:
+        pa_filter_cats = st.multiselect("📂 Categories", _all_cats, default=[], key='pa_flt_cat',
+                                        placeholder="All Categories")
+    with flt_c2:
+        pa_filter_sects = st.multiselect("🏭 Sectors", _all_sects, default=[], key='pa_flt_sect',
+                                         placeholder="All Sectors")
+    with flt_c3:
+        pa_filter_tickers = st.text_area("🔍 Specific Tickers", value='', key='pa_flt_tk', height=68,
+                                         placeholder="Paste tickers — one per line or comma-separated\ne.g. 500325, 532540")
+
+    # Recency window slider — bounds CLAMPED so the slider never crashes
+    # when the user has fewer than 9 CSVs.
+    #   max = min(20, n_pairs)         — cap at 20 or available pairs
+    #   min = 2 (statistical floor for 2-sample comparison)
+    #   default = min(8, max)          — 8 if available, else cap
+    # Previously: min=4, max=min(20,n-1), value=8 — with 3-8 CSVs this raised
+    # StreamlitAPIException (value > max OR min > max) and the entire tab broke.
+    _n_pairs = len(dates) - 1
+    _rec_max = max(2, min(20, _n_pairs))
+    _rec_min = min(2, _rec_max)
+    _rec_default = max(_rec_min, min(8, _rec_max))
+    pa_recency_w = st.slider("⏱️ Recency Window (weeks)",
+                              min_value=_rec_min, max_value=_rec_max,
+                              value=_rec_default, step=1, key='pa_recency_w',
+                              help="Compare the last N week-pairs (recent) vs the rest (older). "
+                                   f"Range auto-bounded by your {_n_pairs} available week-pairs.")
+
+    # Parse ticker filter — accept comma, newline, or mixed
+    _filter_tk_set = set()
+    if pa_filter_tickers.strip():
+        import re as _re_tk
+        _filter_tk_set = {t.strip() for t in _re_tk.split(r'[,\n\r]+', pa_filter_tickers) if t.strip()}
+
+    # Apply filters to weekly_data copies
+    _filter_active = bool(pa_filter_cats) or bool(pa_filter_sects) or bool(_filter_tk_set)
+    if _filter_active:
+        filtered_data = {}
+        for d, df in weekly_data.items():
+            mask = pd.Series(True, index=df.index)
+            if pa_filter_cats and 'category' in df.columns:
+                mask &= df['category'].astype(str).str.strip().isin(pa_filter_cats)
+            if pa_filter_sects and 'sector' in df.columns:
+                mask &= df['sector'].astype(str).str.strip().isin(pa_filter_sects)
+            if _filter_tk_set:
+                mask &= df['ticker'].astype(str).str.strip().isin(_filter_tk_set)
+            filtered = df[mask]
+            if len(filtered) > 0:
+                filtered_data[d] = filtered
+        pa_weekly = filtered_data
+        pa_dates = sorted(pa_weekly.keys())
+        if len(pa_dates) < 3:
+            st.warning("Filter too restrictive — need ≥3 weeks with matching stocks.")
+            return
+        _filter_desc = []
+        if pa_filter_cats:
+            _filter_desc.append(f"Categories: {', '.join(pa_filter_cats)}")
+        if pa_filter_sects:
+            _filter_desc.append(f"Sectors: {', '.join(pa_filter_sects)}")
+        if _filter_tk_set:
+            _filter_desc.append(f"Tickers: {', '.join(sorted(_filter_tk_set))}")
+        st.caption(f"🎛️ Filter active: {' | '.join(_filter_desc)}")
+    else:
+        pa_weekly = weekly_data
+        pa_dates = dates
+
+    # Include filter params in cache key
+    _flt_key = (tuple(sorted(pa_filter_cats)), tuple(sorted(pa_filter_sects)), tuple(sorted(_filter_tk_set)))
+    pa_cache_key = ('PA', tuple(sorted((f.name, f.size) for f in uploaded_files)), _flt_key, pa_recency_w)
     cached = st.session_state.get('_pa_result')
     cached_key = st.session_state.get('_pa_key')
+    # Cache resolution: distinguish FRESH vs STALE.
+    #  - fresh = cached_key matches current pa_cache_key (filters + recency unchanged)
+    #  - stale = a previous result exists but filters/recency have changed
+    # Showing stale data with a banner (instead of wiping the UI) prevents the
+    # confusing "everything disappears when I tweak a filter" experience.
     pa_data = cached if (cached is not None and cached_key == pa_cache_key) else None
+    pa_is_stale = (pa_data is None) and (cached is not None)
+    if pa_is_stale:
+        pa_data = cached  # show old data with banner; user clicks Run to refresh
 
     col_run, col_info = st.columns([1, 3])
     with col_run:
         run_btn = st.button("🔬 Run Analysis", type="primary", use_container_width=True, key='pa_run')
     with col_info:
-        if pa_data is None:
-            st.caption(f"📁 {len(dates)} weekly CSVs → {len(dates)-1} forward-return windows")
+        if pa_is_stale:
+            st.warning("⚠️ Filters changed — results below are STALE. Click **Run Analysis** to refresh.")
+        elif pa_data is None:
+            _n_wk = len(pa_dates)
+            st.caption(f"📁 {_n_wk} weekly CSVs → {_n_wk - 1} forward-return windows"
+                       + (" (filtered)" if _filter_active else ""))
         else:
             st.caption(f"✅ Loaded ({pa_data['n_obs']:,} observations). Click to refresh.")
 
     if run_btn:
         prog = st.progress(0, text="Building pattern analysis...")
-        pa_data = _build_pattern_analysis(weekly_data, dates, prog)
+        pa_data = _build_pattern_analysis(pa_weekly, pa_dates, prog, recency_weeks=pa_recency_w)
         st.session_state['_pa_result'] = pa_data
         st.session_state['_pa_key'] = pa_cache_key
         prog.progress(1.0, text="Analysis complete!")
@@ -7567,21 +9032,80 @@ def render_pattern_analyser_tab(uploaded_files):
     def _build_pa_report(pa_data):
         import io
         buf = io.StringIO()
-        dr = pa_data.get('date_range', ('?', '?'))
-        buf.write(f"PATTERN ANALYSER REPORT\n")
-        buf.write(f"Period: {dr[0]} to {dr[1]} | Observations: {pa_data['n_obs']:,} | Weeks: {pa_data['n_weeks']}\n\n")
 
-        def _write_section(title, stats, extra_cols=None):
+        def _q(v):
+            """CSV-safe quote: wrap in double-quotes if value contains comma,
+            quote, or newline (RFC 4180). Doubles internal quotes."""
+            s = '' if v is None else str(v)
+            if any(c in s for c in (',', '"', '\n', '\r')):
+                return '"' + s.replace('"', '""') + '"'
+            return s
+
+        def _f(v, fmt='.3f'):
+            """Format float-or-None as string; empty for None/NaN."""
+            if v is None:
+                return ''
+            try:
+                if isinstance(v, float) and (v != v):  # NaN check
+                    return ''
+                return format(float(v), fmt)
+            except (TypeError, ValueError):
+                return ''
+
+        dr = pa_data.get('date_range', ('?', '?'))
+        _ua = pa_data.get('universe_avg', 0.0)
+        _rw = pa_data.get('recency_weeks', 8)
+        buf.write("PATTERN ANALYSER REPORT\n")
+        buf.write(f"Period: {dr[0]} to {dr[1]} | Observations: {pa_data['n_obs']:,} | "
+                  f"Weeks: {pa_data['n_weeks']} | Recency Window: {_rw}w | "
+                  f"Universe Avg Fwd Return: {_ua:+.3f}%\n")
+        # Filter context (read from session_state — best-effort)
+        try:
+            _fc = st.session_state.get('pa_flt_cat', []) or []
+            _fs = st.session_state.get('pa_flt_sect', []) or []
+            _ft_raw = (st.session_state.get('pa_flt_tk', '') or '').strip()
+            _filt_parts = []
+            if _fc:
+                _filt_parts.append(f"Categories=[{', '.join(_fc)}]")
+            if _fs:
+                _filt_parts.append(f"Sectors=[{', '.join(_fs)}]")
+            if _ft_raw:
+                _filt_parts.append("Tickers=[custom]")
+            buf.write(f"Active Filters: {' | '.join(_filt_parts) if _filt_parts else 'None (full universe)'}\n")
+        except Exception:
+            pass
+        buf.write("NOTE: p-values are NOT corrected for multiple comparisons. "
+                 "With ~50 simultaneous tests, expect 2–3 single-* findings by chance alone.\n\n")
+
+        def _write_section(title, stats):
             buf.write(f"=== {title} ===\n")
             if not stats:
                 buf.write("(no data)\n\n")
                 return
-            header = "Name,N,Avg_Return_%,Median_Return_%,Win_Rate_%"
-            if extra_cols:
-                header += ',' + ','.join(extra_cols)
-            buf.write(header + "\n")
+            buf.write(
+                "Name,N,Avg_Return_%,Median_Return_%,Win_Rate_%,Std_%,Sharpe,"
+                f"CI95_Lo_%,CI95_Hi_%,t_stat,p_value,Sig,"
+                f"Recent_{_rw}w_Avg_%,Older_Avg_%,Delta_pp,Trend\n"
+            )
             for s in stats:
-                line = f"{s['name']},{s['n']},{s['avg']:.3f},{s['med']:.3f},{s['wr']:.1f}"
+                line = (
+                    f"{_q(s.get('name'))},"
+                    f"{s.get('n', 0)},"
+                    f"{_f(s.get('avg'))},"
+                    f"{_f(s.get('med'))},"
+                    f"{_f(s.get('wr'), '.1f')},"
+                    f"{_f(s.get('std'))},"
+                    f"{_f(s.get('sharpe'), '.4f')},"
+                    f"{_f(s.get('ci_lo'))},"
+                    f"{_f(s.get('ci_hi'))},"
+                    f"{_f(s.get('t_stat'), '.2f')},"
+                    f"{_f(s.get('p_val'), '.4f')},"
+                    f"{_q(s.get('sig', '–'))},"
+                    f"{_f(s.get('avg_recent'))},"
+                    f"{_f(s.get('avg_older'))},"
+                    f"{_f(s.get('delta'))},"
+                    f"{_q(s.get('trend', '–'))}"
+                )
                 buf.write(line + "\n")
             buf.write("\n")
 
@@ -7595,14 +9119,56 @@ def render_pattern_analyser_tab(uploaded_files):
         _write_section("MONTH PERFORMANCE", pa_data.get('month_stats', []))
         _write_section("COMBO PERFORMANCE (pattern combinations)", pa_data.get('combo_stats', []))
 
-        # Multi-Factor Screens
+        # Multi-Factor Screens — now with Std + Sharpe
         screens = pa_data.get('screens', {})
         if screens:
             buf.write("=== MULTI-FACTOR SCREENS ===\n")
-            buf.write("Screen,N,Avg_Return_%,Median_Return_%,Win_Rate_%,Note\n")
+            buf.write("Screen,N,Avg_Return_%,Median_Return_%,Win_Rate_%,Std_%,Sharpe,Note\n")
             for sname, sd in sorted(screens.items(), key=lambda x: -x[1].get('avg', 0)):
-                note = "(too few)" if sd.get('few') else ""
-                buf.write(f"{sname},{sd['n']},{sd['avg']:.3f},{sd['med']:.3f},{sd['wr']:.1f},{note}\n")
+                _std = sd.get('std', 0.0) or 0.0
+                _sh = (sd.get('avg', 0.0) / _std) if _std > 1e-12 else 0.0
+                note = "too few (n<5)" if sd.get('few') else ""
+                buf.write(
+                    f"{_q(sname)},{sd.get('n', 0)},{_f(sd.get('avg'))},{_f(sd.get('med'))},"
+                    f"{_f(sd.get('wr'), '.1f')},{_f(_std)},{_f(_sh, '.4f')},{_q(note)}\n"
+                )
+            buf.write("\n")
+
+        # NEW: Live Pattern Enrichment (chi-squared)
+        pe = pa_data.get('pat_enrichment', [])
+        if pe:
+            buf.write("=== PATTERN ENRICHMENT (Live Chi-Squared, Top-Decile Returns) ===\n")
+            buf.write("Pattern,Enrichment_x,P_Top_Given_Pattern_%,P_Top_Given_NoPattern_%,N_With_Pattern,Chi2,p_value,Sig\n")
+            for e in pe:
+                _er = e.get('enrichment', 0.0)
+                _er_str = 'inf' if _er == float('inf') else _f(_er, '.3f')
+                buf.write(
+                    f"{_q(e.get('name'))},{_er_str},"
+                    f"{_f(e.get('p_top_with'), '.2f')},"
+                    f"{_f(e.get('p_top_without'), '.2f')},"
+                    f"{e.get('n_with', 0)},"
+                    f"{_f(e.get('chi2'), '.3f')},"
+                    f"{_f(e.get('p_val'), '.4f')},"
+                    f"{_q(e.get('sig', '–'))}\n"
+                )
+            buf.write("\n")
+
+        # NEW: Current Matchers per Screen (long-format)
+        matchers = pa_data.get('screen_matchers', {})
+        if matchers:
+            _ldate = pa_data.get('latest_date', '')
+            buf.write(f"=== CURRENT MATCHERS PER SCREEN (Latest CSV: {_ldate}) ===\n")
+            buf.write("Screen,Ticker,Master_Score,Rank\n")
+            for sname in sorted(matchers.keys()):
+                _df_m = matchers[sname]
+                if _df_m is None or len(_df_m) == 0:
+                    continue
+                for _, _row in _df_m.iterrows():
+                    buf.write(
+                        f"{_q(sname)},{_q(_row.get('ticker', ''))},"
+                        f"{_f(_row.get('ms'), '.2f')},"
+                        f"{int(_row.get('rk', 0)) if pd.notna(_row.get('rk')) else ''}\n"
+                    )
             buf.write("\n")
 
         # Pattern x State Matrix
@@ -7610,15 +9176,15 @@ def render_pattern_analyser_tab(uploaded_files):
         if psm:
             all_states = sorted({st for sd in psm.values() for st in sd})
             buf.write("=== PATTERN x STATE MATRIX (Avg Return %) ===\n")
-            buf.write("Pattern," + ",".join(f"{st}_Avg,{st}_WR,{st}_N" for st in all_states) + "\n")
+            buf.write("Pattern," + ",".join(f"{_q(st)}_Avg,{_q(st)}_WR,{_q(st)}_N" for st in all_states) + "\n")
             for pat in sorted(psm.keys()):
-                parts = [pat]
+                parts = [_q(pat)]
                 for st in all_states:
                     cell = psm[pat].get(st)
                     if cell:
-                        parts.append(f"{cell['avg']:.3f}")
-                        parts.append(f"{cell['wr']:.1f}")
-                        parts.append(str(cell['n']))
+                        parts.append(_f(cell.get('avg')))
+                        parts.append(_f(cell.get('wr'), '.1f'))
+                        parts.append(str(cell.get('n', 0)))
                     else:
                         parts.extend(['', '', ''])
                 buf.write(",".join(parts) + "\n")
@@ -7629,15 +9195,15 @@ def render_pattern_analyser_tab(uploaded_files):
         if csm:
             all_buckets = sorted({b for sd in csm.values() for b in sd})
             buf.write("=== CATEGORY x SCORE MATRIX (Avg Return %) ===\n")
-            buf.write("Category," + ",".join(f"{b}_Avg,{b}_WR,{b}_N" for b in all_buckets) + "\n")
+            buf.write("Category," + ",".join(f"{_q(b)}_Avg,{_q(b)}_WR,{_q(b)}_N" for b in all_buckets) + "\n")
             for cat in sorted(csm.keys()):
-                parts = [cat]
+                parts = [_q(cat)]
                 for b in all_buckets:
                     cell = csm[cat].get(b)
                     if cell:
-                        parts.append(f"{cell['avg']:.3f}")
-                        parts.append(f"{cell['wr']:.1f}")
-                        parts.append(str(cell['n']))
+                        parts.append(_f(cell.get('avg')))
+                        parts.append(_f(cell.get('wr'), '.1f'))
+                        parts.append(str(cell.get('n', 0)))
                     else:
                         parts.extend(['', '', ''])
                 buf.write(",".join(parts) + "\n")
@@ -7648,21 +9214,35 @@ def render_pattern_analyser_tab(uploaded_files):
         dna_c = pa_data.get('dna_criteria', {})
         if dna_b:
             buf.write("=== WINNER DNA SCORE BUCKETS ===\n")
-            buf.write(f"Thresholds: Top10%>={dna_c.get('q90',0):.1f}, Top25%>={dna_c.get('q75',0):.1f}, Median={dna_c.get('q50',0):.1f}\n")
+            buf.write(
+                f"Thresholds: Top10%>={dna_c.get('q90', 0):.1f}, "
+                f"Top25%>={dna_c.get('q75', 0):.1f}, "
+                f"Median={dna_c.get('q50', 0):.1f}, "
+                f"Mean={dna_c.get('mean', 0):.1f}, "
+                f"Std={dna_c.get('std', 0):.1f}\n"
+            )
             buf.write("Bucket,N,Avg_Return_%,Median_Return_%,Win_Rate_%\n")
             for label in ['Top 10%', 'Top 25%', '50-75%', '25-50%', 'Bottom 25%']:
                 d = dna_b.get(label)
                 if d:
-                    buf.write(f"{label},{d['n']},{d['avg']:.3f},{d['med']:.3f},{d['wr']:.1f}\n")
+                    buf.write(
+                        f"{_q(label)},{d.get('n', 0)},"
+                        f"{_f(d.get('avg'))},{_f(d.get('med'))},"
+                        f"{_f(d.get('wr'), '.1f')}\n"
+                    )
             buf.write("\n")
 
-        return buf.getvalue().encode('utf-8')
+        # UTF-8 BOM so Excel renders dashes/arrows correctly when opened directly.
+        return ('\ufeff' + buf.getvalue()).encode('utf-8')
 
     report_csv = _build_pa_report(pa_data)
+    # Filename includes latest data date so re-downloads don't overwrite.
+    _ld_safe = (pa_data.get('latest_date') or 'data').replace(':', '').replace(' ', '_')
+    _fn_filt = '_filtered' if _filter_active else ''
     st.download_button(
         label="📥 Download Full Pattern Report (CSV)",
         data=report_csv,
-        file_name="pattern_analyser_report.csv",
+        file_name=f"pattern_analyser_report_{_ld_safe}{_fn_filt}.csv",
         mime="text/csv",
         key='pa_dl_full',
     )
@@ -7690,9 +9270,13 @@ def render_pattern_analyser_tab(uploaded_files):
 
 # ---------- Pattern Analyser: data builder ----------
 
-def _build_pattern_analysis(weekly_data, dates, progress_bar):
-    """Build comprehensive pattern analysis from consecutive week pairs."""
+def _build_pattern_analysis(weekly_data, dates, progress_bar, recency_weeks=8):
+    """Build comprehensive pattern analysis from consecutive week pairs.
+    Includes statistical significance (t-test) and recency split.
+    Returns are stored as (fwd_return, pair_index) tuples for recency tracking.
+    """
     from collections import defaultdict
+    import math
 
     results = []
     pat_rets = defaultdict(list)
@@ -7734,7 +9318,11 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
                 continue
             fwd = (pr2 / pr1 - 1) * 100
             ms = float(row.get('master_score', 0)) if pd.notna(row.get('master_score')) else 0
-            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            # Skip rows with missing rank — the 9999 sentinel was polluting the
+            # '500+' rank bucket and dragging down DNA scores via rank_sc=0.
+            if not pd.notna(row.get('rank')):
+                continue
+            rk = int(row['rank'])
             state = str(row.get('market_state', '')).strip()
             tq = float(row.get('trend_quality', 0)) if pd.notna(row.get('trend_quality')) else 0
             mom = float(row.get('momentum_score', 0)) if pd.notna(row.get('momentum_score')) else 0
@@ -7745,7 +9333,10 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
             cat = str(row.get('category', '')).strip()
             sect = str(row.get('sector', '')).strip()
             pats_str = str(row.get('patterns', ''))
-            pats_list = [p.strip() for p in pats_str.split('|') if p.strip() and p.strip() != 'nan']
+            # Dedupe: a pattern repeated in the cell (e.g. "X|X|Y") was double-
+            # counting in pat_rets and producing phantom combo keys like "X + X + Y".
+            pats_list = sorted({p.strip() for p in pats_str.split('|')
+                                if p.strip() and p.strip().lower() != 'nan'})
             n_pats = len(pats_list)
 
             results.append(dict(
@@ -7755,93 +9346,149 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
             ))
 
             for p in pats_list:
-                pat_rets[p].append(fwd)
+                pat_rets[p].append((fwd, i))
                 if state:
-                    pat_state_rets[p][state].append(fwd)
+                    pat_state_rets[p][state].append((fwd, i))
 
             if n_pats >= 2:
-                combo_rets[' + '.join(sorted(pats_list)[:4])].append(fwd)
+                # pats_list is already sorted+deduped; full key (no truncation)
+                # so distinct setups don't collide.
+                combo_rets[' + '.join(pats_list)].append((fwd, i))
 
             if state:
-                state_rets[state].append(fwd)
+                state_rets[state].append((fwd, i))
 
             sb = '70+' if ms >= 70 else '60-70' if ms >= 60 else '50-60' if ms >= 50 else '40-50' if ms >= 40 else '0-40'
-            score_bucket_rets[sb].append(fwd)
+            score_bucket_rets[sb].append((fwd, i))
 
             rb = 'Top 10' if rk <= 10 else 'Top 50' if rk <= 50 else 'Top 100' if rk <= 100 else 'Top 500' if rk <= 500 else '500+'
-            rank_bucket_rets[rb].append(fwd)
+            rank_bucket_rets[rb].append((fwd, i))
 
             if cat:
-                cat_rets[cat].append(fwd)
-                cat_score_rets[cat][sb].append(fwd)
+                cat_rets[cat].append((fwd, i))
+                cat_score_rets[cat][sb].append((fwd, i))
             if sect:
-                sector_rets[sect].append(fwd)
-            month_rets[month_str].append(fwd)
+                sector_rets[sect].append((fwd, i))
+            month_rets[month_str].append((fwd, i))
 
             if prev_pats_map:
                 prev_set = set(pp.strip() for pp in prev_pats_map.get(tk, '').split('|')
                                if pp.strip() and pp.strip() != 'nan')
                 for np_name in (set(pats_list) - prev_set):
-                    new_pat_rets[np_name].append(fwd)
+                    new_pat_rets[np_name].append((fwd, i))
 
-    # Multi-factor screens
+    # ── Build engineered DataFrame from historical week-pairs ──
     rdf = pd.DataFrame(results) if results else pd.DataFrame()
-    screens = {}
-    if not rdf.empty:
-        def _scr(name, mask):
-            sub = rdf[mask]
-            n = len(sub)
-            if n >= 5:
-                screens[name] = dict(n=n, avg=sub['fwd'].mean(), med=sub['fwd'].median(),
-                                     wr=(sub['fwd'] > 0).mean() * 100)
+    universe_avg = float(rdf['fwd'].mean()) if not rdf.empty else 0.0
+
+    # ── Build LATEST-week engineered frame for "current matchers" lookup. ──
+    # Schema mirrors `rdf` so each screen lambda can run on either frame.
+    latest_rdf = pd.DataFrame()
+    if dates:
+        _ld = weekly_data[dates[-1]]
+
+        def _ld_col(name, default, numeric=False):
+            if name in _ld.columns:
+                s = _ld[name]
             else:
-                screens[name] = dict(n=n, avg=0, med=0, wr=0, few=True)
+                s = pd.Series([default] * len(_ld), index=_ld.index)
+            if numeric:
+                return pd.to_numeric(s, errors='coerce').fillna(default)
+            return s.astype(str).str.strip()
 
-        _scr('Capitulation', rdf['pats_str'].str.contains('CAPITULATION', na=False))
-        _scr('High Score + PULLBACK state', (rdf['ms'] >= 70) & (rdf['state'] == 'PULLBACK'))
-        _scr('High Score + BOUNCE state', (rdf['ms'] >= 60) & (rdf['state'] == 'BOUNCE'))
-        _scr('Quality Leader + Score≥65', rdf['pats_str'].str.contains('QUALITY LEADER', na=False) & (rdf['ms'] >= 65))
-        _scr('GARP + Score≥65', rdf['pats_str'].str.contains('GARP', na=False) & (rdf['ms'] >= 65))
-        _scr('Stealth + Rank≤100', rdf['pats_str'].str.contains('STEALTH', na=False) & (rdf['rk'] <= 100))
-        _scr('Near High + Breakout≥70', (rdf['fh'] > -10) & (rdf['brk'] >= 70))
-        _scr('High Score + Near High', (rdf['ms'] >= 70) & (rdf['fh'] > -10))
-        _scr('Top 50 + TQ≥70', (rdf['rk'] <= 50) & (rdf['tq'] >= 70))
-        _scr('Cat+Mkt Leader + Institutional',
-             rdf['pats_str'].str.contains('CAT LEADER', na=False) &
-             rdf['pats_str'].str.contains('MARKET LEADER', na=False) &
-             rdf['pats_str'].str.contains('INSTITUTIONAL', na=False) &
-             ~rdf['pats_str'].str.contains('TSUNAMI', na=False))
-        _scr('Quality Leader + GARP',
-             rdf['pats_str'].str.contains('QUALITY LEADER', na=False) &
-             rdf['pats_str'].str.contains('GARP', na=False))
-        _scr('BOUNCE + Score≥50', (rdf['state'] == 'BOUNCE') & (rdf['ms'] >= 50))
-        _scr('Vol Explosion + Mom≥60',
-             rdf['pats_str'].str.contains('VOL EXPLOSION', na=False) & (rdf['mom'] >= 60))
-        _scr('Golden Cross + TQ≥70',
-             rdf['pats_str'].str.contains('GOLDEN CROSS', na=False) & (rdf['tq'] >= 70))
-        _scr('Distribution (AVOID)', rdf['pats_str'].str.contains('DISTRIBUTION', na=False))
-        _scr('Hidden Gem (AVOID)', rdf['pats_str'].str.contains('HIDDEN GEM', na=False))
-        _scr('Mega Cap + Score≥60', (rdf['cat'] == 'Mega Cap') & (rdf['ms'] >= 60))
-        _scr('Large Cap + Near High + Institutional',
-             (rdf['cat'] == 'Large Cap') & (rdf['fh'] > -10) &
-             rdf['pats_str'].str.contains('INSTITUTIONAL', na=False) &
-             ~rdf['pats_str'].str.contains('TSUNAMI', na=False))
+        latest_rdf = pd.DataFrame({
+            'ticker':   _ld_col('ticker', ''),
+            'ms':       _ld_col('master_score', 0, numeric=True),
+            'rk':       _ld_col('rank', 9999, numeric=True),
+            'state':    _ld_col('market_state', ''),
+            'tq':       _ld_col('trend_quality', 0, numeric=True),
+            'mom':      _ld_col('momentum_score', 0, numeric=True),
+            'brk':      _ld_col('breakout_score', 0, numeric=True),
+            'fh':       _ld_col('from_high_pct', -99, numeric=True),
+            'pos':      _ld_col('position_score', 0, numeric=True),
+            'vol':      _ld_col('volume_score', 0, numeric=True),
+            'cat':      _ld_col('category', ''),
+            'pats_str': _ld_col('patterns', ''),
+        })
 
-        # ── Winner DNA screens ──
-        _scr('🧬 DNA: Momentum Path',
-             (rdf['ms'] >= 50) & (rdf['tq'] >= 50) & (rdf['brk'] >= 40) & (rdf['pos'] >= 40) &
-             (rdf['rk'] <= 800) & (rdf['fh'] > -25) &
-             rdf['state'].isin(['UPTREND', 'STRONG_UPTREND', 'PULLBACK']) &
-             rdf['pats_str'].str.contains('CAT LEADER|MARKET LEADER|LIQUID LEADER|52W HIGH APPROACH|PREMIUM MOMENTUM|RUNAWAY GAP', na=False, regex=True) &
-             ~rdf['pats_str'].str.contains('HIDDEN GEM', na=False) &
-             ~rdf['cat'].str.contains('Micro', na=False))
-        _scr('🧬 DNA: Contrarian Path',
-             (rdf['state'] == 'DOWNTREND') &
-             (rdf['rk'] <= 1000) &
-             (rdf['fh'] >= -40) & (rdf['fh'] <= -15) &
-             rdf['pats_str'].str.contains('VOL EXPLOSION|RANGE COMPRESS|CAPITULATION|PULLBACK SUPPORT', na=False, regex=True) &
-             ~rdf['pats_str'].str.contains('HIDDEN GEM', na=False) &
-             ~rdf['cat'].str.contains('Micro', na=False))
+    # ── Screen specs as (name, mask_fn). Same lambda runs against historical
+    #    rdf (for stats) AND latest_rdf (for current matcher tickers). ──
+    SCREEN_SPECS = [
+        ('Capitulation', lambda d: d['pats_str'].str.contains('CAPITULATION', na=False)),
+        ('High Score + PULLBACK state', lambda d: (d['ms'] >= 70) & (d['state'] == 'PULLBACK')),
+        ('High Score + BOUNCE state', lambda d: (d['ms'] >= 60) & (d['state'] == 'BOUNCE')),
+        ('Quality Leader + Score≥65', lambda d: d['pats_str'].str.contains('QUALITY LEADER', na=False) & (d['ms'] >= 65)),
+        ('GARP + Score≥65', lambda d: d['pats_str'].str.contains('GARP', na=False) & (d['ms'] >= 65)),
+        ('Stealth + Rank≤100', lambda d: d['pats_str'].str.contains('STEALTH', na=False) & (d['rk'] <= 100)),
+        ('Near High + Breakout≥70', lambda d: (d['fh'] > -10) & (d['brk'] >= 70)),
+        ('High Score + Near High', lambda d: (d['ms'] >= 70) & (d['fh'] > -10)),
+        ('Top 50 + TQ≥70', lambda d: (d['rk'] <= 50) & (d['tq'] >= 70)),
+        ('Cat+Mkt Leader + Institutional', lambda d:
+            d['pats_str'].str.contains('CAT LEADER', na=False) &
+            d['pats_str'].str.contains('MARKET LEADER', na=False) &
+            d['pats_str'].str.contains('INSTITUTIONAL', na=False) &
+            ~d['pats_str'].str.contains('TSUNAMI', na=False)),
+        ('Quality Leader + GARP', lambda d:
+            d['pats_str'].str.contains('QUALITY LEADER', na=False) &
+            d['pats_str'].str.contains('GARP', na=False)),
+        ('BOUNCE + Score≥50', lambda d: (d['state'] == 'BOUNCE') & (d['ms'] >= 50)),
+        ('Vol Explosion + Mom≥60', lambda d:
+            d['pats_str'].str.contains('VOL EXPLOSION', na=False) & (d['mom'] >= 60)),
+        ('Golden Cross + TQ≥70', lambda d:
+            d['pats_str'].str.contains('GOLDEN CROSS', na=False) & (d['tq'] >= 70)),
+        ('Distribution (AVOID)', lambda d: d['pats_str'].str.contains('DISTRIBUTION', na=False)),
+        ('Hidden Gem (AVOID)', lambda d: d['pats_str'].str.contains('HIDDEN GEM', na=False)),
+        ('Mega Cap + Score≥60', lambda d: (d['cat'] == 'Mega Cap') & (d['ms'] >= 60)),
+        ('Large Cap + Near High + Institutional', lambda d:
+            (d['cat'] == 'Large Cap') & (d['fh'] > -10) &
+            d['pats_str'].str.contains('INSTITUTIONAL', na=False) &
+            ~d['pats_str'].str.contains('TSUNAMI', na=False)),
+        ('🧬 DNA: Momentum Path', lambda d:
+            (d['ms'] >= 50) & (d['tq'] >= 50) & (d['brk'] >= 40) & (d['pos'] >= 40) &
+            (d['rk'] <= 800) & (d['fh'] > -25) &
+            d['state'].isin(['UPTREND', 'STRONG_UPTREND', 'PULLBACK']) &
+            d['pats_str'].str.contains('CAT LEADER|MARKET LEADER|LIQUID LEADER|52W HIGH APPROACH|PREMIUM MOMENTUM|RUNAWAY GAP', na=False, regex=True) &
+            ~d['pats_str'].str.contains('HIDDEN GEM', na=False) &
+            (d['cat'] != 'Micro Cap')),
+        ('🧬 DNA: Contrarian Path', lambda d:
+            (d['state'] == 'DOWNTREND') &
+            (d['rk'] <= 1000) &
+            (d['fh'] >= -40) & (d['fh'] <= -15) &
+            d['pats_str'].str.contains('VOL EXPLOSION|RANGE COMPRESS|CAPITULATION|PULLBACK SUPPORT', na=False, regex=True) &
+            ~d['pats_str'].str.contains('HIDDEN GEM', na=False) &
+            (d['cat'] != 'Micro Cap')),
+    ]
+
+    screens = {}
+    screen_matchers = {}
+    if not rdf.empty:
+        for _name, _mfn in SCREEN_SPECS:
+            try:
+                _hmask = _mfn(rdf)
+            except Exception:
+                _hmask = pd.Series(False, index=rdf.index)
+            _sub = rdf[_hmask]
+            _n = len(_sub)
+            if _n >= 5:
+                _r = _sub['fwd']
+                screens[_name] = dict(
+                    n=_n, avg=float(_r.mean()), med=float(_r.median()),
+                    wr=float((_r > 0).mean() * 100),
+                    std=float(_r.std(ddof=1)) if _n > 1 else 0.0,
+                )
+            else:
+                screens[_name] = dict(n=_n, avg=0.0, med=0.0, wr=0.0, std=0.0, few=True)
+            # Current matchers from latest week (top 50 by master_score)
+            if not latest_rdf.empty:
+                try:
+                    _cmask = _mfn(latest_rdf)
+                    _m = latest_rdf.loc[_cmask, ['ticker', 'ms', 'rk']].copy()
+                    _m = _m.sort_values('ms', ascending=False).head(50).reset_index(drop=True)
+                    screen_matchers[_name] = _m
+                except Exception:
+                    screen_matchers[_name] = pd.DataFrame(columns=['ticker', 'ms', 'rk'])
+            else:
+                screen_matchers[_name] = pd.DataFrame(columns=['ticker', 'ms', 'rk'])
 
     # ── Winner DNA Score computation ──
     dna_buckets = {}
@@ -7862,7 +9509,7 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
             rdf.loc[rdf['pats_str'].str.contains(pat, na=False), 'dna_score'] += bonus
         # Penalties
         rdf.loc[rdf['pats_str'].str.contains('HIDDEN GEM', na=False), 'dna_score'] -= 10
-        rdf.loc[rdf['cat'].str.contains('Micro', na=False), 'dna_score'] -= 8
+        rdf.loc[rdf['cat'] == 'Micro Cap', 'dna_score'] -= 8
 
         # DNA decile buckets
         q90 = rdf['dna_score'].quantile(0.9)
@@ -7889,21 +9536,116 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
         )
 
     def _summarize(rets_dict, min_n=10):
+        """Summarize returns with significance testing, recency split, CIs, and Sharpe.
+        rets_dict values are lists of (fwd_return, pair_index) tuples.
+        t-test: H0 = mean return is 0. Manual implementation (no scipy needed).
+        """
+        recent_cutoff = max(0, n_pairs - recency_weeks)  # pair indices >= this are "recent"
         out = []
-        for key, rets in rets_dict.items():
-            if len(rets) >= min_n:
+        for key, pairs in rets_dict.items():
+            if len(pairs) >= min_n:
+                rets = [r for r, _ in pairs]
+                n = len(rets)
+                avg = float(np.mean(rets))
+                std = float(np.std(rets, ddof=1)) if n > 1 else 0.0
+                med = float(np.median(rets))
+                wr = float(sum(1 for r in rets if r > 0) / n * 100)
+
+                # 95% confidence interval on the mean (normal approx — valid for n>=10)
+                ci_h = 1.96 * std / math.sqrt(n) if n > 1 else 0.0
+                ci_lo = avg - ci_h
+                ci_hi = avg + ci_h
+                # Per-period Sharpe (unannualised). Avg / std.
+                sharpe = (avg / std) if std > 1e-12 else 0.0
+
+                # ── t-test (one-sample, H0: mean=0) ──
+                if n >= 3 and std > 1e-12:
+                    t_stat = avg / (std / math.sqrt(n))
+                    # Two-tailed p-value via Wilson-Hilferty normal approx
+                    df_t = n - 1
+                    x = abs(t_stat)
+                    _t2 = x * x
+                    _z = x * (1.0 - 1.0 / (4.0 * df_t)) / math.sqrt(1.0 + _t2 / (2.0 * df_t))
+                    p_val = 2.0 * (1.0 - 0.5 * (1.0 + math.erf(_z / math.sqrt(2.0))))
+                    p_val = max(0.0, min(1.0, p_val))
+                else:
+                    t_stat = 0.0
+                    p_val = 1.0
+
+                sig = '***' if p_val < 0.01 else '**' if p_val < 0.05 else '*' if p_val < 0.10 else '–'
+
+                # ── Recency split ──
+                recent_rets = [r for r, idx in pairs if idx >= recent_cutoff]
+                older_rets = [r for r, idx in pairs if idx < recent_cutoff]
+                avg_recent = float(np.mean(recent_rets)) if len(recent_rets) >= 3 else None
+                avg_older = float(np.mean(older_rets)) if len(older_rets) >= 3 else None
+                if avg_recent is not None and avg_older is not None:
+                    delta = avg_recent - avg_older
+                    trend = '↑' if delta > 0.3 else '↓' if delta < -0.3 else '→'
+                else:
+                    delta = None
+                    trend = '–'
+
                 out.append(dict(
-                    name=key, n=len(rets), avg=float(np.mean(rets)),
-                    med=float(np.median(rets)),
-                    wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
+                    name=key, n=n, avg=avg, med=med, wr=wr, std=std,
+                    ci_lo=ci_lo, ci_hi=ci_hi, sharpe=sharpe,
+                    t_stat=round(t_stat, 2), p_val=round(p_val, 4), sig=sig,
+                    avg_recent=avg_recent, avg_older=avg_older,
+                    delta=delta, trend=trend,
                 ))
         return sorted(out, key=lambda x: -x['avg'])
+
+    # ── Live Pattern Enrichment via chi-squared on top decile of fwd return ──
+    # For each pattern, compares its rate of appearance among top-decile-return
+    # observations vs the rest. Replaces the previously hard-coded enrichment
+    # table in the Winner DNA sub-tab so it evolves with the user's data.
+    pat_enrichment = []
+    if not rdf.empty and len(rdf) >= 100:
+        top_thr = float(rdf['fwd'].quantile(0.9))
+        n_total = len(rdf)
+        n_top = int((rdf['fwd'] >= top_thr).sum())
+        n_rest = n_total - n_top
+        if n_top >= 10 and n_rest >= 10:
+            for _p, _pairs in pat_rets.items():
+                _n_with = len(_pairs)
+                if _n_with < 10:
+                    continue
+                _a = sum(1 for r, _ in _pairs if r >= top_thr)   # pattern + top
+                _b = _n_with - _a                                # pattern + rest
+                _c = n_top - _a                                  # no pat + top
+                _d = n_rest - _b                                 # no pat + rest
+                if _c < 0 or _d < 0:
+                    continue
+                _p_top_with = _a / _n_with
+                _p_top_without = _c / (_c + _d) if (_c + _d) > 0 else 0.0
+                if _p_top_without > 1e-12:
+                    _enrich = _p_top_with / _p_top_without
+                else:
+                    _enrich = float('inf') if _p_top_with > 0 else 0.0
+                _denom = (_a + _b) * (_c + _d) * (_a + _c) * (_b + _d)
+                if _denom > 0:
+                    _chi2 = n_total * (_a * _d - _b * _c) ** 2 / _denom
+                    _pv = math.erfc(math.sqrt(_chi2 / 2.0))   # df=1 chi-sq survival
+                else:
+                    _chi2 = 0.0
+                    _pv = 1.0
+                _sig_e = '***' if _pv < 0.01 else '**' if _pv < 0.05 else '*' if _pv < 0.10 else '–'
+                pat_enrichment.append(dict(
+                    name=_p, enrichment=_enrich, n_with=_n_with,
+                    p_top_with=_p_top_with * 100, p_top_without=_p_top_without * 100,
+                    chi2=_chi2, p_val=_pv, sig=_sig_e,
+                ))
+            # Sort by enrichment desc; treat inf as very large
+            pat_enrichment.sort(
+                key=lambda x: -(1e9 if x['enrichment'] == float('inf') else x['enrichment'])
+            )
 
     pat_state_matrix = {}
     for pat, sd in pat_state_rets.items():
         pat_state_matrix[pat] = {}
-        for st_name, rets in sd.items():
-            if len(rets) >= 5:
+        for st_name, pairs in sd.items():
+            if len(pairs) >= 5:
+                rets = [r for r, _ in pairs]
                 pat_state_matrix[pat][st_name] = dict(
                     n=len(rets), avg=float(np.mean(rets)),
                     wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
@@ -7912,8 +9654,9 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
     cat_score_matrix = {}
     for cat, sd in cat_score_rets.items():
         cat_score_matrix[cat] = {}
-        for sl, rets in sd.items():
-            if len(rets) >= 10:
+        for sl, pairs in sd.items():
+            if len(pairs) >= 10:
+                rets = [r for r, _ in pairs]
                 cat_score_matrix[cat][sl] = dict(
                     n=len(rets), avg=float(np.mean(rets)),
                     wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
@@ -7921,7 +9664,10 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
 
     return dict(
         n_obs=len(results), n_weeks=len(dates) - 1,
+        recency_weeks=recency_weeks,
         date_range=(dates[0].strftime('%Y-%m-%d'), dates[-1].strftime('%Y-%m-%d')),
+        latest_date=dates[-1].strftime('%Y-%m-%d') if dates else '',
+        universe_avg=universe_avg,
         pat_stats=_summarize(pat_rets, 10),
         combo_stats=_summarize(combo_rets, 10),
         state_stats=_summarize(state_rets, 20),
@@ -7931,11 +9677,13 @@ def _build_pattern_analysis(weekly_data, dates, progress_bar):
         sector_stats=_summarize(sector_rets, 50),
         month_stats=_summarize(month_rets, 20),
         screens=screens,
+        screen_matchers=screen_matchers,
         flip_stats=_summarize(new_pat_rets, 10),
         pat_state_matrix=pat_state_matrix,
         cat_score_matrix=cat_score_matrix,
         dna_buckets=dna_buckets,
         dna_criteria=dna_criteria,
+        pat_enrichment=pat_enrichment,
     )
 
 
@@ -7984,14 +9732,41 @@ def _render_pa_pattern_performance(pa_data):
     rows_html = ""
     for i, s in enumerate(pat_stats):
         bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        # Significance badge
+        sig = s.get('sig', '–')
+        sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+        # Recency columns
+        avg_r = s.get('avg_recent')
+        avg_o = s.get('avg_older')
+        trend = s.get('trend', '–')
+        trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
+        recent_str = f"{avg_r:+.2f}%" if avg_r is not None else "–"
+        older_str = f"{avg_o:+.2f}%" if avg_o is not None else "–"
+        recent_color = _pa_color(avg_r) if avg_r is not None else '#484f58'
+        older_color = _pa_color(avg_o) if avg_o is not None else '#484f58'
+        # Δ (recent − older) — quantitative trend
+        delta = s.get('delta')
+        delta_str = f"{delta:+.2f}pp" if delta is not None else "–"
+        delta_color = ('#3fb950' if delta > 0.3 else '#ff7b72' if delta < -0.3 else '#8b949e') if delta is not None else '#484f58'
+        # 95% CI on the mean (sub-text under Avg)
+        ci_lo = s.get('ci_lo'); ci_hi = s.get('ci_hi')
+        ci_str = (f'<br><span style="font-size:0.68rem;color:#8b949e;">'
+                  f'[{ci_lo:+.2f}, {ci_hi:+.2f}]</span>') if ci_lo is not None and ci_hi is not None else ''
+        # N color
+        n_color = '#3fb950' if s['n'] >= 50 else '#d29922' if s['n'] >= 20 else '#ff7b72'
         rows_html += (
             f'<tr style="background:{bg};">'
             f'<td style="padding:6px 10px;color:#c9d1d9;">{i+1}</td>'
             f'<td style="padding:6px 10px;color:#e6edf3;">{s["name"]}</td>'
-            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
-            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{n_color};">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%{ci_str}</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["med"])};">{s["med"]:+.2f}%</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};font-weight:600;">{s["wr"]:.1f}%</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{sig_color};font-weight:700;">{sig}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{recent_color};">{recent_str}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{older_color};">{older_str}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{delta_color};font-weight:600;">{delta_str}</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{trend_color};font-size:1rem;">{trend}</td>'
             f'</tr>'
         )
     st.markdown(f"""
@@ -8001,10 +9776,29 @@ def _render_pa_pattern_performance(pa_data):
         <th style="padding:8px 10px;text-align:left;">#</th>
         <th style="padding:8px 10px;text-align:left;">Pattern</th>
         <th style="padding:8px 10px;text-align:right;">N</th>
-        <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+        <th style="padding:8px 10px;text-align:right;">Avg [95% CI]</th>
         <th style="padding:8px 10px;text-align:right;">Med Return</th>
         <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+        <th style="padding:8px 10px;text-align:center;">Sig</th>
+        <th style="padding:8px 10px;text-align:right;">Recent {pa_data.get('recency_weeks', 8)}w</th>
+        <th style="padding:8px 10px;text-align:right;">Older</th>
+        <th style="padding:8px 10px;text-align:right;">Δ</th>
+        <th style="padding:8px 10px;text-align:center;">Trend</th>
     </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="background:#161b22;border-radius:8px;padding:10px;margin-top:8px;border:1px solid #30363d;">
+        <div style="font-size:0.75rem;color:#8b949e;">
+            <b>Sig:</b> *** p&lt;0.01 &nbsp; ** p&lt;0.05 &nbsp; * p&lt;0.10 &nbsp; – not significant &nbsp;&nbsp;
+            <b>Δ:</b> Recent−Older in percentage points &nbsp;&nbsp;
+            <b>Trend:</b> ↑ improving &nbsp; ↓ deteriorating &nbsp; → stable &nbsp;&nbsp;
+            <b>N:</b> <span style="color:#3fb950;">≥50</span> /
+            <span style="color:#d29922;">20-49</span> /
+            <span style="color:#ff7b72;">&lt;20</span>
+            <br><b>Universe baseline:</b> <span style="color:#58a6ff;font-weight:600;">{pa_data.get('universe_avg', 0):+.2f}%</span> avg fwd return.
+            ⚠️ p-values are <i>uncorrected</i> for multiple comparisons — with ~50 tests, expect 2–3 single-* findings by chance alone.
+        </div>
+    </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
@@ -8026,6 +9820,12 @@ def _render_pa_pattern_performance(pa_data):
             yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
         )
         fig.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        _ua = pa_data.get('universe_avg', 0.0)
+        if _ua:
+            fig.add_hline(y=_ua, line_dash='dash', line_color='#58a6ff',
+                          annotation_text=f"Universe avg {_ua:+.2f}%",
+                          annotation_position="top right",
+                          annotation_font_color='#58a6ff', annotation_font_size=10)
         st.plotly_chart(fig, use_container_width=True, key='pa_state_chart')
 
     st.markdown("#### 📅 Monthly Market Regime")
@@ -8045,6 +9845,12 @@ def _render_pa_pattern_performance(pa_data):
             yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
         )
         fig2.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        _ua2 = pa_data.get('universe_avg', 0.0)
+        if _ua2:
+            fig2.add_hline(y=_ua2, line_dash='dash', line_color='#58a6ff',
+                           annotation_text=f"Universe avg {_ua2:+.2f}%",
+                           annotation_position="top right",
+                           annotation_font_color='#58a6ff', annotation_font_size=10)
         st.plotly_chart(fig2, use_container_width=True, key='pa_month_chart')
 
 
@@ -8106,6 +9912,22 @@ def _render_pa_multifactor_screens(pa_data):
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Current matchers (latest CSV) per screen ──
+    matchers = pa_data.get('screen_matchers', {})
+    if matchers:
+        _ldate = pa_data.get('latest_date', '')
+        st.markdown(f"##### 📍 Current Matchers (Latest CSV: `{_ldate}`)")
+        st.caption("Tickers from the most recent week that satisfy each screen — top 50 by Master Score.")
+        for _name, _ in sorted_screens:
+            _df_m = matchers.get(_name)
+            if _df_m is None or len(_df_m) == 0:
+                continue
+            with st.expander(f"{_name} — {len(_df_m)} ticker{'s' if len(_df_m) != 1 else ''}"):
+                _disp = _df_m.rename(columns={'ticker': 'Ticker', 'ms': 'Score', 'rk': 'Rank'}).copy()
+                _disp['Score'] = _disp['Score'].round(1)
+                _disp['Rank'] = _disp['Rank'].astype(int)
+                st.dataframe(_disp, use_container_width=True, hide_index=True)
+
 
 def _render_pa_pattern_flips(pa_data):
     """Newly-appeared pattern performance."""
@@ -8125,14 +9947,21 @@ def _render_pa_pattern_flips(pa_data):
     for i, s in enumerate(flip_stats):
         bg = '#161b22' if i % 2 == 0 else '#0d1117'
         ind = "🟢" if s['avg'] >= 0.5 else "🔵" if s['avg'] >= 0 else "🟡" if s['avg'] >= -0.5 else "🔴"
+        sig = s.get('sig', '–')
+        sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+        trend = s.get('trend', '–')
+        trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
+        n_color = '#3fb950' if s['n'] >= 50 else '#d29922' if s['n'] >= 20 else '#ff7b72'
         rows_html += (
             f'<tr style="background:{bg};">'
             f'<td style="padding:6px 10px;color:#c9d1d9;">{ind}</td>'
             f'<td style="padding:6px 10px;color:#e6edf3;">NEW {s["name"]}</td>'
-            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{n_color};">{s["n"]:,}</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["med"])};">{s["med"]:+.2f}%</td>'
             f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};font-weight:600;">{s["wr"]:.1f}%</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{sig_color};font-weight:700;">{sig}</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{trend_color};font-size:1rem;">{trend}</td>'
             f'</tr>'
         )
     st.markdown(f"""
@@ -8145,6 +9974,8 @@ def _render_pa_pattern_flips(pa_data):
         <th style="padding:8px 10px;text-align:right;">Avg Return</th>
         <th style="padding:8px 10px;text-align:right;">Med Return</th>
         <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+        <th style="padding:8px 10px;text-align:center;">Sig</th>
+        <th style="padding:8px 10px;text-align:center;">Trend</th>
     </tr></thead><tbody>{rows_html}</tbody></table></div>
     """, unsafe_allow_html=True)
 
@@ -8161,8 +9992,9 @@ def _render_pa_pattern_state_matrix(pa_data):
     all_states = set()
     for pd_dict in matrix.values():
         all_states.update(pd_dict.keys())
-    state_order = ['BOUNCE', 'STRONG_DOWNTREND', 'DOWNTREND', 'PULLBACK',
-                   'STRONG_UPTREND', 'SIDEWAYS', 'UPTREND', 'ROTATION']
+    # Semantic order: bear → neutral → bull. Reads naturally left-to-right.
+    state_order = ['STRONG_DOWNTREND', 'DOWNTREND', 'BOUNCE', 'PULLBACK',
+                   'SIDEWAYS', 'ROTATION', 'UPTREND', 'STRONG_UPTREND']
     states = [s for s in state_order if s in all_states]
 
     pat_overall = {s['name']: s['avg'] for s in pa_data.get('pat_stats', [])}
@@ -8218,12 +10050,22 @@ def _render_pa_combo_explorer(pa_data):
         rows_html = ""
         for i, s in enumerate(data):
             bg = '#161b22' if i % 2 == 0 else '#0d1117'
+            sig = s.get('sig', '–')
+            sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+            trend = s.get('trend', '–')
+            trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
+            n_color = '#3fb950' if s['n'] >= 50 else '#d29922' if s['n'] >= 20 else '#ff7b72'
+            sharpe = s.get('sharpe', 0.0) or 0.0
+            sh_color = '#3fb950' if sharpe >= 0.20 else '#58a6ff' if sharpe >= 0.10 else '#d29922' if sharpe >= 0 else '#ff7b72'
             rows_html += (
-                f'<tr style="background:{bg};">'
-                f'<td style="padding:6px 10px;color:#e6edf3;max-width:400px;overflow:hidden;text-overflow:ellipsis;">{s["name"]}</td>'
-                f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]}</td>'
+                f'<tr style="background:{bg};" title="{s["name"]}">'
+                f'<td style="padding:6px 10px;color:#e6edf3;max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{s["name"]}</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:{n_color};">{s["n"]}</td>'
                 f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:{sh_color};font-weight:600;">{sharpe:+.2f}</td>'
                 f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};">{s["wr"]:.1f}%</td>'
+                f'<td style="padding:6px 10px;text-align:center;color:{sig_color};font-weight:700;">{sig}</td>'
+                f'<td style="padding:6px 10px;text-align:center;color:{trend_color};font-size:1rem;">{trend}</td>'
                 f'</tr>'
             )
         st.markdown(f"""
@@ -8233,12 +10075,22 @@ def _render_pa_combo_explorer(pa_data):
             <th style="padding:8px 10px;text-align:left;">Pattern Combo</th>
             <th style="padding:8px 10px;text-align:right;">N</th>
             <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+            <th style="padding:8px 10px;text-align:right;" title="Avg / Std (per-week)">Sharpe</th>
             <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+            <th style="padding:8px 10px;text-align:center;">Sig</th>
+            <th style="padding:8px 10px;text-align:center;">Trend</th>
         </tr></thead><tbody>{rows_html}</tbody></table></div>
         """, unsafe_allow_html=True)
 
-    _combo_table("🟢 Top Positive Combos", [c for c in combo_stats if c['avg'] >= 0][:20])
+    _combo_table("🟢 Top Positive Combos (by Avg)", [c for c in combo_stats if c['avg'] >= 0][:20])
+    _combo_table(
+        "⚡ Top Risk-Adjusted Combos (by Sharpe)",
+        sorted([c for c in combo_stats if c.get('sharpe', 0) > 0],
+               key=lambda x: -x.get('sharpe', 0))[:15],
+    )
     _combo_table("🔴 Worst Combos (AVOID)", list(reversed([c for c in combo_stats if c['avg'] < 0]))[:10])
+    st.caption("⚡ **Sharpe** = avg / std (per week). Higher = more consistent edge. "
+               "Avg-sort favors lottery tickets; Sharpe-sort favors steady winners.")
 
 
 def _render_pa_category_sector(pa_data):
@@ -8263,6 +10115,12 @@ def _render_pa_category_sector(pa_data):
             yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
         )
         fig.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        _uacat = pa_data.get('universe_avg', 0.0)
+        if _uacat:
+            fig.add_hline(y=_uacat, line_dash='dash', line_color='#58a6ff',
+                          annotation_text=f"Universe avg {_uacat:+.2f}%",
+                          annotation_position="top right",
+                          annotation_font_color='#58a6ff', annotation_font_size=10)
         st.plotly_chart(fig, use_container_width=True, key='pa_cat_chart')
 
     cat_score_matrix = pa_data.get('cat_score_matrix', {})
@@ -8315,6 +10173,12 @@ def _render_pa_category_sector(pa_data):
             yaxis=dict(autorange='reversed'),
         )
         fig2.add_vline(x=0, line_dash='dot', line_color='#484f58')
+        _uasec = pa_data.get('universe_avg', 0.0)
+        if _uasec:
+            fig2.add_vline(x=_uasec, line_dash='dash', line_color='#58a6ff',
+                           annotation_text=f"Universe avg {_uasec:+.2f}%",
+                           annotation_position="top",
+                           annotation_font_color='#58a6ff', annotation_font_size=10)
         st.plotly_chart(fig2, use_container_width=True, key='pa_sector_chart')
 
     st.markdown("---")
@@ -8324,11 +10188,17 @@ def _render_pa_category_sector(pa_data):
         for s in sorted(pa_data.get('score_stats', []),
                         key=lambda x: ['70+', '60-70', '50-60', '40-50', '0-40'].index(x['name'])
                         if x['name'] in ['70+', '60-70', '50-60', '40-50', '0-40'] else 99):
+            sig = s.get('sig', '–')
+            sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+            trend = s.get('trend', '–')
+            trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #21262d;">'
                 f'<span style="color:#e6edf3;">Score {s["name"]}</span>'
                 f'<span><span style="color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</span>'
                 f' <span style="color:{_pa_wr_color(s["wr"])};">WR:{s["wr"]:.0f}%</span>'
+                f' <span style="color:{sig_color};font-weight:700;">{sig}</span>'
+                f' <span style="color:{trend_color};">{trend}</span>'
                 f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
                 unsafe_allow_html=True,
             )
@@ -8337,11 +10207,17 @@ def _render_pa_category_sector(pa_data):
         for s in sorted(pa_data.get('rank_stats', []),
                         key=lambda x: ['Top 10', 'Top 50', 'Top 100', 'Top 500', '500+'].index(x['name'])
                         if x['name'] in ['Top 10', 'Top 50', 'Top 100', 'Top 500', '500+'] else 99):
+            sig = s.get('sig', '–')
+            sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+            trend = s.get('trend', '–')
+            trend_color = '#3fb950' if trend == '↑' else '#ff7b72' if trend == '↓' else '#8b949e'
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #21262d;">'
                 f'<span style="color:#e6edf3;">{s["name"]}</span>'
                 f'<span><span style="color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</span>'
                 f' <span style="color:{_pa_wr_color(s["wr"])};">WR:{s["wr"]:.0f}%</span>'
+                f' <span style="color:{sig_color};font-weight:700;">{sig}</span>'
+                f' <span style="color:{trend_color};">{trend}</span>'
                 f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
                 unsafe_allow_html=True,
             )
@@ -8534,37 +10410,57 @@ def _render_pa_winner_dna(pa_data):
 
     st.markdown("")
 
-    # ── Pattern Enrichment ──
-    st.markdown("##### 🎯 Pattern Enrichment — Chi-Squared Significance")
-    pat_data = [
-        ('🏃 RUNAWAY GAP', '9.7x', '#3fb950', '***'),
-        ('🎲 52W HIGH APPROACH', '3.6x', '#3fb950', '**'),
-        ('🛡️ PULLBACK SUPPORT', '2.1x', '#3fb950', '*'),
-        ('💰 LIQUID LEADER', '1.9x', '#3fb950', '***'),
-        ('🔥 PREMIUM MOMENTUM', '1.8x', '#58a6ff', '*'),
-        ('👑 MARKET LEADER', '1.8x', '#58a6ff', '***'),
-        ('⚡ VOL EXPLOSION', '1.6x', '#58a6ff', '**'),
-        ('🐱 CAT LEADER', '1.5x', '#58a6ff', '***'),
-        ('💎 HIDDEN GEM', '0.0x ❌', '#ff7b72', '*'),
-    ]
-    rows_html = ""
-    for i, (pat, enrich, color, sig) in enumerate(pat_data):
-        bg = '#161b22' if i % 2 == 0 else '#0d1117'
-        rows_html += (
-            f'<tr style="background:{bg};">'
-            f'<td style="padding:6px 10px;color:#e6edf3;">{pat}</td>'
-            f'<td style="padding:6px 10px;text-align:center;color:{color};font-weight:700;">{enrich}</td>'
-            f'<td style="padding:6px 10px;text-align:center;color:{color};">{sig}</td></tr>'
-        )
-    st.markdown(f"""
-    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
-    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
-    <thead><tr style="background:#21262d; color:#8b949e;">
-        <th style="padding:8px 10px;text-align:left;">Pattern</th>
-        <th style="padding:8px 10px;text-align:center;">Winner Enrichment</th>
-        <th style="padding:8px 10px;text-align:center;">Significance</th>
-    </tr></thead><tbody>{rows_html}</tbody></table></div>
-    """, unsafe_allow_html=True)
+    # ── Pattern Enrichment (LIVE — from chi-squared on top decile of fwd return) ──
+    st.markdown("##### 🎯 Pattern Enrichment — Live Chi-Squared (Top-Decile Returns)")
+    pat_enrich = pa_data.get('pat_enrichment', [])
+    if not pat_enrich:
+        st.info("Insufficient data for live enrichment (need ≥100 observations).")
+    else:
+        st.caption("Computed from YOUR data: P(pattern │ top-10% return) ÷ P(pattern │ rest). "
+                   f"Top decile threshold: {pa_data.get('universe_avg', 0):+.2f}% baseline universe avg.")
+        rows_html = ""
+        for i, e in enumerate(pat_enrich[:15]):
+            bg = '#161b22' if i % 2 == 0 else '#0d1117'
+            er = e['enrichment']
+            if er == float('inf'):
+                er_str = '∞'
+                er_color = '#3fb950'
+            elif er >= 2.0:
+                er_str = f"{er:.2f}x"
+                er_color = '#3fb950'
+            elif er >= 1.2:
+                er_str = f"{er:.2f}x"
+                er_color = '#58a6ff'
+            elif er >= 0.8:
+                er_str = f"{er:.2f}x"
+                er_color = '#d29922'
+            else:
+                er_str = f"{er:.2f}x ❌" if er < 0.5 else f"{er:.2f}x"
+                er_color = '#ff7b72'
+            sig = e.get('sig', '–')
+            sig_color = '#3fb950' if sig == '***' else '#58a6ff' if sig == '**' else '#d29922' if sig == '*' else '#484f58'
+            rows_html += (
+                f'<tr style="background:{bg};">'
+                f'<td style="padding:6px 10px;color:#e6edf3;">{e["name"]}</td>'
+                f'<td style="padding:6px 10px;text-align:center;color:{er_color};font-weight:700;">{er_str}</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{e["p_top_with"]:.1f}%</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{e["p_top_without"]:.1f}%</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{e["n_with"]:,}</td>'
+                f'<td style="padding:6px 10px;text-align:center;color:{sig_color};font-weight:700;">{sig}</td></tr>'
+            )
+        st.markdown(f"""
+        <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+        <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+        <thead><tr style="background:#21262d; color:#8b949e;">
+            <th style="padding:8px 10px;text-align:left;">Pattern</th>
+            <th style="padding:8px 10px;text-align:center;">Enrichment</th>
+            <th style="padding:8px 10px;text-align:right;">P(top│pat)</th>
+            <th style="padding:8px 10px;text-align:right;">P(top│¬pat)</th>
+            <th style="padding:8px 10px;text-align:right;">N w/ pat</th>
+            <th style="padding:8px 10px;text-align:center;">Sig</th>
+        </tr></thead><tbody>{rows_html}</tbody></table></div>
+        """, unsafe_allow_html=True)
+        st.caption("✨ **2x+** = strong over-representation in winners | **<0.5x** = avoid — absent from winners")
 
     st.markdown("")
 
@@ -8604,9 +10500,701 @@ def _render_pa_winner_dna(pa_data):
 
 
 # ============================================
+# DNA SCORING ENGINE — Module-level (shared by DNA Watchlist + Search tab)
+# ============================================
+
+def _safe_dna(row, col, default=0):
+    """NaN-safe float extraction for DNA scoring (works with dict or pd.Series)."""
+    v = row.get(col) if hasattr(row, 'get') else row[col] if col in row else default
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return default
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return default
+
+
+def _get_patterns_dna(row):
+    """Split pipe-delimited patterns string, filter 'nan'."""
+    p = str(row.get('patterns', '') if hasattr(row, 'get') else '')
+    return [x.strip() for x in p.split('|') if x.strip() and x.strip() != 'nan']
+
+
+def _dna_score_large(row):
+    """Large Cap DNA scorer."""
+    score, reasons = 0, []
+    pos = _safe_dna(row, 'position_score')
+    pt = _safe_dna(row, 'position_tension')
+    fl = _safe_dna(row, 'from_low_pct')
+    ms = _safe_dna(row, 'master_score')
+    rk = _safe_dna(row, 'rank', 9999)
+    fh = _safe_dna(row, 'from_high_pct', -99)
+    pats = _get_patterns_dna(row)
+
+    if pos >= 55: score += 20; reasons.append('High Position')
+    elif pos >= 35: score += 12; reasons.append('Good Position')
+    elif pos >= 30: score += 5
+
+    if pt >= 90: score += 20; reasons.append('Very High Tension')
+    elif pt >= 69: score += 14; reasons.append('High Tension')
+    elif pt >= 55: score += 7
+
+    if fl >= 49: score += 12; reasons.append('Strong From Low')
+    elif fl >= 36: score += 6
+
+    if rk <= 400: score += 10; reasons.append('Top Rank')
+    elif rk <= 750: score += 6
+
+    if ms >= 57: score += 8; reasons.append('High Master Score')
+    elif ms >= 47: score += 4
+
+    if fh >= -12: score += 8; reasons.append('Near 52W High')
+    elif fh >= -18: score += 4
+
+    # NOTE: trend_quality (+54% sep) and breakout_score (+33% sep) verified as real signals
+    # but NOT added — they fire for 32-52% of non-winners (broad metrics), hurting precision
+    # by -2.5pp to -6.2pp. Patterns below are SURGICAL (3x+ ratios, low NW frequency).
+
+    for p in pats:
+        if 'MARKET LEADER' in p: score += 7; reasons.append('Market Leader (3.0x)')
+        elif 'LIQUID LEADER' in p: score += 6; reasons.append('Liquid Leader')
+        elif 'CAT LEADER' in p: score += 5; reasons.append('Cat Leader')
+        elif 'VOL EXPLOSION' in p: score += 5; reasons.append('Vol Explosion')
+        elif 'STEALTH' in p: score += 6; reasons.append('Stealth')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP')
+        elif 'PYRAMID' in p: score += 4; reasons.append('Pyramid')
+        elif '52W HIGH' in p: score += 4; reasons.append('52W High Approach')
+        elif 'GOLDEN CROSS' in p: score += 4; reasons.append('Golden Cross')
+        elif 'VALUE MOMENTUM' in p: score += 5; reasons.append('Value Momentum (9.6x)')
+        elif 'PREMIUM MOMENTUM' in p: score += 5; reasons.append('Premium Momentum (3.3x)')
+        elif 'MOMENTUM WAVE' in p: score += 4; reasons.append('Momentum Wave (3.6x)')
+        elif 'INSTITUTIONAL TSUNAMI' in p: pass  # 1.81x near-neutral
+        elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional (3.6x)')
+    # CAPITULATION removed — 0 occurrences in Large Cap winners
+
+    # States — PULLBACK 6.20x, STRONG_UPTREND 4.94x, UPTREND 2.41x
+    state = str(row.get('market_state', '')).strip()
+    if state == 'PULLBACK': score += 5; reasons.append('Pullback State (6.2x)')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (4.9x)')
+    elif state == 'UPTREND': score += 4
+    # ROTATION removed — 1.06x ratio (barely above neutral)
+
+    # PULLBACK Confluence — PULLBACK (6.2x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
+
+    return min(score, 100), reasons
+
+
+def _dna_score_mega(row):
+    """Mega Cap DNA scorer."""
+    score, reasons = 0, []
+    fh = _safe_dna(row, 'from_high_pct', -99)
+    pt = _safe_dna(row, 'position_tension')
+    fl = _safe_dna(row, 'from_low_pct')
+    tq = _safe_dna(row, 'trend_quality')
+    brk = _safe_dna(row, 'breakout_score')
+    rvol_s = _safe_dna(row, 'rvol_score')
+    pos = _safe_dna(row, 'position_score')
+    rk = _safe_dna(row, 'rank', 9999)
+    pats = _get_patterns_dna(row)
+
+    # position_score — +43% separation, was missing
+    if pos >= 50: score += 14; reasons.append('High Position (43% sep)')
+    elif pos >= 35: score += 8; reasons.append('Good Position')
+    elif pos >= 25: score += 3
+
+    if fh >= -7: score += 16; reasons.append('Very Near High')
+    elif fh >= -15: score += 10; reasons.append('Near High')
+    elif fh >= -24: score += 4
+
+    # position_tension — FIXED: winners avg 52.2 > NW avg 40.2 (higher = better)
+    if pt >= 65: score += 14; reasons.append('High Tension (winners higher)')
+    elif pt >= 45: score += 8; reasons.append('Good Tension')
+    elif pt >= 30: score += 3
+
+    # from_low_pct — FIXED: winners avg 43.9 > NW avg 27.4 (higher = better)
+    if fl >= 45: score += 12; reasons.append('Strong From-Low (61% sep)')
+    elif fl >= 28: score += 7; reasons.append('Good From-Low')
+    elif fl >= 15: score += 3
+
+    if tq >= 82: score += 8; reasons.append('Strong Trend')
+    elif tq >= 60: score += 4
+
+    if brk >= 83: score += 6; reasons.append('High Breakout')
+    elif brk >= 51: score += 3
+
+    if rvol_s >= 45: score += 6; reasons.append('High Rvol')
+
+    # rank — -40% separation (lower = better), was missing
+    if rk <= 300: score += 8; reasons.append('Top Rank (40% sep)')
+    elif rk <= 600: score += 4
+
+    for p in pats:
+        if 'PREMIUM MOMENTUM' in p: score += 8; reasons.append('Premium Momentum')
+        elif 'INSTITUTIONAL TSUNAMI' in p: score += 6; reasons.append('Inst. Tsunami (11.2x)')
+        elif 'INSTITUTIONAL' in p: score += 8; reasons.append('Institutional (17.9x)')
+        elif 'VOL EXPLOSION' in p: score += 6; reasons.append('Vol Explosion (6.4x)')
+        elif '52W HIGH' in p: score += 5; reasons.append('52W High (2.4x)')
+        elif 'PULLBACK SUPPORT' in p: score += 5; reasons.append('Pullback Support (2.2x)')
+        elif 'STEALTH' in p: score += 6; reasons.append('Stealth (11.9x)')
+        elif 'QUALITY LEADER' in p: score += 7; reasons.append('Quality Leader')
+        elif 'CAT LEADER' in p: score += 4; reasons.append('Cat Leader (2.6x)')
+        elif 'GOLDEN CROSS' in p: score += 4; reasons.append('Golden Cross (2.8x)')
+
+    # States — PULLBACK 5.58x, STRONG_UPTREND 4.65x, UPTREND 2.05x
+    # SIDEWAYS 0.72x (was +3, now 0), DOWNTREND 0.52x
+    state = str(row.get('market_state', '')).strip()
+    if state == 'PULLBACK': score += 5; reasons.append('Pullback State (5.6x)')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (4.7x)')
+    elif state == 'UPTREND': score += 5
+    if state in ('DOWNTREND', 'STRONG_DOWNTREND'): score -= 8
+
+    # PULLBACK Confluence — PULLBACK (5.6x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
+
+    # Floor at 0: DOWNTREND penalty (-8) without offsetting positives can push negative.
+    return max(0, min(score, 100)), reasons
+
+
+def _dna_score_mid(row):
+    """Mid Cap DNA scorer — returns (score, reasons, path)."""
+    score, reasons = 0, []
+    ms = _safe_dna(row, 'master_score')
+    pos = _safe_dna(row, 'position_score')
+    brk = _safe_dna(row, 'breakout_score')
+    tq = _safe_dna(row, 'trend_quality')
+    rk = _safe_dna(row, 'rank', 9999)
+    fh = _safe_dna(row, 'from_high_pct', -99)
+    fl = _safe_dna(row, 'from_low_pct')
+    pt = _safe_dna(row, 'position_tension')
+    mom = _safe_dna(row, 'momentum_score')
+    pats = _get_patterns_dna(row)
+    state = str(row.get('market_state', '')).strip()
+
+    is_momentum = state in ('UPTREND', 'STRONG_UPTREND') or (tq >= 66 and ms >= 51)
+    is_contrarian = state in ('DOWNTREND', 'STRONG_DOWNTREND') and pos >= 40
+
+    if ms >= 61: score += 14; reasons.append('Elite Master Score')
+    elif ms >= 51: score += 10; reasons.append('Strong Master Score')
+    elif ms >= 43: score += 4
+
+    if pos >= 71: score += 14; reasons.append('Elite Position')
+    elif pos >= 48: score += 10; reasons.append('Strong Position')
+    elif pos >= 34: score += 4
+
+    if tq >= 89: score += 12; reasons.append('Exceptional TQ')
+    elif tq >= 66: score += 9; reasons.append('Strong TQ')
+    elif tq >= 40: score += 3
+
+    if brk >= 74: score += 10; reasons.append('High Breakout')
+    elif brk >= 51: score += 6; reasons.append('Good Breakout')
+    elif brk >= 35: score += 2
+
+    if rk <= 200: score += 10; reasons.append('Top 200 Rank')
+    elif rk <= 562: score += 6; reasons.append('Top-Half Rank')
+    elif rk <= 986: score += 2
+
+    if fh >= -8: score += 6; reasons.append('Near High')
+    elif fh >= -18: score += 3
+
+    # from_low_pct — #1 signal, +294% separation, was completely missing
+    if fl >= 120: score += 8; reasons.append('Strong From-Low')
+    elif fl >= 60: score += 5; reasons.append('Good From-Low')
+    elif fl >= 25: score += 2
+
+    if mom >= 67: score += 6; reasons.append('High Momentum')
+    elif mom >= 56: score += 3
+
+    if pt >= 94: score += 6; reasons.append('High Tension')
+    elif pt >= 75: score += 3
+
+    for p in pats:
+        if 'MARKET LEADER' in p: score += 7; reasons.append('Market Leader')
+        elif 'CAT LEADER' in p: score += 6; reasons.append('Cat Leader')
+        elif 'LIQUID LEADER' in p: score += 5; reasons.append('Liquid Leader')
+        elif 'PREMIUM MOMENTUM' in p: score += 5; reasons.append('Premium Momentum')
+        elif 'GOLDEN CROSS' in p: score += 4; reasons.append('Golden Cross')
+        elif 'PULLBACK SUPPORT' in p: score += 4; reasons.append('Pullback Support')
+        elif 'STEALTH' in p: score += 6; reasons.append('Stealth')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP')
+        elif '52W HIGH' in p: score += 5; reasons.append('52W High (6.6x)')
+        elif 'VALUE MOMENTUM' in p: score += 5; reasons.append('Value Momentum (31x)')
+        elif 'MOMENTUM WAVE' in p: score += 4; reasons.append('Momentum Wave (4x)')
+        elif 'RUNAWAY GAP' in p: score += 5; reasons.append('Runaway Gap (7.9x)')
+        elif 'INSTITUTIONAL TSUNAMI' in p: pass  # 1.18x near-neutral, skip
+        elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional (2.4x)')
+        elif 'ROTATION LEADER' in p: score += 3; reasons.append('Rotation Leader (2.8x)')
+
+    # States — data: PULLBACK 6.78x, STRONG_UPTREND 5.62x, UPTREND 2.06x
+    # DOWNTREND 0.43x & STRONG_DOWNTREND 0.29x are ANTI-winner states
+    if state == 'PULLBACK' and pos >= 40: score += 5; reasons.append('Pullback State (6.8x)')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (5.6x)')
+    elif state == 'UPTREND': score += 4
+
+    # Contrarian: 1.65x edge (modest) — reduced from +13 total to +3 total
+    path = 'Momentum' if is_momentum else ('Contrarian' if is_contrarian else 'Neutral')
+    if is_momentum: score += 2
+    if is_contrarian: score += 3; reasons.append('Contrarian Setup (1.65x)')
+
+    # PULLBACK Confluence — PULLBACK (6.8x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
+
+    return min(score, 100), reasons, path
+
+
+def _dna_score_small(row):
+    """Small Cap DNA scorer — DATA-VALIDATED v4 (Apr 2026).
+
+    Calibrated against 100 Winners vs 100 Losers (3M return), small-cap universe,
+    33 weeks of forward-return data (Aug 2025 → Apr 2026), validated on dna_backtest_full_detail (3260 rows).
+
+    v4 additions vs v3 (from pattern_analyser_report Pattern×State matrix):
+      • PYRAMID + UPTREND         → +3 (1w +3.9%, 85% WR, n=20)
+      • INSTITUTIONAL + DOWNTREND → +3 (1w +4.5%, 81% WR, n=21)
+      • STEALTH + STRONG_UPTREND  → +2 (1w +4.9%, 81% WR, n=16)
+      • GOLDEN CROSS + UPTREND    → +2 (1w +4.2%, 69% WR, n=16)
+      • ACCELERATION + UPTREND    → -3 trap (1w -5.9%, n=14)
+      • RUNAWAY + STRONG_UPTREND  → -2 trap reinforcement
+
+    v3 corrections (preserved):
+      • PYRAMID +8 → +5 — fades from +7% (4w) to +0.6% (13w), -10.5pp 13w lift
+      • BOUNCE state +5 → -2 — TRAP at 13w (-14.86% ret, only 2% win rate)
+      • LIQUID LEADER +4 → -3 — n=300, -5.5% ret_13w, -6.7pp 13w lift (NEW trap)
+      • VALUE MOMENTUM +3 → +6 — +21.5% ret_13w, +9.6pp lift (strongest pattern)
+      • HIDDEN GEM ADDED +5 — +4.9% ret_13w, +7.8pp lift, 45% w4
+      • ACCELERATION ADDED +3 — +10.8% ret_13w, +2.1pp lift
+      • RANGE COMPRESS ADDED +3 — +4.7% ret_13w, +3.2pp lift
+
+    Inherited v2 calibration (preserved):
+      • trend_quality is biggest discriminator (winner µ=74 vs loser µ=27)
+      • from_high_pct: winners stay near 52W highs (W=-18% vs L=-46%)
+      • Tension/Recovery path = +17.7% ret_13w vs Position/TQ -0.26% (auto-routed in tab)
+      • RUNAWAY GAP / VELOCITY BREAKOUT penalized (LIQUID LEADER neutralized in v5,
+        INSTITUTIONAL TSUNAMI neutralized in v6 — both regime-flipped)
+      • STRONG_UPTREND demoted (lagging indicator)
+      • PULLBACK state rewarded (+13.26% ret_13w)
+    """
+    score, reasons = 0, []
+    pos = _safe_dna(row, 'position_score')
+    tq  = _safe_dna(row, 'trend_quality')
+    brk = _safe_dna(row, 'breakout_score')
+    ms  = _safe_dna(row, 'master_score')
+    rk  = _safe_dna(row, 'rank', 9999)
+    fh  = _safe_dna(row, 'from_high_pct', -99)
+    fl  = _safe_dna(row, 'from_low_pct')
+    pt  = _safe_dna(row, 'position_tension')
+    mom = _safe_dna(row, 'momentum_score')
+    pats = _get_patterns_dna(row)
+
+    # ── trend_quality — BIGGEST discriminator (lift 2.81x) ──
+    if tq >= 80:   score += 18; reasons.append('Elite TQ')
+    elif tq >= 65: score += 12; reasons.append('Strong TQ')
+    elif tq >= 50: score += 6
+    elif tq >= 30: score += 2
+    elif tq < 20:  score -= 4   # explicit penalty for very weak TQ
+
+    # ── position_score — 1.61x lift, broad signal ──
+    if pos >= 65:   score += 14; reasons.append('Elite Position')
+    elif pos >= 50: score += 9;  reasons.append('Strong Position')
+    elif pos >= 35: score += 4
+
+    # ── from_high_pct — winners avg -18%, losers avg -46% ──
+    if fh >= -10:   score += 10; reasons.append('At 52W High')
+    elif fh >= -20: score += 7;  reasons.append('Near High')
+    elif fh >= -30: score += 3
+    elif fh < -45:  score -= 6   # penalty: losers cluster here
+
+    # ── breakout_score (1.82x lift) ──
+    if brk >= 60:   score += 9;  reasons.append('High Breakout')
+    elif brk >= 45: score += 5;  reasons.append('Good Breakout')
+    elif brk >= 30: score += 2
+
+    # ── master_score (1.34x lift, weaker on its own) ──
+    if ms >= 60:    score += 7;  reasons.append('High Master Score')
+    elif ms >= 50:  score += 4
+    elif ms >= 40:  score += 2
+
+    # ── rank — Top 100 had +2.02% ret, 55.8% WR (sig ***) ──
+    if rk <= 100:    score += 10; reasons.append('Top 100 Rank')
+    elif rk <= 400:  score += 6;  reasons.append('Top 400 Rank')
+    elif rk <= 800:  score += 3;  reasons.append('Above-Median Rank')
+
+    # ── position_tension — Tension/Recovery path = +5.6% ret, 58.8% WR ──
+    if pt >= 150:   score += 10; reasons.append('Extreme Tension')
+    elif pt >= 100: score += 6;  reasons.append('High Tension')
+    elif pt >= 80:  score += 3
+
+    # ── from_low_pct — recovery strength ──
+    if fl >= 75:    score += 6;  reasons.append('Strong Recovery')
+    elif fl >= 55:  score += 3
+
+    # ── momentum_score — present in winners (1.22x) ──
+    if mom >= 70:   score += 5;  reasons.append('High Momentum')
+    elif mom >= 55: score += 2
+
+    # ── PATTERNS — only proven winners get points; proven losers PENALIZED ──
+    # Pre-compute winner-pattern flag so HIGH PE penalty + Confluence bonus
+    # are order-independent (must be evaluated BEFORE the loop reads has_winner_pat).
+    # Set: exactly the patterns that historically set has_winner_pat=True in the loop.
+    _WINNER_PATS = ('VALUE MOMENTUM', 'PYRAMID', 'HIDDEN GEM',
+                    'ROTATION LEADER', 'GOLDEN CROSS', 'STEALTH')
+    has_winner_pat = any(
+        any(wp in p for wp in _WINNER_PATS)
+        or ('INSTITUTIONAL' in p and 'TSUNAMI' not in p)
+        for p in pats
+    )
+    for p in pats:
+        # ✅ DATA-VALIDATED WINNERS (forward avg return positive, statistically significant)
+        if 'VALUE MOMENTUM' in p:
+            # +21.5% ret_13w, +9.6pp 13w win-lift — strongest single pattern in dataset
+            score += 6; reasons.append('Value Momentum (+21%)')
+        elif 'PYRAMID' in p:
+            # 4w-only edge (+7%); fades to +0.6% by 13w with -10.5pp lift — tactical only
+            score += 5; reasons.append('Pyramid (+7% 4w)')
+        elif 'HIDDEN GEM' in p:
+            # +4.9% ret_13w, +7.8pp 13w lift, 45% w4 — newly added v3
+            score += 5; reasons.append('Hidden Gem (+5%)')
+        elif 'ROTATION LEADER' in p:
+            score += 5; reasons.append('Rotation Leader')
+        elif 'GOLDEN CROSS' in p:
+            score += 6; reasons.append('Golden Cross (+6.7%)')
+        elif 'INSTITUTIONAL' in p and 'TSUNAMI' not in p:
+            score += 6; reasons.append('Institutional (+7.9%)')
+        elif 'STEALTH' in p:
+            score += 5; reasons.append('Stealth')
+        elif 'ACCELERATION' in p:
+            # +10.8% ret_13w, +2.1pp lift — restored in v3 after v2 dropped it
+            score += 3; reasons.append('Acceleration (+11%)')
+        elif 'RANGE COMPRESS' in p:
+            # +4.7% ret_13w, +3.2pp lift — newly added v3
+            score += 3; reasons.append('Range Compress (+5%)')
+        elif 'VELOCITY SQUEEZE' in p:
+            score += 4; reasons.append('Velocity Squeeze')
+        elif 'PULLBACK SUPPORT' in p:
+            score += 4; reasons.append('Pullback Support')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+            score += 4; reasons.append('Quality/GARP')
+        elif '52W HIGH' in p:
+            score += 4; reasons.append('52W High Approach')
+        elif 'MARKET LEADER' in p:
+            score += 3; reasons.append('Market Leader')
+        elif 'CAT LEADER' in p:
+            score += 3; reasons.append('Cat Leader')
+
+        # ❌ DATA-VALIDATED LOSERS (forward returns negative or loser-enriched)
+        if 'RUNAWAY GAP' in p:
+            score -= 6; reasons.append('⚠ Runaway Gap')
+        elif 'VELOCITY BREAKOUT' in p:
+            score -= 6; reasons.append('⚠ Velocity Breakout')
+        elif 'INSTITUTIONAL TSUNAMI' in p:
+            # v6: NEUTRALIZED (was -4 in v3/v4/v5). 33-week pattern analyser evidence (Apr 2026):
+            #   • Winners cohort: +1.02% avg, ↑ trend (recent +2.05 vs older -1.64)
+            #   • Losers cohort:  -0.59% avg (mild)
+            #   • Cross-cohort spread: +1.61pp — pattern has flipped from trap to mildly positive
+            # Same fix shape as v5 LIQUID LEADER: regime shift → neutralize, don't reward.
+            pass
+        elif 'LIQUID LEADER' in p:
+            # v5: NEUTRALIZED (was -3 in v3/v4). Conflicting evidence:
+            #   • 31-week W/L pool: -5.5% ret_13w, -6.7pp lift (TRAP)
+            #   • 100-winner cohort study (Jan-Apr 2026): 2→27 winners, +18pp lift (CONFIRMER)
+            # Regime-dependent → safest to neutralize, let other signals decide.
+            pass
+        elif 'HIGH PE' in p and not has_winner_pat:
+            # HIGH PE alone is bad (29% of losers vs 8% of winners) but neutral with a winner pattern
+            score -= 3; reasons.append('⚠ High PE')
+        elif 'PREMIUM MOMENTUM' in p:
+            score -= 2; reasons.append('⚠ Premium Mom')
+
+    # ── MARKET STATE — recalibrated to 13w forward returns (v3) ──
+    state = str(row.get('market_state', '')).strip()
+    if state == 'PULLBACK':         score += 6; reasons.append('Pullback State (+13%)')   # +13.26% ret_13w, 17% win
+    elif state == 'UPTREND':        score += 4; reasons.append('Uptrend State (+5%)')     # +5.35% ret_13w
+    elif state == 'DOWNTREND':      score += 3   # +1.94% ret_13w (Tension/Recovery setups hide here)
+    elif state == 'STRONG_UPTREND': score += 1   # +1.85% ret_13w — lagging
+    elif state == 'SIDEWAYS':       score -= 1   # +0.33% ret_13w — flat/noise
+    elif state == 'ROTATION':       score -= 3; reasons.append('⚠ Rotation State')        # -2.43% ret_13w
+    elif state == 'BOUNCE':         score -= 2; reasons.append('⚠ Bounce Trap (13w)')     # v3: -14.86% ret_13w, 2% win — TRAP
+    # STRONG_DOWNTREND intentionally NOT scored — high mean (+9%) but extreme drawdown risk
+
+    # ── PATTERN × STATE COMBOS (v4) — validated on pattern_analyser_report matrix ──
+    # Each combo: 1w return + win-rate + sample size from Pattern×State matrix
+    if pats:
+        # Pre-compute pattern flags once (cheaper than re-iterating)
+        _has_pyramid       = any('PYRAMID' in p for p in pats)
+        _has_inst          = any('INSTITUTIONAL' in p and 'TSUNAMI' not in p for p in pats)
+        _has_stealth       = any('STEALTH' in p for p in pats)
+        _has_golden        = any('GOLDEN CROSS' in p for p in pats)
+        _has_acceleration  = any('ACCELERATION' in p for p in pats)
+        _has_runaway       = any('RUNAWAY GAP' in p for p in pats)
+
+        # ✅ Confluence WINNERS (validated 1w returns + high WR)
+        if _has_pyramid and state == 'UPTREND':
+            score += 3; reasons.append('🎯 Pyramid+Uptrend (+3.9% / 85% WR)')
+        if _has_inst and state == 'DOWNTREND':
+            score += 3; reasons.append('🎯 Inst+Downtrend (+4.5% / 81% WR)')
+        if _has_stealth and state == 'STRONG_UPTREND':
+            score += 2; reasons.append('🎯 Stealth+Strong Up (+4.9% / 81% WR)')
+        if _has_golden and state == 'UPTREND':
+            score += 2; reasons.append('🎯 Golden+Uptrend (+4.2% / 69% WR)')
+
+        # ❌ Confluence TRAPS (validated negatives — pattern looks bullish but state confirms exhaustion)
+        if _has_acceleration and state == 'UPTREND':
+            score -= 3; reasons.append('⚠ Accel+Uptrend Trap (-5.9%)')
+        if _has_runaway and state == 'STRONG_UPTREND':
+            score -= 2; reasons.append('⚠ Runaway+Strong Up Trap')
+
+    # ── CONFLUENCE BONUS — multiple winner criteria stacking ──
+    if has_winner_pat and tq >= 60 and pos >= 50 and fh >= -25:
+        score += 4; reasons.append('🎯 Confluence Setup')
+
+    # PULLBACK Confluence preserved (validated v1 rule)
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
+
+    # Hard floor at 0 (penalties can't push negative for display)
+    return max(0, min(score, 100)), reasons
+
+
+def _dna_score_micro(row):
+    """Micro Cap DNA scorer."""
+    score, reasons = 0, []
+    vol = _safe_dna(row, 'volume_score')
+    pt = _safe_dna(row, 'position_tension')
+    pos = _safe_dna(row, 'position_score')
+    tq = _safe_dna(row, 'trend_quality')
+    fl = _safe_dna(row, 'from_low_pct')
+    rk = _safe_dna(row, 'rank', 9999)
+    brk = _safe_dna(row, 'breakout_score')
+    rvol_s = _safe_dna(row, 'rvol_score')
+    pats = _get_patterns_dna(row)
+    state = str(row.get('market_state', '')).strip()
+
+    # position_tension — +337% sep, ≥150 at 6.48x, ≥85 at 2.86x
+    if pt >= 400: score += 16; reasons.append('Extreme Tension (337% sep)')
+    elif pt >= 150: score += 10; reasons.append('High Tension')
+    elif pt >= 85: score += 4
+
+    # from_low_pct — +700% sep, ≥49 at 3.09x, ≥30 at 2.22x. Was MISSING
+    if fl >= 49: score += 14; reasons.append('Strong From-Low (700% sep)')
+    elif fl >= 30: score += 8; reasons.append('Good From-Low')
+
+    # position_score — +78% sep, ≥62 at 4.42x
+    if pos >= 62: score += 10; reasons.append('High Position (78% sep)')
+    elif pos >= 35: score += 6; reasons.append('Good Position')
+    elif pos >= 29: score += 2
+
+    # rank — -42% sep, ≤500 at 3.38x, ≤800 at 2.39x. Was MISSING
+    if rk <= 500: score += 10; reasons.append('Top Rank (42% sep)')
+    elif rk <= 800: score += 6
+
+    # trend_quality — +94% sep, ≥77 at 3.86x
+    if tq >= 77: score += 6; reasons.append('Strong TQ (94% sep)')
+    elif tq >= 43: score += 3
+
+    # breakout_score — +41% sep, ≥74 at 6.06x, ≥51 at 3.52x. Was MISSING
+    if brk >= 74: score += 6; reasons.append('High Breakout (6.06x)')
+    elif brk >= 51: score += 4; reasons.append('Good Breakout (3.52x)')
+
+    # volume_score — -8.8% sep, ≤15 at 1.70x only. Reduced from +18
+    if vol <= 15: score += 6; reasons.append('Very Low Volume')
+
+    # rvol_score — -14% sep, ≤15 at 1.30x. Weak signal, reduced
+    if rvol_s <= 15: score += 3; reasons.append('Low Rvol')
+
+    # money_flow_mm REMOVED — ≤2 fires 79.6% W vs 76.8% NW (1.04x = random)
+    # acceleration_score REMOVED — fires 26.7% W vs 31.2% NW (0.86x anti-winner)
+
+    for p in pats:
+        if 'VALUE MOMENTUM' in p: score += 12; reasons.append('Value Momentum (8.2x)')
+        elif 'INFORMATION DECAY' in p: score += 8; reasons.append('Info Decay (4.5x)')
+        elif 'STEALTH' in p: score += 7; reasons.append('Stealth (3.2x)')
+        elif 'GOLDEN CROSS' in p: score += 5; reasons.append('Golden Cross (4.9x)')
+        elif 'MARKET LEADER' in p: score += 4; reasons.append('Market Leader (4.5x)')
+        elif 'QUALITY LEADER' in p or 'GARP LEADER' in p: score += 7; reasons.append('Quality/GARP (4.3x)')
+        elif 'CAT LEADER' in p: score += 5; reasons.append('Cat Leader (3.1x)')
+        elif 'PREMIUM MOMENTUM' in p: score += 5; reasons.append('Premium Momentum (4.3x)')
+        elif 'MOMENTUM WAVE' in p: score += 4; reasons.append('Momentum Wave (3.1x)')
+        elif 'INSTITUTIONAL TSUNAMI' in p: score += 4; reasons.append('Inst. Tsunami (2.8x)')
+        elif 'INSTITUTIONAL' in p: score += 4; reasons.append('Institutional (2.4x)')
+    # CAPITULATION removed — 0x ratio (0 winners have it)
+
+    # States — PULLBACK 8.92x, STRONG_UPTREND 5.03x, UPTREND 2.13x
+    if state == 'PULLBACK': score += 5; reasons.append('Pullback State (8.9x)')
+    elif state == 'STRONG_UPTREND': score += 5; reasons.append('Strong Uptrend (5.0x)')
+    elif state == 'UPTREND': score += 4
+    elif state == 'ROTATION': score += 3  # Reduced from +8 — only 1.28x ratio
+    # DOWNTREND removed — 0.57x anti-winner
+    # STRONG_DOWNTREND removed — 0.21x anti-winner
+
+    # PULLBACK Confluence — PULLBACK (8.9x) + multiple criteria = strongest setup
+    if state == 'PULLBACK' and len(reasons) >= 5:
+        score += 3; reasons.append('Pullback Confluence')
+
+    return min(score, 100), reasons
+
+
+def compute_dna_for_ticker(ticker: str, histories: dict) -> dict:
+    """Compute DNA intelligence for a single ticker using its history data.
+    Returns dict with: dna_score, conviction, path, criteria_met, key_signals, category.
+    Returns None if insufficient data."""
+    h = histories.get(ticker, {})
+    if not h:
+        return None
+
+    cat = h.get('category', '')
+    # Build a synthetic row dict from latest history values
+    def _latest(key, default=0):
+        vals = h.get(key, [])
+        if not vals:
+            return default
+        v = vals[-1]
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return default
+        return v
+
+    row = {
+        'position_score': _latest('position_score'),
+        'position_tension': _latest('position_tension'),
+        'from_low_pct': _latest('from_low_pct'),
+        'master_score': _latest('scores', 0),  # scores = master_score per week
+        'rank': h['ranks'][-1] if h.get('ranks') else 9999,
+        'from_high_pct': _latest('from_high_pct', -99),
+        'volume_score': _latest('volume_score'),
+        'money_flow_mm': _latest('money_flow_mm'),
+        'breakout_score': _latest('breakout_score'),
+        'trend_quality': _latest('trend_qualities', 0),  # stored as trend_qualities
+        'momentum_score': _latest('momentum_score'),
+        'rvol_score': _latest('rvol_score'),
+        'market_state': h.get('market_state', ''),
+        'patterns': h.get('patterns', ''),
+        'category': cat,
+    }
+
+    if cat == 'Large Cap':
+        dna_score, reasons = _dna_score_large(row)
+        path = 'Quality Leader'
+    elif cat == 'Mega Cap':
+        dna_score, reasons = _dna_score_mega(row)
+        path = 'Institutional'
+    elif cat == 'Mid Cap':
+        dna_score, reasons, path = _dna_score_mid(row)
+    elif cat == 'Small Cap':
+        dna_score, reasons = _dna_score_small(row)
+        path = 'Position/TQ'
+    elif cat == 'Micro Cap':
+        dna_score, reasons = _dna_score_micro(row)
+        path = 'Tension/Recovery'
+    else:
+        return None
+
+    if dna_score >= 65:
+        conviction = 'HIGH'
+        conv_icon = '🔴'
+        conv_color = '#FF1744'
+    elif dna_score >= 45:
+        conviction = 'MEDIUM'
+        conv_icon = '🟡'
+        conv_color = '#FFD600'
+    elif dna_score >= 30:
+        conviction = 'LOW'
+        conv_icon = '🟢'
+        conv_color = '#00E676'
+    else:
+        conviction = 'MINIMAL'
+        conv_icon = '⚪'
+        conv_color = '#484f58'
+
+    return {
+        'dna_score': dna_score,
+        'conviction': conviction,
+        'conv_icon': conv_icon,
+        'conv_color': conv_color,
+        'path': path,
+        'criteria_met': len(reasons),
+        'key_signals': reasons,
+        'category': cat,
+    }
+
+
+# ============================================
 # ============================================
 # UI: DNA WATCHLIST TAB
 # ============================================
+
+# History window for multi-week DNA analytics (4w Δ, 12w Peak, Setup Age).
+# 12 weeks = ~3 months — long enough to capture a complete setup cycle
+# (accumulation → breakout → consolidation) without inflating cache memory.
+_DNA_HISTORY_WEEKS = 12
+# Threshold (= 'on the radar' bar) used to count consecutive weeks for
+# Setup Age. Fixed at 45 (= MEDIUM conviction floor) so the meaning is
+# stable regardless of where the user moves the Min DNA slider.
+_DNA_SETUP_AGE_THRESHOLD = 45
+
+
+def _score_one_week_dna(df_week):
+    """Score every row of a single-week dataframe through its category's DNA scorer.
+
+    Returns: {ticker(str): score(int)} dict. Rows whose category isn't a known
+    cap (or whose scorer raises) are silently skipped — same fail-soft behaviour
+    as the inline scoring loop, so a corrupt row never breaks the watchlist.
+    """
+    out = {}
+    for _, r in df_week.iterrows():
+        tk = str(r['ticker']).strip()
+        cat = str(r.get('category', '')).strip()
+        try:
+            if cat == 'Large Cap':
+                ps, _ = _dna_score_large(r)
+            elif cat == 'Mega Cap':
+                ps, _ = _dna_score_mega(r)
+            elif cat == 'Mid Cap':
+                ps, _, _ = _dna_score_mid(r)
+            elif cat == 'Small Cap':
+                ps, _ = _dna_score_small(r)
+            elif cat == 'Micro Cap':
+                ps, _ = _dna_score_micro(r)
+            else:
+                continue
+            out[tk] = ps
+        except Exception:
+            pass
+    return out
+
+
+def _build_dna_score_history(weekly_data, recent_dates):
+    """Build {ticker: [(date, score), ...]} sorted ascending by date.
+
+    Uses st.session_state as a render-to-render cache keyed on (date, row_count).
+    A new file upload changes row counts (or dates) → cache invalidates cleanly.
+    Avoids the 1–3s cost of re-scoring 12 × ~2,000 rows on every slider tick.
+    """
+    if '_dna_wl_score_cache' not in st.session_state:
+        st.session_state['_dna_wl_score_cache'] = {}
+    cache = st.session_state['_dna_wl_score_cache']
+
+    history = {}
+    for d in recent_dates:
+        df_d = weekly_data[d]
+        # (date, row count) is a cheap, collision-resistant key for our use:
+        # each weekly CSV has a unique date and a stable row count for a given
+        # snapshot. If the user re-uploads with different content, len differs.
+        key = (d, len(df_d))
+        week_scores = cache.get(key)
+        if week_scores is None:
+            week_scores = _score_one_week_dna(df_d)
+            cache[key] = week_scores
+        for tk, sc in week_scores.items():
+            history.setdefault(tk, []).append((d, sc))
+
+    # Defensive sort — recent_dates is already sorted ascending, but a guard
+    # here keeps history correct even if a future caller passes them unordered.
+    for tk in history:
+        history[tk].sort(key=lambda x: x[0])
+    return history
+
 
 def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     """🎯 DNA Watchlist — Category-specific forward-looking winner scanner."""
@@ -8618,24 +11206,23 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             <b>What this does:</b> Scans TODAY's stocks using <b>category-specific DNA profiles</b>
             derived from actual 6-month winners. Each cap size has its own scoring formula
             calibrated to how past winners looked <b>before</b> they started winning.<br>
-            <b>Large Cap</b>: Position + Tension leaders | <b>Mega Cap</b>: Volume + Near-high + Low tension |
-            <b>Mid Cap</b>: Score leaders + Trend quality | <b>Small Cap</b>: Position + TQ driven |
-            <b>Micro Cap</b>: Coiled Spring — low volume, high tension, rotation state
+            <b>Large Cap</b>: Position + Tension + Surgical Patterns | <b>Mega Cap</b>: Position + Near-High + Tension (higher=better) |
+            <b>Mid Cap</b>: Master + Position + From-Low (#1 signal) + Dual Path | <b>Small Cap</b>: Position + TQ + Pattern Enrichment |
+            <b>Micro Cap</b>: Tension + From-Low + Rank + Patterns — recovery/momentum driven
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Parse all weekly data ──
+    # ── Parse all weekly data (uses shared helper for filename robustness) ──
     weekly_data = {}
     for ufile in uploaded_files:
         try:
+            dt = parse_date_from_filename(getattr(ufile, 'name', ''))
+            if dt is None:
+                continue
             ufile.seek(0)
             df = pd.read_csv(ufile)
             df['ticker'] = df['ticker'].astype(str).str.strip()
-            fname = getattr(ufile, 'name', str(ufile))
-            parts = fname.replace('.csv', '').split('_')
-            date_str = parts[2] if len(parts) >= 3 else fname
-            dt = datetime.strptime(date_str, '%Y-%m-%d')
             weekly_data[dt] = df
         except Exception:
             continue
@@ -8653,514 +11240,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     sel_cat = st.selectbox("📁 Select Category", cat_options, key='dna_wl_cat')
 
     # ═══════════════════════════════════════════════════════
-    # DNA SCORING FUNCTIONS — Calibrated to actual winners
-    # ═══════════════════════════════════════════════════════
-
-    def _safe(row, col, default=0):
-        v = row.get(col)
-        if pd.isna(v):
-            return default
-        try:
-            return float(v)
-        except (ValueError, TypeError):
-            return default
-
-    def _get_patterns(row):
-        p = str(row.get('patterns', ''))
-        return [x.strip() for x in p.split('|') if x.strip() and x.strip() != 'nan']
-
-    def _score_large(row):
-        """Large Cap: position_score***, position_tension***, from_low_pct***
-        Enriched: LIQUID LEADER, CAT LEADER, VOL EXPLOSION, STEALTH, PYRAMID"""
-        score = 0
-        reasons = []
-        pos = _safe(row, 'position_score')
-        pt = _safe(row, 'position_tension')
-        fl = _safe(row, 'from_low_pct')
-        ms = _safe(row, 'master_score')
-        rk = _safe(row, 'rank', 9999)
-        fh = _safe(row, 'from_high_pct', -99)
-        pats = _get_patterns(row)
-
-        # Position score ≥ 30 (winner P25)
-        if pos >= 55:
-            score += 20; reasons.append('High Position')
-        elif pos >= 35:
-            score += 12; reasons.append('Good Position')
-        elif pos >= 30:
-            score += 5
-
-        # Position tension ≥ 55 (others avg), winners avg 69
-        if pt >= 90:
-            score += 20; reasons.append('Very High Tension')
-        elif pt >= 69:
-            score += 14; reasons.append('High Tension')
-        elif pt >= 55:
-            score += 7
-
-        # From low ≥ 36 (others avg), winners 49
-        if fl >= 49:
-            score += 12; reasons.append('Strong From Low')
-        elif fl >= 36:
-            score += 6
-
-        # Rank ≤ 750 (median)
-        if rk <= 400:
-            score += 10; reasons.append('Top Rank')
-        elif rk <= 750:
-            score += 6
-
-        # Master score
-        if ms >= 57:
-            score += 8; reasons.append('High Master Score')
-        elif ms >= 47:
-            score += 4
-
-        # From high (closer to 0 better)
-        if fh >= -12:
-            score += 8; reasons.append('Near 52W High')
-        elif fh >= -18:
-            score += 4
-
-        # Pattern bonuses
-        for p in pats:
-            if 'LIQUID LEADER' in p:
-                score += 6; reasons.append('Liquid Leader')
-            elif 'CAT LEADER' in p:
-                score += 5; reasons.append('Cat Leader')
-            elif 'VOL EXPLOSION' in p:
-                score += 5; reasons.append('Vol Explosion')
-            elif 'STEALTH' in p:
-                score += 6; reasons.append('Stealth (BT+12%)')
-            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
-                score += 7; reasons.append('Quality/GARP (BT#1)')
-            elif 'PYRAMID' in p:
-                score += 4; reasons.append('Pyramid')
-            elif '52W HIGH' in p:
-                score += 4; reasons.append('52W High Approach')
-            elif 'GOLDEN CROSS' in p:
-                score += 4; reasons.append('Golden Cross')
-            elif 'CAPITULATION' in p:
-                score += 6; reasons.append('Capitulation (BT#2)')
-
-        # State bonus
-        state = str(row.get('market_state', '')).strip()
-        if state == 'UPTREND':
-            score += 4
-        elif state == 'ROTATION':
-            score += 2
-
-        return min(score, 100), reasons
-
-    def _score_mega(row):
-        """Mega Cap: volume_score*, from_high_pct*, LOW position_tension***,
-        LOW from_low_pct***. Enriched: PREMIUM MOMENTUM, INSTITUTIONAL, VOL EXPLOSION"""
-        score = 0
-        reasons = []
-        vol = _safe(row, 'volume_score')
-        fh = _safe(row, 'from_high_pct', -99)
-        pt = _safe(row, 'position_tension')
-        fl = _safe(row, 'from_low_pct')
-        rk = _safe(row, 'rank', 9999)
-        rvol_s = _safe(row, 'rvol_score')
-        brk = _safe(row, 'breakout_score')
-        tq = _safe(row, 'trend_quality')
-        pats = _get_patterns(row)
-
-        # Volume score ≥ 59 (winner median 60)
-        if vol >= 69:
-            score += 18; reasons.append('Very High Volume')
-        elif vol >= 59:
-            score += 12; reasons.append('High Volume')
-        elif vol >= 49:
-            score += 5
-
-        # Near high (winner -15 vs others -19)
-        if fh >= -7:
-            score += 16; reasons.append('Very Near High')
-        elif fh >= -15:
-            score += 10; reasons.append('Near High')
-        elif fh >= -24:
-            score += 4
-
-        # LOW position tension (winners 41 vs others 57)
-        if pt <= 30:
-            score += 16; reasons.append('Low Tension (Mega DNA)')
-        elif pt <= 41:
-            score += 10; reasons.append('Moderate-Low Tension')
-        elif pt <= 57:
-            score += 4
-
-        # LOW from low (winners 26 vs others 38)
-        if fl <= 20:
-            score += 12; reasons.append('Low From Low (Stable)')
-        elif fl <= 26:
-            score += 8
-        elif fl <= 38:
-            score += 3
-
-        # Trend quality
-        if tq >= 82:
-            score += 8; reasons.append('Strong Trend')
-        elif tq >= 60:
-            score += 4
-
-        # Breakout
-        if brk >= 83:
-            score += 6; reasons.append('High Breakout')
-        elif brk >= 51:
-            score += 3
-
-        # Rvol score (winners 45 vs 36)
-        if rvol_s >= 45:
-            score += 6; reasons.append('High Rvol')
-
-        # Pattern bonuses
-        for p in pats:
-            if 'PREMIUM MOMENTUM' in p:
-                score += 8; reasons.append('Premium Momentum')
-            elif 'INSTITUTIONAL' in p:
-                score += 8; reasons.append('Institutional')
-            elif 'VOL EXPLOSION' in p:
-                score += 6; reasons.append('Vol Explosion')
-            elif '52W HIGH' in p:
-                score += 5; reasons.append('52W High Approach')
-            elif 'PULLBACK SUPPORT' in p:
-                score += 5; reasons.append('Pullback Support')
-            elif 'STEALTH' in p:
-                score += 6; reasons.append('Stealth (BT+12%)')
-            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
-                score += 7; reasons.append('Quality/GARP (BT#1)')
-            elif 'CAPITULATION' in p:
-                score += 5; reasons.append('Capitulation (BT#2)')
-
-        # State bonus (SIDEWAYS and UPTREND strongly enriched)
-        state = str(row.get('market_state', '')).strip()
-        if state == 'UPTREND':
-            score += 5
-        elif state == 'SIDEWAYS':
-            score += 3
-        # Downtrend penalty (0% winners in downtrend)
-        if state in ('DOWNTREND', 'STRONG_DOWNTREND'):
-            score -= 10
-
-        return min(score, 100), reasons
-
-    def _score_mid(row):
-        """Mid Cap: master_score***, position_score***, breakout_score***,
-        trend_quality***, rank***, from_high_pct**. Dual-path: momentum + contrarian."""
-        score = 0
-        reasons = []
-        ms = _safe(row, 'master_score')
-        pos = _safe(row, 'position_score')
-        brk = _safe(row, 'breakout_score')
-        tq = _safe(row, 'trend_quality')
-        rk = _safe(row, 'rank', 9999)
-        fh = _safe(row, 'from_high_pct', -99)
-        fl = _safe(row, 'from_low_pct')
-        pt = _safe(row, 'position_tension')
-        mom = _safe(row, 'momentum_score')
-        pats = _get_patterns(row)
-        state = str(row.get('market_state', '')).strip()
-
-        # ── Path detection ──
-        is_momentum = state in ('UPTREND', 'STRONG_UPTREND') or (tq >= 66 and ms >= 51)
-        is_contrarian = state in ('DOWNTREND', 'STRONG_DOWNTREND') and pos >= 40
-
-        # Master score ≥ 51 (winner median)
-        if ms >= 61:
-            score += 14; reasons.append('Elite Master Score')
-        elif ms >= 51:
-            score += 10; reasons.append('Strong Master Score')
-        elif ms >= 43:
-            score += 4
-
-        # Position score (winner median 48)
-        if pos >= 71:
-            score += 14; reasons.append('Elite Position')
-        elif pos >= 48:
-            score += 10; reasons.append('Strong Position')
-        elif pos >= 34:
-            score += 4
-
-        # Trend quality (winner median 66)
-        if tq >= 89:
-            score += 12; reasons.append('Exceptional TQ')
-        elif tq >= 66:
-            score += 9; reasons.append('Strong TQ')
-        elif tq >= 40:
-            score += 3
-
-        # Breakout score
-        if brk >= 74:
-            score += 10; reasons.append('High Breakout')
-        elif brk >= 51:
-            score += 6; reasons.append('Good Breakout')
-        elif brk >= 35:
-            score += 2
-
-        # Rank
-        if rk <= 200:
-            score += 10; reasons.append('Top 200 Rank')
-        elif rk <= 562:
-            score += 6; reasons.append('Top-Half Rank')
-        elif rk <= 986:
-            score += 2
-
-        # From high
-        if fh >= -8:
-            score += 6; reasons.append('Near High')
-        elif fh >= -18:
-            score += 3
-
-        # Momentum score
-        if mom >= 67:
-            score += 6; reasons.append('High Momentum')
-        elif mom >= 56:
-            score += 3
-
-        # Position tension
-        if pt >= 94:
-            score += 6; reasons.append('High Tension')
-        elif pt >= 75:
-            score += 3
-
-        # Pattern bonuses (MARKET LEADER 2.2x, CAT LEADER 2.0x)
-        for p in pats:
-            if 'MARKET LEADER' in p:
-                score += 7; reasons.append('Market Leader')
-            elif 'CAT LEADER' in p:
-                score += 6; reasons.append('Cat Leader')
-            elif 'LIQUID LEADER' in p:
-                score += 5; reasons.append('Liquid Leader')
-            elif 'PREMIUM MOMENTUM' in p:
-                score += 5; reasons.append('Premium Momentum')
-            elif 'GOLDEN CROSS' in p:
-                score += 4; reasons.append('Golden Cross')
-            elif 'PULLBACK SUPPORT' in p:
-                score += 4; reasons.append('Pullback Support')
-            elif 'STEALTH' in p:
-                score += 6; reasons.append('Stealth (BT+12%)')
-            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
-                score += 7; reasons.append('Quality/GARP (BT#1)')
-            elif 'CAPITULATION' in p:
-                score += 7; reasons.append('Capitulation (BT#2)')
-
-        # State bonuses
-        if state in ('UPTREND', 'STRONG_UPTREND'):
-            score += 4
-        elif state == 'PULLBACK' and pos >= 40:
-            score += 3
-        # Contrarian state boost (S20 Contrarian = +12.49% alpha, proven)
-        elif state in ('DOWNTREND', 'STRONG_DOWNTREND') and pos >= 30:
-            score += 5; reasons.append('Contrarian State')
-
-        # Path label — Contrarian heavily favoured per backtest (S20=+12.49% vs S19=+0.72%)
-        path = 'Momentum' if is_momentum else ('Contrarian' if is_contrarian else 'Neutral')
-        if is_momentum:
-            score += 2
-        if is_contrarian:
-            score += 8; reasons.append('Contrarian Setup (BT#3)')
-
-        return min(score, 100), reasons, path
-
-    def _score_small(row):
-        """Small Cap: position_score***, trend_quality***, breakout_score***,
-        master_score***, rank***, from_high_pct***, from_low_pct***, position_tension**"""
-        score = 0
-        reasons = []
-        pos = _safe(row, 'position_score')
-        tq = _safe(row, 'trend_quality')
-        brk = _safe(row, 'breakout_score')
-        ms = _safe(row, 'master_score')
-        rk = _safe(row, 'rank', 9999)
-        fh = _safe(row, 'from_high_pct', -99)
-        fl = _safe(row, 'from_low_pct')
-        pt = _safe(row, 'position_tension')
-        pats = _get_patterns(row)
-
-        # Position score (winner median 45, P75=65)
-        if pos >= 65:
-            score += 16; reasons.append('Elite Position')
-        elif pos >= 45:
-            score += 10; reasons.append('Strong Position')
-        elif pos >= 33:
-            score += 4
-
-        # Trend quality (winner median 59, P75=83)
-        if tq >= 83:
-            score += 14; reasons.append('Exceptional TQ')
-        elif tq >= 59:
-            score += 9; reasons.append('Strong TQ')
-        elif tq >= 29:
-            score += 3
-
-        # Breakout score
-        if brk >= 56:
-            score += 10; reasons.append('High Breakout')
-        elif brk >= 45:
-            score += 6; reasons.append('Good Breakout')
-        elif brk >= 34:
-            score += 2
-
-        # Master score
-        if ms >= 56:
-            score += 10; reasons.append('High Master Score')
-        elif ms >= 46:
-            score += 6
-        elif ms >= 40:
-            score += 2
-
-        # Rank
-        if rk <= 400:
-            score += 8; reasons.append('Top 400 Rank')
-        elif rk <= 823:
-            score += 5; reasons.append('Above-Median Rank')
-        elif rk <= 1280:
-            score += 2
-
-        # From high
-        if fh >= -13:
-            score += 8; reasons.append('Near High')
-        elif fh >= -26:
-            score += 4
-
-        # Position tension
-        if pt >= 94:
-            score += 8; reasons.append('High Tension')
-        elif pt >= 83:
-            score += 4
-
-        # From low
-        if fl >= 69:
-            score += 6; reasons.append('Strong Recovery')
-        elif fl >= 54:
-            score += 3
-
-        # Pattern bonuses
-        for p in pats:
-            if 'VELOCITY SQUEEZE' in p:
-                score += 7; reasons.append('Velocity Squeeze')
-            elif 'ACCELERATION' in p:
-                score += 6; reasons.append('Acceleration')
-            elif 'MARKET LEADER' in p:
-                score += 5; reasons.append('Market Leader')
-            elif 'CAT LEADER' in p:
-                score += 5; reasons.append('Cat Leader')
-            elif 'PULLBACK SUPPORT' in p:
-                score += 5; reasons.append('Pullback Support')
-            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
-                score += 7; reasons.append('Quality/GARP (BT#1)')
-            elif 'RUNAWAY GAP' in p:
-                score += 6; reasons.append('Runaway Gap')
-            elif 'PREMIUM MOMENTUM' in p:
-                score += 4; reasons.append('Premium Momentum')
-            elif 'STEALTH' in p:
-                score += 6; reasons.append('Stealth (BT+12%)')
-            elif 'CAPITULATION' in p:
-                score += 6; reasons.append('Capitulation (BT#2)')
-
-        # State
-        state = str(row.get('market_state', '')).strip()
-        if state in ('UPTREND', 'STRONG_UPTREND'):
-            score += 4
-        elif state == 'PULLBACK':
-            score += 2
-
-        return min(score, 100), reasons
-
-    def _score_micro(row):
-        """Micro Cap — Coiled Spring: LOW volume**, LOW money_flow**, HIGH position_tension*,
-        position_score*, LOW acceleration*. ROTATION state enriched.
-        Patterns: VALUE MOMENTUM 16x, INFO DECAY 3.9x, STEALTH 1.9x"""
-        score = 0
-        reasons = []
-        vol = _safe(row, 'volume_score')
-        mf = _safe(row, 'money_flow_mm')
-        pt = _safe(row, 'position_tension')
-        pos = _safe(row, 'position_score')
-        acc = _safe(row, 'acceleration_score')
-        rvol_s = _safe(row, 'rvol_score')
-        tq = _safe(row, 'trend_quality')
-        rk = _safe(row, 'rank', 9999)
-        pats = _get_patterns(row)
-        state = str(row.get('market_state', '')).strip()
-
-        # LOW volume score (winners 29 vs others 34)
-        if vol <= 15:
-            score += 18; reasons.append('Very Low Volume (Coiled)')
-        elif vol <= 27:
-            score += 12; reasons.append('Low Volume')
-        elif vol <= 34:
-            score += 4
-
-        # LOW money flow (winners 1.7 vs others 31.5)
-        if mf <= 2:
-            score += 16; reasons.append('Minimal Money Flow')
-        elif mf <= 10:
-            score += 10; reasons.append('Low Money Flow')
-        elif mf <= 31:
-            score += 3
-
-        # HIGH position tension (winners 412 vs others 85)
-        if pt >= 400:
-            score += 16; reasons.append('Extreme Tension')
-        elif pt >= 150:
-            score += 10; reasons.append('High Tension')
-        elif pt >= 85:
-            score += 4
-
-        # Position score
-        if pos >= 62:
-            score += 10; reasons.append('High Position')
-        elif pos >= 35:
-            score += 6; reasons.append('Good Position')
-        elif pos >= 29:
-            score += 2
-
-        # LOW rvol score (winners 23 vs others 28)
-        if rvol_s <= 15:
-            score += 6; reasons.append('Low Rvol (Under Radar)')
-
-        # LOW acceleration (winners 49 vs others 51)
-        if acc <= 45:
-            score += 4; reasons.append('Low Acceleration')
-
-        # TQ — trajectory matters more than level
-        if tq >= 77:
-            score += 6; reasons.append('Rising TQ')
-        elif tq >= 43:
-            score += 3
-
-        # Pattern bonuses (VALUE MOMENTUM 16x!)
-        for p in pats:
-            if 'VALUE MOMENTUM' in p:
-                score += 12; reasons.append('Value Momentum (16x!)')
-            elif 'INFORMATION DECAY' in p:
-                score += 8; reasons.append('Info Decay Arb (3.9x)')
-            elif 'STEALTH' in p:
-                score += 7; reasons.append('Stealth (BT+12%)')
-            elif 'GOLDEN CROSS' in p:
-                score += 5; reasons.append('Golden Cross')
-            elif 'MARKET LEADER' in p:
-                score += 4; reasons.append('Market Leader')
-            elif 'CAPITULATION' in p:
-                score += 5; reasons.append('Capitulation (BT#2)')
-            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
-                score += 7; reasons.append('Quality/GARP (BT#1)')
-
-        # ROTATION state strongly enriched (+5.8%)
-        if state == 'ROTATION':
-            score += 8; reasons.append('Rotation State')
-        elif state == 'DOWNTREND':
-            score += 3; reasons.append('Downtrend (Potential Coil)')
-        elif state == 'STRONG_DOWNTREND':
-            score += 2
-
-        return min(score, 100), reasons
-
-    # ═══════════════════════════════════════════════════════
-    # SCAN ALL STOCKS
+    # SCAN ALL STOCKS (uses module-level DNA scorers)
     # ═══════════════════════════════════════════════════════
 
     # Build prev-week lookup for TQ trajectory
@@ -9182,11 +11262,26 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
                 except (ValueError, TypeError):
                     pass
 
-    # Build 2-weeks-ago lookup for "New This Week"
-    prev2_tickers = set()
-    if len(dates) >= 3:
-        prev2_df = weekly_data[dates[-3]]
-        prev2_tickers = set(prev2_df['ticker'].astype(str).str.strip())
+    # Build multi-week DNA score history (last 12 weeks per ticker).
+    # Drives: prev_dna_map (1-week Δ — preserved), DNA 4w Δ, DNA Peak (12w),
+    # and Setup Age. Cached across reruns so slider/filter changes are instant.
+    _hist_dates = dates[-_DNA_HISTORY_WEEKS:]
+    score_history_map = _build_dna_score_history(weekly_data, _hist_dates)
+
+    # Derive prev-week DNA map from history for backward-compatible Δ logic.
+    # The latest week IS in the history; the second-to-last entry is "prev".
+    prev_dna_map = {}
+    for tk, hist in score_history_map.items():
+        if len(hist) >= 2:
+            prev_dna_map[tk] = hist[-2][1]
+
+    # Build "new this week" set: tickers in the latest CSV but NOT in the
+    # immediately preceding CSV. Strict 1-week semantic to match the label
+    # "New This Week". Works correctly with as little as 2 weeks of data
+    # (the previous 2-weeks-ago check silently disabled the flag in that case).
+    prev_tickers = set()
+    if prev_df is not None:
+        prev_tickers = set(prev_df['ticker'].astype(str).str.strip())
 
     # ── Apply sidebar filters: only scan tickers passing global filters ──
     # Always build the set — empty set correctly shows 0 results when filters exclude everything
@@ -9207,26 +11302,30 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         if sidebar_tickers is not None and tk not in sidebar_tickers:
             continue
 
-        # Determine which scanner to use
+        # Determine which scanner to use — STRICT category match.
+        # (Previously a special-case let Large Cap rows leak through when the
+        # user selected Mega Cap. Removed: each cap is its own scoring path,
+        # mixing them produces wrong scores and a confusing watchlist.)
         if sel_cat != "All Categories" and cat != sel_cat:
-            # Special case: Mega Cap data might be labeled Large Cap
-            if not (sel_cat == "Mega Cap" and cat == "Large Cap"):
-                continue
+            continue
 
         if cat == 'Large Cap':
-            dna_score, reasons = _score_large(row)
+            dna_score, reasons = _dna_score_large(row)
             path = 'Quality Leader'
         elif cat == 'Mega Cap':
-            dna_score, reasons = _score_mega(row)
+            dna_score, reasons = _dna_score_mega(row)
             path = 'Institutional'
         elif cat == 'Mid Cap':
-            dna_score, reasons, path = _score_mid(row)
+            dna_score, reasons, path = _dna_score_mid(row)
         elif cat == 'Small Cap':
-            dna_score, reasons = _score_small(row)
-            path = 'Position/TQ'
+            dna_score, reasons = _dna_score_small(row)
+            # Dynamic path detection (validated: Tension/Recovery = +5.6% ret, 58.8% WR)
+            _pt = _safe_dna(row, 'position_tension')
+            _fl = _safe_dna(row, 'from_low_pct')
+            path = 'Tension/Recovery' if (_pt >= 100 or _fl >= 75) else 'Position/TQ'
         elif cat == 'Micro Cap':
-            dna_score, reasons = _score_micro(row)
-            path = 'Coiled Spring'
+            dna_score, reasons = _dna_score_micro(row)
+            path = 'Tension/Recovery'
         else:
             continue
 
@@ -9241,7 +11340,7 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             continue  # Skip very low scores
 
         # TQ trend
-        tq_now = _safe(row, 'trend_quality')
+        tq_now = _safe_dna(row, 'trend_quality')
         tq_prev = prev_tq_map.get(tk)
         if tq_prev is not None:
             tq_delta = tq_now - tq_prev
@@ -9254,39 +11353,140 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         else:
             tq_trend = '—'
 
-        # Rank improvement
-        rk_now = _safe(row, 'rank', 9999)
+        # Rank improvement — only when current rank is real (not missing-sentinel)
+        # and previous-week rank exists. Avoids false "↓-9856" alerts when the
+        # latest CSV is missing a rank value (defaults to 9999).
+        rk_now_raw = _safe_dna(row, 'rank', 9999)
+        rk_has = rk_now_raw < 9999
+        rk_now = rk_now_raw
         rk_prev = prev_rank_map.get(tk)
-        if rk_prev is not None:
+        if rk_has and rk_prev is not None:
             rk_delta = rk_prev - rk_now  # positive = improved
             rk_trend = f'↑{rk_delta:.0f}' if rk_delta > 20 else (f'↓{-rk_delta:.0f}' if rk_delta < -20 else '→')
         else:
             rk_trend = '—'
 
-        # New this week flag
-        is_new = tk not in prev2_tickers if prev2_tickers else False
+        # New this week flag (1-week strict; consistent with section label)
+        is_new = (tk not in prev_tickers) if prev_tickers else False
+
+        # DNA trend — week-over-week score change
+        # Initialize explicitly so the dict-build below is bullet-proof even
+        # if future edits change the control flow.
+        dna_delta = 0
+        prev_dna = prev_dna_map.get(tk)
+        if prev_dna is not None:
+            dna_delta = dna_score - prev_dna
+            # Symmetric thresholds with a stable band around 0 to avoid
+            # alarming "↓-1" / falsely-promising "↑+1" noise.
+            if dna_delta >= 10:
+                dna_trend = f'🔥+{dna_delta}'
+            elif dna_delta >= 3:
+                dna_trend = f'↑+{dna_delta}'
+            elif dna_delta <= -10:
+                dna_trend = f'↓{dna_delta}'
+            elif dna_delta <= -3:
+                dna_trend = f'↓{dna_delta}'
+            else:
+                dna_trend = '→'
+        else:
+            dna_trend = '🆕'
 
         state = str(row.get('market_state', '')).strip()
         company = str(row.get('company_name', tk)).strip()
-        ms = _safe(row, 'master_score')
+        sector = str(row.get('sector', '')).strip() or '—'
+        ms = _safe_dna(row, 'master_score')
+        fh_now = _safe_dna(row, 'from_high_pct', -99)
+        # Raw pattern set for Tier anti-pattern checks
+        _pats_raw = ' | '.join(_get_patterns_dna(row))
+
+        # ── Multi-week DNA analytics (uses score_history_map) ─────────────
+        _hist = score_history_map.get(tk, [])
+        _hist_scores = [s for _, s in _hist]
+
+        # 4-week Δ: today − score from exactly 4 weeks ago.
+        # Need ≥ 5 entries (today + 4 prior). Fewer → '—' (not enough data).
+        if len(_hist_scores) >= 5:
+            _d4 = dna_score - _hist_scores[-5]
+            _d4i = int(round(_d4))
+            if _d4i >= 10:
+                dna_4w_delta = f'🚀+{_d4i}'
+            elif _d4i >= 3:
+                dna_4w_delta = f'↑+{_d4i}'
+            elif _d4i <= -10:
+                dna_4w_delta = f'⚠️{_d4i}'
+            elif _d4i <= -3:
+                dna_4w_delta = f'↓{_d4i}'
+            else:
+                dna_4w_delta = '→'
+            dna_4w_delta_num = _d4i
+        else:
+            dna_4w_delta = '—'
+            dna_4w_delta_num = 0
+
+        # 12-week Peak: highest DNA score in the available window (incl. today).
+        # ★ marker when today equals (or is within 1 pt of) the peak — "at peak".
+        if _hist_scores:
+            _peak = max(_hist_scores)
+            _peak_i = int(round(_peak))
+            if dna_score >= _peak - 1:
+                dna_peak_disp = f'★{_peak_i}'      # at-peak: today is the high
+            else:
+                dna_peak_disp = f'{_peak_i}'
+            dna_peak_num = _peak_i
+        else:
+            dna_peak_disp = '—'
+            dna_peak_num = 0
+
+        # Setup Age: consecutive weeks (counting back from today) with score
+        # ≥ _DNA_SETUP_AGE_THRESHOLD. "How long has this stock been on the radar?"
+        # Fresh signal = 1w. Long-brewing setup = 6w+.
+        _age = 0
+        for _s in reversed(_hist_scores):
+            if _s >= _DNA_SETUP_AGE_THRESHOLD:
+                _age += 1
+            else:
+                break
+        if _age == 0:
+            setup_age_disp = '—'
+        elif _age == 1:
+            setup_age_disp = '🆕 1w'
+        elif _age >= 6:
+            setup_age_disp = f'🔥 {_age}w'
+        else:
+            setup_age_disp = f'{_age}w'
 
         results.append({
             'Ticker': tk,
-            'Company': company[:25],
+            # Inline 🆕 badge appended to Company name (replaces standalone
+            # "New" column). Full name preserved — column auto-sizes in dataframe.
+            'Company': (company + ' 🆕') if is_new else company,
             'Category': cat,
             'DNA Score': dna_score,
+            'DNA Δ': dna_trend,
+            'DNA 4w Δ': dna_4w_delta,
+            'DNA Peak (12w)': dna_peak_disp,
+            'Setup Age': setup_age_disp,
             'Conviction': conviction,
             'Path': path,
             'State': state,
             'Criteria Met': len(reasons),
             'Key Signals': ', '.join(reasons[:4]),
+            'Sector': sector,
             'TQ': f'{tq_now:.0f}',
             'TQ Trend': tq_trend,
-            'Rank': f'{rk_now:.0f}',
+            'Rank': f'{rk_now:.0f}' if rk_has else '—',
             'Rank Δ': rk_trend,
             'MS': f'{ms:.0f}',
-            'New': '🆕' if is_new else '',
+            '_is_new': is_new,         # kept as hidden flag for the "New This Week" section
             '_score': dna_score,
+            '_dna_delta': dna_delta,
+            '_dna_4w_delta': dna_4w_delta_num,
+            '_dna_peak': dna_peak_num,
+            '_setup_age': _age,
+            '_tq': tq_now,
+            '_ms': ms,
+            '_fh': fh_now,
+            '_pats': _pats_raw,
         })
 
     if not results:
@@ -9299,9 +11499,10 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     total = len(res_df)
     high_conv = len(res_df[res_df['Conviction'].str.contains('HIGH')])
     med_conv = len(res_df[res_df['Conviction'].str.contains('MEDIUM')])
-    new_count = len(res_df[res_df['New'] == '🆕'])
+    new_count = len(res_df[res_df['_is_new']])
+    rising_count = len(res_df[res_df['_dna_delta'] >= 10])
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.metric("Total Matches", total)
     with c2:
@@ -9310,27 +11511,100 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
         st.metric("🟡 Medium Conviction", med_conv)
     with c4:
         st.metric("🆕 New This Week", new_count)
+    with c5:
+        st.metric("🔥 DNA Rising", rising_count)
 
-    # ── Filter options ──
-    fc1, fc2 = st.columns(2)
+    # ── Filter controls — sliders + sort selector ──
+    fc1, fc2, fc3 = st.columns([1, 1, 1])
     with fc1:
-        min_score = st.slider("Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore')
+        min_score = st.slider(
+            "Min DNA Score", 30, 90, 30, 5, key='dna_wl_minscore',
+            help="Higher = stricter watch-list. 70+ ≈ elite, 55+ ≈ strong, 30+ ≈ broad.",
+        )
     with fc2:
-        conv_filter = st.multiselect("Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
-                                     default=['🔴 HIGH', '🟡 MEDIUM'], key='dna_wl_conv')
+        conv_filter = st.multiselect(
+            "Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
+            default=['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'], key='dna_wl_conv',
+        )
+    with fc3:
+        # Sort by hidden numeric columns (always descending — best-first).
+        # Maps user-friendly labels to (column, ascending) tuples.
+        sort_options = {
+            'DNA Score (high → low)': ('_score', False),
+            'DNA Δ — Rising Fastest (1w)': ('_dna_delta', False),
+            'DNA 4w Δ — Trending Up (1m)': ('_dna_4w_delta', False),
+            'DNA Peak (12w) — Strongest Setups': ('_dna_peak', False),
+            'Setup Age — Longest Brewing': ('_setup_age', False),
+            'TQ (high → low)': ('_tq', False),
+            'Master Score (high → low)': ('_ms', False),
+            'Criteria Met (most → least)': ('Criteria Met', False),
+        }
+        sort_choice = st.selectbox(
+            "Sort By", list(sort_options.keys()), index=0, key='dna_wl_sort',
+            help="DNA Δ = 1-week change · 4w Δ = 1-month trend · Peak = best score in last 12w · "
+                 "Setup Age = consecutive weeks ≥ 45 (how long it's been on the radar).",
+        )
 
+    if not conv_filter:
+        conv_filter = ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW']
+
+    sort_col, sort_asc = sort_options[sort_choice]
     display_df = res_df[
         (res_df['_score'] >= min_score) &
         (res_df['Conviction'].isin(conv_filter))
-    ].copy()
+    ].sort_values(sort_col, ascending=sort_asc).copy()
 
-    display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'Conviction',
-                    'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
+    display_cols = ['Ticker', 'Company', 'Category', 'DNA Score', 'DNA Δ',
+                    'DNA 4w Δ', 'DNA Peak (12w)', 'Setup Age', 'Conviction',
+                    'Path', 'State', 'Criteria Met', 'Key Signals', 'Sector', 'TQ', 'TQ Trend',
                     'Rank', 'Rank Δ', 'MS']
+    # Hide the Category column when the user has narrowed to a single category —
+    # every row would just repeat the selected cap, wasting horizontal space.
+    if sel_cat != "All Categories":
+        display_cols = [c for c in display_cols if c != 'Category']
     display_df = display_df[display_cols]
 
-    st.markdown(f"**Showing {len(display_df)} stocks** (sorted by DNA Score)")
-    st.dataframe(display_df, use_container_width=True, height=min(600, 35 * len(display_df) + 40))
+    if display_df.empty:
+        st.info(
+            f"🔍 No stocks pass the current filters (Min DNA ≥ {min_score}, "
+            f"Conviction ∈ {', '.join(conv_filter)}). "
+            f"Try lowering Min DNA Score or adding more conviction tiers."
+        )
+    else:
+        # Header row: count + export button on the right
+        hdr_l, hdr_r = st.columns([3, 1])
+        with hdr_l:
+            # Dual count: filtered (table) / total (universe). Resolves the
+            # confusion where top metric cards show universe-wide counts but
+            # the table reflects Min DNA / Conviction filters.
+            _total_universe = len(res_df)
+            if len(display_df) == _total_universe:
+                st.markdown(f"**Showing all {_total_universe} stocks** — sorted by *{sort_choice}*")
+            else:
+                st.markdown(
+                    f"**Showing {len(display_df)} of {_total_universe} matches** — "
+                    f"sorted by *{sort_choice}*"
+                )
+        with hdr_r:
+            # Export reflects the EXACT view the user is looking at (same filters,
+            # same sort, same columns). Filename encodes context for traceability.
+            _cat_tag = sel_cat.replace(' ', '') if sel_cat != 'All Categories' else 'AllCats'
+            _date_tag = dates[-1].strftime('%Y-%m-%d')
+            st.download_button(
+                "📥 Export CSV",
+                data=display_df.to_csv(index=False).encode('utf-8'),
+                file_name=f"dna_watchlist_{_cat_tag}_{_date_tag}.csv",
+                mime="text/csv",
+                key='dna_wl_export',
+                use_container_width=True,
+                help="Downloads the current view (after filters + sort).",
+            )
+        # Insert a "#" column reflecting position in the CURRENT sort.
+        # This replaces the meaningless pandas index (which becomes random
+        # after sort) with a real serial number that always reads 1,2,3...
+        display_df.insert(0, '#', range(1, len(display_df) + 1))
+        st.dataframe(display_df, use_container_width=True, hide_index=True,
+                     height=min(600, max(140, 35 * len(display_df) + 40)))
 
     # ── Category breakdown (when All Categories selected) ──
     if sel_cat == "All Categories":
@@ -9344,12 +11618,38 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
             st.markdown(f"**{cat_name}**: {len(cat_df)} matches ({high_c} high conviction)")
 
     # ── NEW THIS WEEK SPOTLIGHT ──
-    new_df = display_df[display_df['New'] == '🆕']
+    # Filter via the hidden _is_new flag on the original res_df, then project
+    # only the visible display_cols (preserves filter context: same min DNA,
+    # same conviction tiers).
+    new_filter_mask = (
+        res_df['_is_new'] &
+        (res_df['_score'] >= min_score) &
+        (res_df['Conviction'].isin(conv_filter))
+    )
+    new_df = res_df[new_filter_mask][display_cols].copy()
     if not new_df.empty:
         st.markdown("---")
         st.markdown("#### 🆕 New DNA Matches This Week")
         st.markdown("*These stocks just appeared on the DNA radar — early signals.*")
-        st.dataframe(new_df, use_container_width=True, height=min(300, 35 * len(new_df) + 40))
+        st.caption(
+            "ℹ️ Scoped to your sidebar filters (sector / category / market state). "
+            "True new arrivals (e.g. fresh IPOs) only appear here once they enter "
+            "the sidebar's selected universe."
+        )
+        new_df.insert(0, '#', range(1, len(new_df) + 1))
+        st.dataframe(new_df, use_container_width=True, hide_index=True,
+                     height=min(300, 35 * len(new_df) + 40))
+
+    # ── DNA RISING SPOTLIGHT ──
+    rising_df = res_df[res_df['_dna_delta'] >= 10].sort_values('_dna_delta', ascending=False)
+    if not rising_df.empty:
+        rising_display = rising_df[display_cols].head(20).copy()
+        rising_display.insert(0, '#', range(1, len(rising_display) + 1))
+        st.markdown("---")
+        st.markdown("#### 🔥 DNA Rising — Fastest Improving Setups")
+        st.markdown("*These stocks' DNA scores jumped 10+ points vs last week — early-stage setups catching fire.*")
+        st.dataframe(rising_display, use_container_width=True, hide_index=True,
+                     height=min(300, 35 * len(rising_display) + 40))
 
     # ── HIGH CONVICTION DETAIL ──
     high_df = display_df[display_df['Conviction'] == '🔴 HIGH']
@@ -9375,35 +11675,939 @@ def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
     # ── DNA SCORING LEGEND ──
     with st.expander("📖 DNA Scoring Methodology"):
         st.markdown(r"""
-        Each category uses a **unique scoring formula** calibrated to actual 6-month winner profiles
-        + **backtest-validated pattern bonuses** (BT = backtest proven):
+        Each category uses a **unique scoring formula** calibrated to actual 6-month winner profiles.
+        All metrics, thresholds, patterns, and states are **data-validated** against real winner/non-winner separation.
 
-        | Category | Key Drivers | Winner Archetype |
-        |----------|------------|------------------|
-        | **Large Cap** | Position Score\*\*\*, Position Tension\*\*\*, From Low\*\*\* | Quality leaders with building tension |
-        | **Mega Cap** | Volume Score\*, Near High\*, LOW Tension\*\*\* | Stable blue chips with volume interest |
-        | **Mid Cap** | Master\*\*\*, Position\*\*\*, Breakout\*\*\*, TQ\*\*\*, Rank\*\*\* | Dual-path: Momentum OR **Contrarian (BT#3)** |
-        | **Small Cap** | Position\*\*\*, TQ\*\*\*, Breakout\*\*\*, Rank\*\*\* | TQ & Position driven, pattern enrichment |
-        | **Micro Cap** | LOW Volume\*\*, LOW Money Flow\*\*, HIGH Tension\* | Coiled Spring — under radar, building tension |
+        | Category | Top Drivers (by separation) | Winner Archetype |
+        |----------|---------------------------|------------------|
+        | **Large Cap** | Position\*\*\*, Tension\*\*\*, From-Low\*\*\* + Surgical Patterns | Quality leaders — high position & tension, PULLBACK/UPTREND states |
+        | **Mega Cap** | Position\*\*\* (+43%), Near-High\*\*\*, Tension\*\*\* (higher=better), From-Low\*\*\* (+61%) | Institutional leaders near highs with strong recovery |
+        | **Mid Cap** | From-Low\*\*\* (+294% #1), Master\*\*\*, Position\*\*\*, TQ\*\*\*, Rank\*\*\* | Dual-path: Momentum OR Contrarian (1.65x edge) |
+        | **Small Cap** | Position\*\*\*, TQ\*\*\*, Breakout\*\*\*, Rank\*\*\*, From-Low\*\* | TQ & Position driven with pattern enrichment |
+        | **Micro Cap** | Tension\*\*\* (+337%), From-Low\*\*\* (+700%), Position\*\*\*, Rank\*\*\* | Recovery/momentum — strong rebound from lows with rank confirmation |
 
-        **Backtest-Validated Boosts** (applied across ALL categories):
-        - 🏆 **Quality GARP** (+7): S15 = **+20.28% alpha**, #1 strategy overall
-        - 🔄 **Capitulation** (+5-7): S13 = **+17.82% alpha**, #2 strategy overall
-        - 🤫 **Stealth** (+6-7): S17 = **+12.37% alpha**, #4 strategy overall
-        - 📉 **Contrarian Path** (+8 Mid Cap): S20 = **+12.49% alpha** vs S19 Momentum = +0.72%
+        **Universal Signals** (strong across ALL 5 cap categories):
+        - 📉 **PULLBACK State** (5-9x winner ratio): The #1 most consistent signal across all caps
+        - 📈 **STRONG_UPTREND State** (4-5x): Second strongest universal state signal
+        - 🏆 **Quality/GARP Pattern** (+7): Elite quality leaders
+        - 🤫 **Stealth Pattern** (+6-7): Under-the-radar movers
+        - ❌ **CAPITULATION removed** from all caps: 0x or anti-winner across every category
+        - ❌ **DOWNTREND/STRONG_DOWNTREND**: Anti-winner states (0.2-0.6x) — penalized or excluded
 
         **Conviction Levels:**
         - 🔴 **HIGH** (65+): Strong DNA match — multiple winner criteria aligned
         - 🟡 **MEDIUM** (45-64): Moderate match — developing setup, worth monitoring
         - 🟢 **LOW** (30-44): Early signal — partial match, watch for improvement
 
-        **Pattern Enrichment** (compared to non-winners):
-        - Micro: VALUE MOMENTUM (16.2x!), INFO DECAY (3.9x), STEALTH (1.9x)
-        - Mid: MARKET LEADER (2.2x), CAT LEADER (2.0x), LIQUID LEADER (2.4x)
+        **Top Pattern Ratios** (winner frequency vs non-winner, data-validated):
+        - Micro: VALUE MOMENTUM (8.2x), GOLDEN CROSS (4.9x), INFO DECAY (4.5x), PREMIUM MOM (4.3x)
+        - Mid: VALUE MOMENTUM (31x!), RUNAWAY GAP (7.9x), 52W HIGH (6.6x), MOMENTUM WAVE (4x)
         - Small: RUNAWAY GAP (9.0x), VELOCITY SQUEEZE (3.4x), ACCELERATION (2.5x)
-        - Large: 52W HIGH APPROACH (2.2x), PYRAMID (2.0x), VOL EXPLOSION (1.8x)
-        - Mega: PREMIUM MOMENTUM (3.5x), INSTITUTIONAL (3.2x), VOL EXPLOSION (3.0x)
+        - Large: VALUE MOMENTUM (9.6x), MOMENTUM WAVE (3.6x), INSTITUTIONAL (3.6x), PREMIUM MOM (3.3x)
+        - Mega: INSTITUTIONAL (17.9x!), STEALTH (11.9x), INST. TSUNAMI (11.2x), VOL EXPLOSION (6.4x)
+
+        **Advanced Features:**
+        - 🔥 **Pullback Confluence** (+3): When PULLBACK state fires AND 5+ other criteria already met — strongest setups
+        - 📊 **DNA Δ (1w Trend)**: Week-over-week DNA score change. 🔥+N = rising fast (catching fire), ↑+N = improving, ↓N = fading
+
+        **Multi-Week DNA Analytics** (uses last 12 weeks of uploaded data):
+        - 📈 **DNA 4w Δ** — Score change vs ~4 weeks ago. 🚀+N = sustained 1-month uptrend in setup quality, ⚠️-N = multi-week deterioration. Filters out 1-week noise.
+        - 🏔️ **DNA Peak (12w)** — Highest DNA score in last 12 weeks (incl. today). ★N = today IS the peak (no headroom shown yet); plain N = today is below peak (room to recover OR setup decaying).
+        - ⏳ **Setup Age** — Consecutive weeks DNA ≥ 45 (medium-conviction bar). 🆕 1w = fresh signal, 2-5w = developing, 🔥 6w+ = long-brewing high-quality setup. Tells you *how long* a stock has been on the radar.
+
+        **How to read them together:**
+        - **Best new setups**: 🆕 1w + 🚀 4w Δ + ★ Peak → just turned, sharply rising, currently at its best
+        - **Best mature setups**: 🔥 6w+ + ★ Peak → been on radar for months and still at peak — proven persistence
+        - **Late-stage warnings**: 🔥 6w+ + ⚠️ 4w Δ + Peak ≫ today → was elite, now fading — exit signal
         """)
+
+
+# ============================================
+# DNA BACKTEST ENGINE
+# ============================================
+
+def _score_row_dna(row):
+    """Score a single CSV row through the DNA scoring pipeline.
+    Returns dict with dna_score, conviction, path, reasons or None."""
+    cat = str(row.get('category', ''))
+    if not cat or cat == 'nan':
+        return None
+    try:
+        if cat == 'Large Cap':
+            dna_score, reasons = _dna_score_large(row)
+            path = 'Quality Leader'
+        elif cat == 'Mega Cap':
+            dna_score, reasons = _dna_score_mega(row)
+            path = 'Institutional'
+        elif cat == 'Mid Cap':
+            dna_score, reasons, path = _dna_score_mid(row)
+        elif cat == 'Small Cap':
+            dna_score, reasons = _dna_score_small(row)
+            path = 'Position/TQ'
+        elif cat == 'Micro Cap':
+            dna_score, reasons = _dna_score_micro(row)
+            path = 'Tension/Recovery'
+        else:
+            return None
+    except Exception:
+        return None
+
+    if dna_score >= 65:
+        conviction = 'HIGH'
+    elif dna_score >= 45:
+        conviction = 'MEDIUM'
+    elif dna_score >= 30:
+        conviction = 'LOW'
+    else:
+        conviction = 'MINIMAL'
+
+    return {
+        'dna_score': dna_score,
+        'conviction': conviction,
+        'path': path,
+        'reasons': reasons,
+    }
+
+
+def _run_dna_backtest(uploaded_files, mode='all', tickers_filter=None,
+                      categories_filter=None, progress_callback=None):
+    """
+    DNA Backtest Engine — walk-forward validation of DNA scoring.
+
+    For each entry week where forward data exists:
+      1. Score every ticker with DNA (from that week's CSV row — no lookahead)
+      2. Compute actual forward returns at multiple horizons by matching prices
+
+    Args:
+        uploaded_files: Streamlit uploaded file objects
+        mode: 'all', 'tickers', or 'category'
+        tickers_filter: list of tickers (for mode='tickers')
+        categories_filter: list of categories (for mode='category')
+        progress_callback: fn(pct, text)
+
+    Returns: (detail_df, dates_list) or None
+    """
+    # ── Step 1: Parse all CSVs ──
+    weekly_data = {}
+    for ufile in uploaded_files:
+        dt = parse_date_from_filename(ufile.name)
+        if dt is None:
+            continue
+        try:
+            ufile.seek(0)
+            df = pd.read_csv(ufile)
+            if 'rank' in df.columns and 'ticker' in df.columns:
+                df['ticker'] = df['ticker'].astype(str).str.strip()
+                for nc in ['rank', 'master_score', 'price', 'position_score', 'volume_score',
+                           'momentum_score', 'acceleration_score', 'breakout_score', 'rvol_score',
+                           'trend_quality', 'from_high_pct', 'from_low_pct', 'position_tension',
+                           'money_flow_mm', 'momentum_harmony', 'pe', 'eps_current', 'eps_change_pct',
+                           'ret_1d', 'ret_7d', 'ret_30d', 'ret_3m', 'ret_6m', 'ret_1y', 'rvol', 'vmi']:
+                    if nc in df.columns:
+                        df[nc] = pd.to_numeric(df[nc], errors='coerce')
+                weekly_data[dt] = df
+        except Exception:
+            continue
+
+    dates = sorted(weekly_data.keys())
+    n_weeks = len(dates)
+    if n_weeks < 3:
+        return None
+
+    # ── Step 2: Build price matrix {ticker: {date_index: price}} ──
+    date_to_idx = {d: i for i, d in enumerate(dates)}
+    price_matrix = {}
+    for d_idx, d in enumerate(dates):
+        df = weekly_data[d]
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            p = float(row['price']) if pd.notna(row.get('price')) and float(row.get('price', 0)) > 0 else 0
+            if p > 0:
+                if t not in price_matrix:
+                    price_matrix[t] = {}
+                price_matrix[t][d_idx] = p
+
+    # ── Step 3: Define horizon lookups ──
+    # Horizons in weeks: find nearest available date index
+    horizons = {'1w': 1, '2w': 2, '4w': 4, '8w': 8, '13w': 13}
+
+    # Per-window calendar gap is needed for honest annualization & cadence warnings.
+    # CSV cadence is irregular (4-day to 14-day gaps possible); a naive 7-day
+    # assumption breaks downstream stats.
+    forward_gap_days = {}
+    for i in range(n_weeks - 1):
+        forward_gap_days[i] = max(1, (dates[i + 1] - dates[i]).days)
+
+    def _find_nearest_future_idx(entry_idx, weeks_ahead):
+        """Find the nearest date index that is ~weeks_ahead from entry_idx."""
+        target = entry_idx + weeks_ahead
+        if target >= n_weeks:
+            return None
+        # Search within ±1 week tolerance
+        best_idx = None
+        best_dist = 999
+        for candidate in range(max(entry_idx + 1, target - 1), min(n_weeks, target + 2)):
+            dist = abs(candidate - target)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = candidate
+        return best_idx
+
+    # ── Step 4: Walk-forward — score each week ──
+    # FIX: Always include every ticker as a UNIVERSE row (cheap: just forward
+    # returns + category). Apply filters only to decide whether to run the
+    # expensive DNA scorer. This keeps the "Universe" baseline honest under
+    # filter modes — previously `all_universe` collapsed to the same filtered
+    # subset, making alpha-vs-universe meaningless (always near 0).
+    all_rows = []
+    total_entry_weeks = max(0, n_weeks - 1)
+
+    processed = 0
+    for entry_idx, entry_date in enumerate(dates):
+        # Need at least 1 week forward
+        if entry_idx + 1 >= n_weeks:
+            continue
+
+        df = weekly_data[entry_date]
+        entry_label = entry_date.strftime('%Y-%m-%d')
+        gap_days_this_week = forward_gap_days.get(entry_idx, 7)
+
+        # Track first row index for this week so backfill is O(rows_this_week)
+        # instead of O(total_rows_so_far) — the previous code rescanned
+        # `all_rows` every week, which is O(W² × N) overall.
+        week_start_idx = len(all_rows)
+
+        # Category returns are now built from the FULL CSV (no filter) so that
+        # cat_avg/alpha is correct regardless of mode.
+        cat_returns = {}  # {category: {horizon: [returns]}}
+
+        processed += 1
+        if progress_callback:
+            progress_callback(
+                processed / max(total_entry_weeks, 1),
+                f"Scoring week {entry_label} ({processed}/{total_entry_weeks})"
+            )
+
+        for _, row in df.iterrows():
+            ticker = str(row['ticker']).strip()
+            if not ticker or ticker == 'nan':
+                continue
+
+            cat = str(row.get('category', ''))
+
+            # ── Filter check: decides only whether DNA scoring runs ──
+            in_filter = True
+            if mode == 'tickers' and tickers_filter:
+                in_filter = ticker in tickers_filter
+            elif mode == 'category' and categories_filter:
+                in_filter = cat in categories_filter
+
+            # ── DNA Score (only for in-filter rows; universe rows skip this) ──
+            row_dict = row.to_dict()
+            if in_filter:
+                dna_result = _score_row_dna(row_dict)
+                dna_score = dna_result['dna_score'] if dna_result else 0
+                conviction = dna_result['conviction'] if dna_result else 'NONE'
+                path = dna_result['path'] if dna_result else ''
+                reasons = dna_result['reasons'] if dna_result else []
+            else:
+                dna_score = 0
+                conviction = 'NONE'
+                path = ''
+                reasons = []
+
+            # ── Forward Returns from price matrix ──
+            entry_price = price_matrix.get(ticker, {}).get(entry_idx, 0)
+            if entry_price <= 0:
+                continue
+
+            fwd_data = {}
+            for h_name, h_weeks in horizons.items():
+                fwd_idx = _find_nearest_future_idx(entry_idx, h_weeks)
+                if fwd_idx is not None:
+                    fwd_price = price_matrix.get(ticker, {}).get(fwd_idx, 0)
+                    if fwd_price > 0:
+                        fwd_data[f'price_{h_name}'] = round(fwd_price, 2)
+                        fwd_data[f'ret_{h_name}'] = round((fwd_price / entry_price - 1) * 100, 2)
+                    else:
+                        fwd_data[f'price_{h_name}'] = None
+                        fwd_data[f'ret_{h_name}'] = None
+                else:
+                    fwd_data[f'price_{h_name}'] = None
+                    fwd_data[f'ret_{h_name}'] = None
+
+            # ── Collect for category averages ──
+            if cat not in cat_returns:
+                cat_returns[cat] = {f'ret_{h}': [] for h in horizons}
+            for h_name in horizons:
+                rv = fwd_data.get(f'ret_{h_name}')
+                if rv is not None:
+                    cat_returns[cat][f'ret_{h_name}'].append(rv)
+
+            # ── Build row ──
+            detail_row = {
+                'entry_week': entry_label,
+                'gap_days_1w': gap_days_this_week,  # actual days to next CSV
+                'in_filter': in_filter,            # universe-vs-filtered flag
+                'ticker': ticker,
+                'company_name': str(row.get('company_name', '')),
+                'category': cat,
+                'sector': str(row.get('sector', '')),
+                'industry': str(row.get('industry', '')),
+                'dna_score': dna_score,
+                'conviction': conviction,
+                'path': path,
+                'dna_reasons': ' | '.join(reasons) if reasons else '',
+                'n_reasons': len(reasons),
+                'market_state': str(row.get('market_state', '')),
+                'patterns': str(row.get('patterns', '')),
+                'master_score': _safe_dna(row_dict, 'master_score'),
+                'trend_quality': _safe_dna(row_dict, 'trend_quality'),
+                'breakout_score': _safe_dna(row_dict, 'breakout_score'),
+                'position_score': _safe_dna(row_dict, 'position_score'),
+                'volume_score': _safe_dna(row_dict, 'volume_score'),
+                'momentum_score': _safe_dna(row_dict, 'momentum_score'),
+                'from_high_pct': _safe_dna(row_dict, 'from_high_pct', -99),
+                'from_low_pct': _safe_dna(row_dict, 'from_low_pct'),
+                'entry_price': round(entry_price, 2),
+            }
+            detail_row.update(fwd_data)
+            all_rows.append(detail_row)
+
+        # ── Backfill category averages for this entry week ──
+        # cat_returns now reflects the FULL universe (not filtered subset),
+        # so cat_avg is the true category mean and alpha is meaningful.
+        cat_avgs = {}
+        for c, h_dict in cat_returns.items():
+            cat_avgs[c] = {}
+            for h_key, vals in h_dict.items():
+                cat_avgs[c][h_key] = float(np.mean(vals)) if vals else None
+
+        # O(rows_this_week) backfill — uses week_start_idx captured before the
+        # ticker loop; previous version rescanned all_rows every week (O(N²)).
+        for i in range(week_start_idx, len(all_rows)):
+            r = all_rows[i]
+            c = r['category']
+            for h_name in ['4w', '8w', '13w']:
+                key = f'ret_{h_name}'
+                cat_avg = cat_avgs.get(c, {}).get(key)
+                r[f'cat_avg_{key}'] = round(cat_avg, 2) if cat_avg is not None else None
+                if r.get(key) is not None and cat_avg is not None:
+                    r[f'alpha_{h_name}'] = round(r[key] - cat_avg, 2)
+                else:
+                    r[f'alpha_{h_name}'] = None
+
+    if not all_rows:
+        return None
+
+    detail_df = pd.DataFrame(all_rows)
+
+    # ── Winner flags (NaN-safe: pd.notna correctly rejects np.nan;
+    #    `x is not None` would let NaN slip through and silently tag rows as winner=0).
+    if 'ret_4w' in detail_df.columns:
+        detail_df['winner_4w'] = detail_df['ret_4w'].apply(lambda x: 1 if pd.notna(x) and x > 10 else 0)
+    if 'ret_8w' in detail_df.columns:
+        detail_df['winner_8w'] = detail_df['ret_8w'].apply(lambda x: 1 if pd.notna(x) and x > 15 else 0)
+    if 'ret_13w' in detail_df.columns:
+        detail_df['winner_13w'] = detail_df['ret_13w'].apply(lambda x: 1 if pd.notna(x) and x > 25 else 0)
+
+    if progress_callback:
+        progress_callback(1.0, "DNA Backtest complete!")
+
+    return detail_df, dates
+
+
+# ============================================
+# UI: DNA BACKTEST TAB
+# ============================================
+
+def render_dna_backtest_tab(uploaded_files):
+    """🧬 DNA Backtest — Validate DNA scoring with actual forward returns."""
+    st.markdown("### 🧬 DNA Backtest — Validate Scoring with Real Returns")
+    st.info("📌 **Sidebar filters do NOT apply here.** DNA scoring is recomputed weekly on the full universe — use the Tickers / Categories selector inside this tab to scope the backtest.")
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#0d1117,#161b22); border-radius:10px;
+                padding:16px; border:1px solid #30363d; margin-bottom:16px;">
+        <div style="font-size:0.85rem; color:#8b949e;">
+            <b>What this does:</b> Runs your DNA scoring system on EVERY ticker for EVERY past week,
+            then checks what ACTUALLY happened to prices 1-13 weeks later.<br>
+            <b>No lookahead bias</b> — each week scored using only that week's data.
+            <b>Forward returns</b> from real price changes across CSVs.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Mode Selection ──
+    mode_col, filter_col = st.columns([1, 2])
+    with mode_col:
+        bt_mode = st.radio("**Backtest Mode**", ['🌐 All Tickers', '📋 Specific Tickers', '📂 Category-Wise'],
+                           horizontal=False, key='dna_bt_mode')
+
+    tickers_filter = None
+    categories_filter = None
+
+    with filter_col:
+        if '📋' in bt_mode:
+            ticker_input = st.text_area("**Paste tickers** (comma or newline separated)",
+                                        height=100, key='dna_bt_tickers',
+                                        placeholder="RELIANCE, TCS, INFY\nor one per line...")
+            if ticker_input.strip():
+                raw = [t.strip() for t in ticker_input.replace(',', '\n').split('\n') if t.strip()]
+                tickers_filter = [t for t in raw if t]
+                st.caption(f"🎯 {len(tickers_filter)} tickers selected")
+        elif '📂' in bt_mode:
+            categories_filter = st.multiselect(
+                "**Select categories**",
+                ['Large Cap', 'Mega Cap', 'Mid Cap', 'Small Cap', 'Micro Cap'],
+                default=['Large Cap', 'Mid Cap'],
+                key='dna_bt_cats'
+            )
+
+    # ── Determine effective mode ──
+    if '📋' in bt_mode:
+        eff_mode = 'tickers'
+    elif '📂' in bt_mode:
+        eff_mode = 'category'
+    else:
+        eff_mode = 'all'
+
+    # ── Cache ──
+    bt_cache_key = (
+        'dna_bt',
+        tuple(sorted((f.name, f.size) for f in uploaded_files)),
+        eff_mode,
+        tuple(tickers_filter) if tickers_filter else (),
+        tuple(categories_filter) if categories_filter else (),
+    )
+    cached_result = st.session_state.get('_dna_bt_result')
+    cached_key = st.session_state.get('_dna_bt_key')
+
+    if cached_result is not None and cached_key == bt_cache_key:
+        detail_df, bt_dates = cached_result
+    else:
+        detail_df = None
+
+    # ── Run Button ──
+    n_files = len(uploaded_files)
+    col_run, col_info = st.columns([1, 3])
+    with col_run:
+        run_btn = st.button("🚀 Run DNA Backtest", type="primary", use_container_width=True, key='dna_bt_run')
+    with col_info:
+        if detail_df is None:
+            st.caption(f"📁 {n_files} CSVs loaded. Click Run to start.")
+        else:
+            n_rows = len(detail_df)
+            n_scored = len(detail_df[detail_df['dna_score'] > 0])
+            st.caption(f"✅ {n_rows:,} total rows · {n_scored:,} DNA-scored picks · {n_files} CSVs")
+
+    if run_btn:
+        if eff_mode == 'tickers' and not tickers_filter:
+            st.error("Paste at least one ticker to backtest.")
+            return
+        if eff_mode == 'category' and not categories_filter:
+            st.error("Select at least one category.")
+            return
+
+        progress_bar = st.progress(0, text="Initializing DNA Backtest...")
+
+        def _progress(pct, text):
+            progress_bar.progress(min(pct, 1.0), text=text)
+
+        with st.spinner("Running DNA backtest across all weeks..."):
+            result = _run_dna_backtest(
+                uploaded_files, mode=eff_mode,
+                tickers_filter=set(tickers_filter) if tickers_filter else None,
+                categories_filter=set(categories_filter) if categories_filter else None,
+                progress_callback=_progress,
+            )
+
+        progress_bar.empty()
+
+        if result is None:
+            st.error(f"❌ Not enough data. Need ≥3 weekly CSVs. You have {n_files}.")
+            return
+
+        detail_df, bt_dates = result
+        st.session_state['_dna_bt_result'] = (detail_df, bt_dates)
+        st.session_state['_dna_bt_key'] = bt_cache_key
+        st.rerun()
+
+    if detail_df is None:
+        return
+
+    # ── Split: DNA-scored picks (in-filter, score>0) vs full universe ──
+    # `in_filter` flag was set by the engine: True for tickers that passed
+    # the user's mode/category/ticker filter, False for universe-only rows.
+    # This guarantees `all_universe` is the TRUE market baseline even when
+    # the user filters down to a handful of tickers — previously the baseline
+    # collapsed to the same filtered subset, making alpha meaningless.
+    if 'in_filter' in detail_df.columns:
+        scored_df = detail_df[(detail_df['in_filter']) & (detail_df['dna_score'] > 0)].copy()
+    else:
+        # Backward-compat fallback (older cached results without the flag)
+        scored_df = detail_df[detail_df['dna_score'] > 0].copy()
+    all_universe = detail_df.copy()
+
+    if scored_df.empty:
+        st.warning("No tickers received a DNA score > 0 in any week.")
+        return
+
+    # ── Horizon columns available ──
+    avail_horizons = []
+    for h in ['ret_1w', 'ret_2w', 'ret_4w', 'ret_8w', 'ret_13w']:
+        if h in scored_df.columns and scored_df[h].notna().sum() > 0:
+            avail_horizons.append(h)
+
+    if not avail_horizons:
+        st.warning("No forward return data available. Need more CSVs for forward price matching.")
+        return
+
+    # ── Cadence warning (consistent with Strategy Backtest tab) ──
+    if 'gap_days_1w' in scored_df.columns:
+        _gd_series = scored_df['gap_days_1w'].dropna().astype(int)
+        if len(_gd_series) > 0:
+            _gd_min, _gd_max = int(_gd_series.min()), int(_gd_series.max())
+            if _gd_max - _gd_min > 3 or _gd_max > 9:
+                _gd_avg = float(_gd_series.mean())
+                st.caption(
+                    f"📅 CSV cadence is irregular (gaps {_gd_min}–{_gd_max} days, "
+                    f"avg {_gd_avg:.1f}). Horizons (1w/2w/4w/8w/13w) match the nearest "
+                    f"available CSV — treat as nominal, not strict calendar."
+                )
+
+    # ── Sample-size caveat for thin filters ──
+    if len(scored_df) < 50:
+        st.caption(
+            f"⚠️ Small sample ({len(scored_df)} DNA-scored picks across all weeks). "
+            f"Conviction/path/signal stats are directional only."
+        )
+
+    # ══════════════════════════════════════════════
+    # SECTION 1: CONVICTION PERFORMANCE MATRIX
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 📊 Section 1: Conviction Performance Matrix")
+
+    def _conviction_stats(sub_df, label):
+        """Compute stats for a conviction group."""
+        row = {'Group': label, 'Picks': len(sub_df)}
+        for h in avail_horizons:
+            vals = sub_df[h].dropna()
+            h_short = h.replace('ret_', '')
+            if len(vals) > 0:
+                row[f'Avg {h_short}'] = round(vals.mean(), 2)
+                row[f'Hit% {h_short}'] = round((vals > 0).sum() / len(vals) * 100, 1)
+            else:
+                row[f'Avg {h_short}'] = None
+                row[f'Hit% {h_short}'] = None
+        return row
+
+    conviction_rows = []
+    for cv in ['HIGH', 'MEDIUM', 'LOW', 'MINIMAL']:
+        cv_df = scored_df[scored_df['conviction'] == cv]
+        if len(cv_df) > 0:
+            conviction_rows.append(_conviction_stats(cv_df, f"🔴 {cv}" if cv == 'HIGH' else f"🟡 {cv}" if cv == 'MEDIUM' else f"🟢 {cv}" if cv == 'LOW' else f"⚪ {cv}"))
+    conviction_rows.append(_conviction_stats(scored_df, '🧬 ALL DNA>0'))
+    conviction_rows.append(_conviction_stats(all_universe, '📊 Universe'))
+
+    conv_matrix = pd.DataFrame(conviction_rows)
+    st.dataframe(conv_matrix, use_container_width=True, hide_index=True)
+
+    # ── Key Insight Cards ──
+    high_df = scored_df[scored_df['conviction'] == 'HIGH']
+    best_horizon = avail_horizons[-1]  # longest available
+    bh_short = best_horizon.replace('ret_', '')
+
+    cards_html = '<div style="display:flex; gap:12px; flex-wrap:wrap; margin:12px 0;">'
+    if len(high_df) > 0 and best_horizon in high_df.columns:
+        hv = high_df[best_horizon].dropna()
+        uv = all_universe[best_horizon].dropna()
+        h_avg = hv.mean() if len(hv) > 0 else 0
+        u_avg = uv.mean() if len(uv) > 0 else 0
+        alpha = h_avg - u_avg
+        hit = (hv > 0).sum() / max(len(hv), 1) * 100
+        a_color = '#3fb950' if alpha > 0 else '#f85149'
+        cards_html += f"""
+        <div style="background:#161b22; border:1px solid {a_color}; border-radius:10px; padding:14px; flex:1; min-width:200px;">
+            <div style="color:{a_color}; font-weight:700; font-size:1.1rem;">HIGH Conviction Alpha ({bh_short})</div>
+            <div style="color:#e6edf3; font-size:1.5rem; font-weight:800;">{alpha:+.2f}%</div>
+            <div style="color:#8b949e; font-size:0.8rem;">Avg: {h_avg:+.2f}% vs Universe {u_avg:+.2f}% · Hit Rate: {hit:.0f}% · {len(hv)} picks</div>
+        </div>"""
+
+    if len(scored_df) > 0 and 'ret_4w' in avail_horizons:
+        s4 = scored_df['ret_4w'].dropna()
+        u4 = all_universe['ret_4w'].dropna()
+        s_avg = s4.mean() if len(s4) > 0 else 0
+        u_avg2 = u4.mean() if len(u4) > 0 else 0
+        a4 = s_avg - u_avg2
+        a4_color = '#3fb950' if a4 > 0 else '#f85149'
+        cards_html += f"""
+        <div style="background:#161b22; border:1px solid {a4_color}; border-radius:10px; padding:14px; flex:1; min-width:200px;">
+            <div style="color:{a4_color}; font-weight:700; font-size:1.1rem;">All DNA Alpha (4w)</div>
+            <div style="color:#e6edf3; font-size:1.5rem; font-weight:800;">{a4:+.2f}%</div>
+            <div style="color:#8b949e; font-size:0.8rem;">DNA avg: {s_avg:+.2f}% vs Universe {u_avg2:+.2f}% · {len(s4)} obs</div>
+        </div>"""
+
+    n_entry_weeks = scored_df['entry_week'].nunique()
+    cards_html += f"""
+    <div style="background:#161b22; border:1px solid #30363d; border-radius:10px; padding:14px; flex:1; min-width:200px;">
+        <div style="color:#58a6ff; font-weight:700; font-size:1.1rem;">Coverage</div>
+        <div style="color:#e6edf3; font-size:1.5rem; font-weight:800;">{n_entry_weeks} weeks</div>
+        <div style="color:#8b949e; font-size:0.8rem;">{len(scored_df):,} DNA picks · {len(all_universe):,} universe rows</div>
+    </div>"""
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════
+    # SECTION 2: SIGNAL ATTRIBUTION
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 🎯 Section 2: Signal Attribution — Which DNA Signals Predict Winners?")
+
+    # Parse all reasons and compute per-signal stats
+    ref_horizon = 'ret_4w' if 'ret_4w' in avail_horizons else avail_horizons[-1]
+    ref_label = ref_horizon.replace('ret_', '')
+
+    signal_stats = {}
+    for _, row in scored_df.iterrows():
+        reasons_str = str(row.get('dna_reasons', ''))
+        if not reasons_str or reasons_str == 'nan':
+            continue
+        ret_val = row.get(ref_horizon)
+        if ret_val is None or (isinstance(ret_val, float) and np.isnan(ret_val)):
+            continue
+        signals = [s.strip() for s in reasons_str.split('|') if s.strip()]
+        for sig in signals:
+            if sig not in signal_stats:
+                signal_stats[sig] = {'returns': [], 'count': 0}
+            signal_stats[sig]['returns'].append(ret_val)
+            signal_stats[sig]['count'] += 1
+
+    if signal_stats:
+        # Universe baseline for this horizon
+        uni_ret = all_universe[ref_horizon].dropna()
+        uni_avg = uni_ret.mean() if len(uni_ret) > 0 else 0
+
+        sig_rows = []
+        for sig, data in signal_stats.items():
+            if data['count'] < 3:  # minimum observations
+                continue
+            rets = data['returns']
+            avg_r = np.mean(rets)
+            hit_r = sum(1 for r in rets if r > 0) / len(rets) * 100
+            sig_rows.append({
+                'Signal': sig,
+                f'Avg Ret ({ref_label})': round(avg_r, 2),
+                f'Hit Rate ({ref_label})': round(hit_r, 1),
+                'Alpha vs Universe': round(avg_r - uni_avg, 2),
+                'Count': data['count'],
+                # Linear-capped reliability score: rewards alpha but caps the
+                # multiplier at 1.0 once we have >=30 observations. Avoids the
+                # log scaling pathology where 5 lucky observations of a rare
+                # signal can dominate ranking via inflated big-move alpha.
+                'Predictive Power': round((avg_r - uni_avg) * min(1.0, data['count'] / 30.0), 2),
+            })
+
+        if sig_rows:
+            sig_df = pd.DataFrame(sig_rows).sort_values('Predictive Power', ascending=False)
+            st.dataframe(sig_df, use_container_width=True, hide_index=True)
+            st.caption(
+                f"Predictive Power = Alpha × min(1, Count/30). Caps reward at 30 obs to avoid "
+                f"rewarding overfit rare big-move signals. Reference horizon: {ref_label}."
+            )
+        else:
+            st.info("Not enough signal observations (min 3 per signal).")
+    else:
+        st.info("No signal data to analyze.")
+
+    # ══════════════════════════════════════════════
+    # SECTION 3: PATH PERFORMANCE
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 🛤️ Section 3: DNA Path Performance")
+
+    path_rows = []
+    for path_name in scored_df['path'].unique():
+        if not path_name or path_name == 'nan':
+            continue
+        p_df = scored_df[scored_df['path'] == path_name]
+        row_data = {'Path': path_name, 'Picks': len(p_df)}
+        for h in avail_horizons:
+            vals = p_df[h].dropna()
+            h_short = h.replace('ret_', '')
+            row_data[f'Avg {h_short}'] = round(vals.mean(), 2) if len(vals) > 0 else None
+            row_data[f'Hit% {h_short}'] = round((vals > 0).sum() / max(len(vals), 1) * 100, 1) if len(vals) > 0 else None
+        # Which categories use this path
+        cats = p_df['category'].value_counts()
+        row_data['Categories'] = ', '.join(f"{c}({n})" for c, n in cats.head(3).items())
+        path_rows.append(row_data)
+
+    if path_rows:
+        path_df = pd.DataFrame(path_rows).sort_values('Picks', ascending=False)
+        st.dataframe(path_df, use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════
+    # SECTION 4: CATEGORY BREAKDOWN
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 📂 Section 4: Category Breakdown")
+
+    cat_rows = []
+    for cat_name in ['Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']:
+        c_scored = scored_df[scored_df['category'] == cat_name]
+        c_uni = all_universe[all_universe['category'] == cat_name]
+        if len(c_scored) == 0 and len(c_uni) == 0:
+            continue
+
+        row_data = {
+            'Category': cat_name,
+            'DNA Picks': len(c_scored),
+            'Universe': len(c_uni),
+            'HIGH': len(c_scored[c_scored['conviction'] == 'HIGH']),
+            'MED': len(c_scored[c_scored['conviction'] == 'MEDIUM']),
+            'LOW': len(c_scored[c_scored['conviction'] == 'LOW']),
+        }
+
+        for h in avail_horizons:
+            h_short = h.replace('ret_', '')
+            sv = c_scored[h].dropna()
+            uv = c_uni[h].dropna()
+            s_avg = sv.mean() if len(sv) > 0 else None
+            u_avg = uv.mean() if len(uv) > 0 else None
+            row_data[f'DNA {h_short}'] = round(s_avg, 2) if s_avg is not None else None
+            row_data[f'Univ {h_short}'] = round(u_avg, 2) if u_avg is not None else None
+            if s_avg is not None and u_avg is not None:
+                row_data[f'Alpha {h_short}'] = round(s_avg - u_avg, 2)
+            else:
+                row_data[f'Alpha {h_short}'] = None
+
+        cat_rows.append(row_data)
+
+    if cat_rows:
+        cat_df = pd.DataFrame(cat_rows)
+        st.dataframe(cat_df, use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════
+    # SECTION 5: TIME SERIES — WEEKLY DNA PERFORMANCE
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 📈 Section 5: Weekly DNA Performance Over Time")
+
+    ts_horizon = 'ret_4w' if 'ret_4w' in avail_horizons else avail_horizons[-1]
+    ts_label = ts_horizon.replace('ret_', '')
+
+    weekly_perf = []
+    for week in sorted(scored_df['entry_week'].unique()):
+        w_scored = scored_df[scored_df['entry_week'] == week]
+        w_uni = all_universe[all_universe['entry_week'] == week]
+        sv = w_scored[ts_horizon].dropna()
+        uv = w_uni[ts_horizon].dropna()
+        s_avg = sv.mean() if len(sv) > 0 else None
+        u_avg = uv.mean() if len(uv) > 0 else None
+        high_count = len(w_scored[w_scored['conviction'] == 'HIGH'])
+        weekly_perf.append({
+            'Week': week,
+            f'DNA Avg ({ts_label})': round(s_avg, 2) if s_avg is not None else None,
+            f'Universe Avg ({ts_label})': round(u_avg, 2) if u_avg is not None else None,
+            'DNA Picks': len(w_scored),
+            'HIGH Conv': high_count,
+            'Avg DNA Score': round(w_scored['dna_score'].mean(), 1),
+        })
+
+    if weekly_perf:
+        ts_df = pd.DataFrame(weekly_perf)
+        st.dataframe(ts_df, use_container_width=True, hide_index=True)
+
+        # ── Cumulative Equity Chart ─────────────────────────────────────────
+        # CRITICAL: equity compounding is only mathematically valid when each
+        # period's return is non-overlapping. We use ret_1w explicitly here
+        # (NOT the user-selectable ts_horizon) because:
+        #   - 4w/8w/13w returns OVERLAP across consecutive entry weeks
+        #     → compounding them weekly inflates the curve dramatically
+        #     (e.g. avg +2% per 4w window across 18 weeks = 1.02^18 = 1.43,
+        #      while the actual non-overlapping return is ~1.02^4.5 = 1.09).
+        # ret_1w is non-overlapping and the only honest choice for an equity curve.
+        if 'ret_1w' in scored_df.columns:
+            equity_rows = []
+            for week in sorted(scored_df['entry_week'].unique()):
+                w_scored = scored_df[scored_df['entry_week'] == week]
+                w_uni = all_universe[all_universe['entry_week'] == week]
+                d_1w = w_scored['ret_1w'].dropna()
+                u_1w = w_uni['ret_1w'].dropna()
+                equity_rows.append({
+                    'week': week,
+                    'dna_ret_1w': float(d_1w.mean()) if len(d_1w) > 0 else None,
+                    'uni_ret_1w': float(u_1w.mean()) if len(u_1w) > 0 else None,
+                })
+
+            # Need at least 2 weeks with valid 1w returns to build a curve
+            valid_equity = [e for e in equity_rows
+                            if e['dna_ret_1w'] is not None and e['uni_ret_1w'] is not None]
+
+            if len(valid_equity) >= 2:
+                dna_cum, uni_cum = 100.0, 100.0
+                chart_x, chart_dna, chart_uni = [], [], []
+                for e in valid_equity:
+                    dna_cum *= (1 + e['dna_ret_1w'] / 100)
+                    uni_cum *= (1 + e['uni_ret_1w'] / 100)
+                    chart_x.append(e['week'])
+                    chart_dna.append(round(dna_cum, 2))
+                    chart_uni.append(round(uni_cum, 2))
+
+                final_dna = chart_dna[-1]
+                final_uni = chart_uni[-1]
+                spread = final_dna - final_uni
+                spread_color = '#3fb950' if spread >= 0 else '#f85149'
+
+                # Market state context (consistent with Strategy Backtest tab)
+                uni_total = (final_uni / 100 - 1) * 100
+                if uni_total < -5:
+                    mkt_state, mkt_color = 'BEAR MARKET', '#f85149'
+                elif uni_total > 5:
+                    mkt_state, mkt_color = 'BULL MARKET', '#3fb950'
+                else:
+                    mkt_state, mkt_color = 'SIDEWAYS MARKET', '#ffa657'
+
+                fig_eq = go.Figure()
+                fig_eq.add_trace(go.Scatter(
+                    x=chart_x, y=chart_dna,
+                    name=f'DNA Equity ({final_dna:.1f})',
+                    mode='lines+markers',
+                    line=dict(color='#3fb950', width=3),
+                    marker=dict(size=6),
+                    hovertemplate='Week: %{x}<br>DNA: %{y:.2f}<extra></extra>',
+                ))
+                fig_eq.add_trace(go.Scatter(
+                    x=chart_x, y=chart_uni,
+                    name=f'Universe Equity ({final_uni:.1f})',
+                    mode='lines+markers',
+                    line=dict(color='#58a6ff', width=2, dash='dash'),
+                    marker=dict(size=5),
+                    hovertemplate='Week: %{x}<br>Universe: %{y:.2f}<extra></extra>',
+                ))
+                fig_eq.add_hline(y=100, line_dash='dot', line_color='#484f58', opacity=0.5)
+                fig_eq.update_layout(
+                    template='plotly_dark',
+                    paper_bgcolor='#0d1117',
+                    plot_bgcolor='#0d1117',
+                    height=360,
+                    margin=dict(l=40, r=20, t=30, b=40),
+                    legend=dict(orientation='h', yanchor='bottom', y=-0.25, xanchor='center', x=0.5),
+                    yaxis=dict(title='Equity (₹100 start)', gridcolor='#21262d'),
+                    xaxis=dict(title='Entry Week', gridcolor='#21262d'),
+                    hovermode='x unified',
+                )
+                st.plotly_chart(fig_eq, use_container_width=True, key='dna_bt_equity_chart')
+
+                # Verdict caption
+                st.markdown(
+                    f"<div style='font-size:0.85rem; color:#8b949e; margin-top:-8px;'>"
+                    f"📊 Universe: <span style='color:{mkt_color}; font-weight:700;'>{uni_total:+.1f}% ({mkt_state})</span> "
+                    f"&nbsp;·&nbsp; DNA edge: <span style='color:{spread_color}; font-weight:700;'>{spread:+.1f}</span> "
+                    f"&nbsp;·&nbsp; <span style='color:#484f58;'>Compounded from non-overlapping 1w returns "
+                    f"({len(valid_equity)} valid weeks)</span></div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info(f"📈 Need at least 2 weeks with valid 1w returns to draw equity curve "
+                        f"(have {len(valid_equity)}).")
+        else:
+            st.info("📈 Equity curve requires `ret_1w` data — need at least 2 consecutive CSVs.")
+
+    # ══════════════════════════════════════════════
+    # SECTION 6: TOP & BOTTOM PICKS DETAIL
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 🏆 Section 6: Top & Bottom DNA Picks")
+
+    detail_horizon = 'ret_4w' if 'ret_4w' in avail_horizons else avail_horizons[-1]
+    dh_label = detail_horizon.replace('ret_', '')
+
+    # Only rows with valid return for this horizon
+    valid_scored = scored_df[scored_df[detail_horizon].notna()].copy()
+
+    if len(valid_scored) > 0:
+        show_cols = ['entry_week', 'ticker', 'company_name', 'category', 'conviction',
+                     'dna_score', 'path', 'dna_reasons', 'entry_price']
+        for h in avail_horizons:
+            show_cols.append(h)
+        show_cols = [c for c in show_cols if c in valid_scored.columns]
+
+        with st.expander(f"🟢 Top 30 Best DNA Picks (by {dh_label} return)", expanded=False):
+            top_df = valid_scored.nlargest(30, detail_horizon)[show_cols]
+            st.dataframe(top_df, use_container_width=True, hide_index=True)
+
+        with st.expander(f"🔴 Bottom 30 Worst DNA Picks (by {dh_label} return)", expanded=False):
+            bot_df = valid_scored.nsmallest(30, detail_horizon)[show_cols]
+            st.dataframe(bot_df, use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════
+    # SECTION 7: DOWNLOADS
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+    st.markdown("#### 📥 Section 7: Download Results for Claude Analysis")
+
+    dl_cols = st.columns(3)
+
+    # Download 1: Full Detail CSV
+    with dl_cols[0]:
+        csv_full = detail_df.to_csv(index=False)
+        st.download_button(
+            "📄 Full Detail CSV",
+            csv_full, "dna_backtest_full_detail.csv", "text/csv",
+            use_container_width=True, key='dl_dna_full',
+        )
+        st.caption(f"{len(detail_df):,} rows · All tickers × all weeks")
+
+    # Download 2: Signal Attribution CSV
+    with dl_cols[1]:
+        if signal_stats:
+            sig_dl_rows = []
+            uni_avg_dl = all_universe[ref_horizon].dropna().mean() if ref_horizon in all_universe.columns else 0
+            for sig, data in signal_stats.items():
+                rets = data['returns']
+                sig_dl_rows.append({
+                    'signal': sig,
+                    'count': data['count'],
+                    f'avg_ret_{ref_label}': round(np.mean(rets), 2),
+                    f'hit_rate_{ref_label}': round(sum(1 for r in rets if r > 0) / len(rets) * 100, 1),
+                    f'alpha_vs_universe': round(np.mean(rets) - uni_avg_dl, 2),
+                    f'median_ret_{ref_label}': round(np.median(rets), 2),
+                    f'std_ret_{ref_label}': round(np.std(rets), 2) if len(rets) > 1 else 0,
+                })
+            sig_dl_df = pd.DataFrame(sig_dl_rows).sort_values(f'alpha_vs_universe', ascending=False)
+            csv_sig = sig_dl_df.to_csv(index=False)
+            st.download_button(
+                "📊 Signal Attribution CSV",
+                csv_sig, "dna_backtest_signals.csv", "text/csv",
+                use_container_width=True, key='dl_dna_sig',
+            )
+            st.caption(f"{len(sig_dl_rows)} signals analyzed")
+        else:
+            st.button("📊 Signal Attribution CSV", disabled=True, use_container_width=True, key='dl_dna_sig_dis')
+            st.caption("No signal data")
+
+    # Download 3: Conviction Summary CSV
+    with dl_cols[2]:
+        csv_conv = conv_matrix.to_csv(index=False)
+        st.download_button(
+            "📈 Conviction Summary CSV",
+            csv_conv, "dna_backtest_conviction.csv", "text/csv",
+            use_container_width=True, key='dl_dna_conv',
+        )
+        st.caption("Conviction × Horizon matrix")
+
+    st.markdown("""
+    <div style="background:#161b22; border-radius:8px; padding:12px; border:1px solid #30363d; margin-top:12px;">
+        <div style="font-size:0.82rem; color:#8b949e;">
+            💡 <b>Tip:</b> Download the <b>Full Detail CSV</b> and upload to Claude with prompts like:<br>
+            • "Which conviction level has the best hit rate at 4w?"<br>
+            • "Show me every time PULLBACK_CONFLUENCE fired — what happened next?"<br>
+            • "Which category-conviction combo produces the most alpha?"<br>
+            • "Find the optimal DNA score threshold for each category"
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # UI: ABOUT TAB
@@ -9837,19 +13041,34 @@ def main():
                 )
 
                 if range_mode == "Custom":
+                    # SMART FIX: replace open-ended date pickers with file-anchored
+                    # selectboxes. Options are the EXACT dates parsed from filenames,
+                    # so the user can never pick a day with no underlying CSV. Labels
+                    # show ISO date + friendly format. Auto-swap if From > To.
+                    _date_opts = [dt.date() for dt, _ in _dated_files]  # ascending
+                    _opt_labels = {d: f"{d.strftime('%Y-%m-%d')}  ·  {d.strftime('%b %d, %Y')}"
+                                   for d in _date_opts}
+
                     col_from, col_to = st.columns(2)
                     with col_from:
-                        range_start = st.date_input(
-                            "From", value=_min_dt,
-                            min_value=_min_dt, max_value=_max_dt,
-                            key='file_range_start'
+                        range_start = st.selectbox(
+                            "From",
+                            options=_date_opts,
+                            index=0,
+                            format_func=lambda d: _opt_labels.get(d, str(d)),
+                            key='file_range_start_sel'
                         )
                     with col_to:
-                        range_end = st.date_input(
-                            "To", value=_max_dt,
-                            min_value=_min_dt, max_value=_max_dt,
-                            key='file_range_end'
+                        range_end = st.selectbox(
+                            "To",
+                            options=_date_opts,
+                            index=len(_date_opts) - 1,
+                            format_func=lambda d: _opt_labels.get(d, str(d)),
+                            key='file_range_end_sel'
                         )
+                    # Silent swap so the user never sees an "invalid range" warning
+                    if range_start > range_end:
+                        range_start, range_end = range_end, range_start
                 else:
                     range_start = _min_dt
                     range_end = _max_dt
@@ -9860,7 +13079,10 @@ def main():
                     range_end = _max_dt
 
                 selected = [f for dt, f in _dated_files if range_start <= dt.date() <= range_end]
-                st.caption(f"{range_start.strftime('%Y-%m-%d')} → {range_end.strftime('%Y-%m-%d')} · {len(selected)}/{len(_dated_files)} files")
+                st.caption(
+                    f"✓ {len(selected)} week{'s' if len(selected) != 1 else ''} selected"
+                    f"  ·  {range_start.strftime('%b %d, %Y')} → {range_end.strftime('%b %d, %Y')}"
+                )
 
                 # Store for use outside sidebar
                 st.session_state['_sb_selected_files'] = selected
@@ -9925,15 +13147,18 @@ def main():
     # ── Session-state caching (recompute only when files change) ──
     cache_key = tuple(sorted((f.name, f.size) for f in uploaded_files))
     if st.session_state.get('_traj_key') != cache_key:
-        with st.spinner("📊 Computing trajectories across all weeks..."):
+        _t0 = datetime.now()
+        with st.spinner(f"📊 Reading & computing trajectories for {len(uploaded_files)} weeks (parallel)..."):
             try:
                 result = load_and_compute(uploaded_files)
             except Exception as e:
                 st.error(f"❌ Computation error: {e}")
                 logger.exception("load_and_compute failed")
                 return
+        _elapsed = (datetime.now() - _t0).total_seconds()
         st.session_state['_traj_key'] = cache_key
         st.session_state['_traj_result'] = result
+        st.session_state['_traj_elapsed'] = _elapsed
 
     result = st.session_state.get('_traj_result')
     if result is None or not isinstance(result, (tuple, list)) or len(result) != 4:
@@ -9960,9 +13185,15 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_movers, tab_pattern, tab_dna_wl, tab_export, tab_about = st.tabs([
+    # Reordered per user: analysis tabs first, heavy compute tabs middle,
+    # utility tabs last. Order matches the in-session workflow:
+    # observe market → rank → search → watchlist → movers → backtest → export.
+    (tab_pulse, tab_ranking, tab_search, tab_dna_wl, tab_movers,
+     tab_backtest, tab_dna_bt, tab_pattern, tab_export, tab_about) = st.tabs([
         "📡 Market Pulse", "🏆 Rankings", "🔍 Search & Analyze",
-        "📊 Backtest", "🔥 Top Movers", "🔬 Pattern Analyser", "🎯 DNA Watchlist", "📤 Export", "ℹ️ About"
+        "🎯 DNA Watchlist", "🔥 Top Movers",
+        "📊 Strategy Backtest", "🧬 DNA Backtest", "🔬 Pattern Analyser",
+        "📤 Export", "ℹ️ About"
     ])
 
     with tab_pulse:
@@ -9977,6 +13208,9 @@ def main():
     with tab_backtest:
         render_backtest_tab(uploaded_files)
 
+    with tab_dna_bt:
+        render_dna_backtest_tab(uploaded_files)
+
     with tab_movers:
         render_top_movers_tab(filtered_df, histories)
 
@@ -9987,10 +13221,11 @@ def main():
         render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories)
 
     with tab_export:
-        render_export_tab(filtered_df, traj_df, histories)
+        render_export_tab(filtered_df, traj_df, histories, metadata)
 
     with tab_about:
         render_about_tab()
+
 
 if __name__ == "__main__":
     main()
