@@ -6,7 +6,7 @@ with 8-Component Adaptive Scoring, Data-Driven Conviction (12 signals),
 Sector-Relative Blending, Breakout Quality Component, Market State Signal,
 Momentum Decay Warning, Sector Alpha Detection, Market Regime Awareness,
 Confidence Intervals, Z-Score Normalization, Risk-Adjusted T-Score,
-Exit Warning System, Hot Streak Detection, Multi-Stage Selection Funnel,
+Exit Warning System, Hot Streak Detection,
 WAVE SIGNAL FUSION ENGINE, ALPHA SCORE ENGINE, and 14-STRATEGY WALK-FORWARD
 BACKTEST ENGINE.
 
@@ -73,11 +73,6 @@ CORE ARCHITECTURE:
     - Price-Rank Alignment scores DIRECTION only (sign agreement), never magnitude.
     - Momentum Decay uses separate ret_6m for proven-winner exemption.
     - No signal leakage: each data source has exactly one scoring path.
-
-3-STAGE FUNNEL:
-  Stage 1: Discovery  — Trajectory Score ≥70 or Rocket/Breakout → 50-100 candidates
-  Stage 2: Validation — 5 data-driven rules, must pass 4/5    → 20-30 stocks
-  Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND  → 5-10 FINAL BUYS
 
 Version: 9.0.0
 Last Updated: March 2026
@@ -486,17 +481,6 @@ WAVE_FUSION = {
     'pe_negative_penalty': True,         # Penalize negative PE (loss-making)
 }
 
-# Funnel Stage Defaults
-FUNNEL_DEFAULTS = {
-    'stage1_score': 70,
-    'stage1_patterns': ['rocket', 'breakout', 'momentum_building'],
-    'stage2_tq': 60,
-    'stage2_master_score': 50,
-    'stage2_min_rules': 4,
-    'stage3_tq': 70,
-    'stage3_require_leader': True,
-    'stage3_no_downtrend_weeks': 4
-}
 
 # Grade definitions: (min_score, label, emoji)
 GRADE_DEFS = [
@@ -541,6 +525,45 @@ PATTERN_COLORS = {
 # ============================================
 st.markdown("""
 <style>
+    /* ── Responsive Layout: keep content inside viewport when sidebar is open ── */
+    section[data-testid="stMain"] > div.block-container {
+        max-width: 100%;
+        overflow-x: hidden;
+        box-sizing: border-box;
+    }
+    section[data-testid="stMain"] {
+        overflow-x: hidden;
+    }
+    /* Prevent any inner element from forcing horizontal scroll */
+    div[data-testid="stVerticalBlockBorderWrapper"],
+    div[data-testid="stHorizontalBlock"],
+    div[data-testid="stMarkdownContainer"] {
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+    /* Columns must NOT clip — let content flow naturally */
+    div[data-testid="column"] {
+        max-width: 100%;
+        box-sizing: border-box;
+        overflow: visible;
+    }
+    /* Wide tables / HTML cards: shrink to fit */
+    div[data-testid="stMarkdownContainer"] > div,
+    div[data-testid="stMarkdownContainer"] table {
+        max-width: 100%;
+        overflow-x: auto;
+    }
+    /* Plotly charts should also respect container */
+    div.js-plotly-plot, div.plotly {
+        max-width: 100% !important;
+    }
+
+    /* ── Top Movers: compact when sidebar is expanded ── */
+    html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-ticker  { display: none !important; }
+    html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-sector  { display: none !important; }
+    html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-row     { padding-left: 8px !important; padding-right: 8px !important; gap: 5px !important; }
+    html:has(section[data-testid="stSidebar"][aria-expanded="true"]) .mv-grid    { gap: 6px !important; }
+
     /* ── Hero Banner ── */
     .hero-banner {
         text-align: center; padding: 1.6rem 1.2rem 1.3rem;
@@ -666,26 +689,6 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 6px; }
     .stTabs [data-baseweb="tab"] { padding: 8px 20px; font-weight: 600; border-radius: 8px 8px 0 0; }
 
-    /* ── Funnel ── */
-    .funnel-stage {
-        background: #161b22; border-radius: 12px; padding: 16px;
-        margin-bottom: 10px; border-left: 4px solid;
-    }
-    .stage-discovery  { border-left-color: #58a6ff; }
-    .stage-validation { border-left-color: #d29922; }
-    .stage-final      { border-left-color: #3fb950; }
-    .rule-pass { color: #3fb950; font-weight: 600; }
-    .rule-fail { color: #f85149; font-weight: 600; }
-    .final-buy-card {
-        background: #0d1117; border: 2px solid #238636; border-radius: 14px;
-        padding: 18px; margin-bottom: 10px; box-shadow: 0 0 14px rgba(35,134,54,0.10);
-    }
-    .funnel-stat {
-        background: #161b22; border-radius: 10px; padding: 14px;
-        text-align: center; border: 1px solid #30363d;
-    }
-    .funnel-stat-value { font-size: 1.8rem; font-weight: 700; }
-    .funnel-stat-label { font-size: 0.72rem; color: #8b949e; text-transform: uppercase; }
 
     /* ── Sidebar Premium Styling ── */
     .sb-brand {
@@ -909,9 +912,9 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
                 histories[ticker] = {
                     'dates': [], 'ranks': [], 'scores': [], 'prices': [],
                     'total_per_week': [],
-                    'trend_qualities': [],    # TQ per week for funnel
-                    'market_states': [],      # Market state per week for funnel
-                    'pattern_history': [],    # Patterns per week for funnel
+                    'trend_qualities': [],
+                    'market_states': [],
+                    'pattern_history': [],
                     'ret_7d': [],             # v2.3: Weekly returns (split-adjusted)
                     'ret_30d': [],            # v2.3: 30-day returns
                     'ret_3m': [],             # v2.3: 3-month returns
@@ -949,7 +952,6 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
             h['prices'].append(float(row['price']))
             h['total_per_week'].append(total)
 
-            # Track per-week data for funnel validation
             tq_val = row.get('trend_quality', 0)
             h['trend_qualities'].append(float(tq_val) if pd.notna(tq_val) else 0)
             ms_val = row.get('market_state', '')
@@ -3798,283 +3800,6 @@ def get_top_movers(histories: dict, n: int = 10, weeks: int = 1,
     decliners = mover_df.nsmallest(n, 'rank_change')
     return gainers, decliners
 
-
-# ============================================
-# EARLY DISCOVERY ENGINE
-# ============================================
-# Catches stocks EARLY in upward moves — before the main
-# T-Score confirms them. Built on v9.0 data-proven alpha:
-#   from_high_pct:  #1 predictor (+0.55%/wk)
-#   breakout_score: #2 predictor (+0.44%/wk)
-#   position_score: #3 predictor (+0.34%/wk)
-#   BOUNCE state:   +1.17%/wk mean-reversion signal
-
-def _compute_early_discovery_score(row, h):
-    """
-    Early Discovery Score (0-100).
-
-    Unlike T-Score (confirms established leaders), this score
-    identifies stocks in the EARLY stages of strong upward moves
-    before they reach the top tier.
-
-    Weights:
-      25% Rank Momentum   — recent rank acceleration
-      25% Breakout Strength — v9.0 #2 predictor
-      20% Near-High Signal  — v9.0 #1 predictor
-      15% Entry Timing      — rally freshness + velocity
-      15% Cross-Validation  — wave fusion − decay penalty
-      +BOUNCE bonus (+12%), +UPTREND bonus (+3%)
-    """
-    # ── 1. RANK MOMENTUM (25%) ──────────────────────────────────
-    rank_momentum = 0.0
-    lw = float(row.get('last_week_change', 0) or 0)
-    rc = float(row.get('rank_change', 0) or 0)
-
-    if lw > 0:
-        rank_momentum += min(lw / 80.0, 1.0) * 60.0   # +80 ranks in 1w → 60 pts
-    elif lw < 0:
-        rank_momentum += max(lw / 40.0, -1.0) * 15.0   # mild penalty for decline
-
-    if rc > 0:
-        rank_momentum += min(rc / 200.0, 1.0) * 40.0   # +200 total → 40 pts
-
-    rank_momentum = max(0.0, min(100.0, rank_momentum))
-
-    # ── 2. BREAKOUT STRENGTH (25%) ──────────────────────────────
-    breakout = max(0.0, min(100.0, float(row.get('breakout_quality', 50) or 50)))
-
-    # ── 3. NEAR-HIGH SIGNAL (20%) — #1 forward predictor ───────
-    fh_list = h.get('from_high_pct', [])
-    from_high = -50.0
-    if fh_list:
-        fh_val = fh_list[-1]
-        if fh_val is not None and isinstance(fh_val, (int, float)):
-            try:
-                if not np.isnan(fh_val):
-                    from_high = float(fh_val)
-            except (TypeError, ValueError):
-                pass
-    # 0% from high → 100,  -10% → 80,  -20% → 60,  -50% → 0
-    near_high = max(0.0, min(100.0, 100.0 + from_high * 2.0))
-
-    # ── 4. ENTRY TIMING (15%) — rally freshness + velocity ─────
-    rally = str(row.get('rally_stage', 'UNKNOWN') or 'UNKNOWN')
-    rally_pts = {
-        'FRESH': 100, 'EARLY': 85, 'RUNNING': 55,
-        'MATURE': 20, 'LATE': 5, 'UNKNOWN': 40
-    }
-    rally_score = float(rally_pts.get(rally, 40))
-    velocity = max(0.0, min(100.0, float(row.get('velocity', 50) or 50)))
-    entry_timing = rally_score * 0.6 + velocity * 0.4
-
-    # ── 5. CROSS-VALIDATION (15%) — wave fusion − decay ────────
-    wave = max(0.0, min(100.0, float(row.get('wave_fusion_score', 50) or 50)))
-    decay_label = str(row.get('decay_label', '') or '')
-    decay_penalty = {
-        'DECAY_HIGH': 40, 'DECAY_MODERATE': 20, 'DECAY_MILD': 8
-    }.get(decay_label, 0)
-    cross_val = max(0.0, min(100.0, wave - decay_penalty))
-
-    # ── COMBINE ─────────────────────────────────────────────────
-    raw = (
-        rank_momentum * 0.25 +
-        breakout      * 0.25 +
-        near_high     * 0.20 +
-        entry_timing  * 0.15 +
-        cross_val     * 0.15
-    )
-
-    # ── MARKET STATE BONUS ──────────────────────────────────────
-    ms = str(row.get('market_state', '') or '').strip().upper()
-    if ms == 'BOUNCE':
-        raw = min(100, raw * 1.12)   # +12% — strongest alpha signal
-    elif ms == 'UPTREND':
-        raw = min(100, raw * 1.03)   # +3%
-    elif ms in ('DOWNTREND', 'STRONG_DOWNTREND'):
-        raw *= 0.85                   # −15% penalty
-
-    return round(max(0.0, min(100.0, raw)), 1)
-
-
-def _get_discovery_grade(score):
-    """Grade label for Early Discovery score."""
-    if score >= 80:
-        return '🔥', 'PRIME'
-    if score >= 65:
-        return '✅', 'STRONG'
-    if score >= 50:
-        return '⚡', 'EMERGING'
-    if score >= 35:
-        return '👀', 'WATCH'
-    return '➖', 'WEAK'
-
-
-# ============================================
-# 3-STAGE SELECTION FUNNEL ENGINE
-# ============================================
-
-def run_funnel(traj_df: pd.DataFrame, histories: dict, config: dict) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Execute the 3-Stage Selection Funnel.
-    
-    Stage 1: Discovery  — Trajectory Score ≥ threshold OR pattern match
-    Stage 2: Validation — 5 Wave Engine rules, must pass min_rules/5
-    Stage 3: Final      — TQ≥70, Leader patterns, no DOWNTREND
-    
-    Returns: (stage1_df, stage2_df, stage3_df) — each with pass/fail annotations
-    """
-    # ── STAGE 1: DISCOVERY ──
-    s1_score = config.get('stage1_score', 70)
-    s1_patterns = config.get('stage1_patterns', ['rocket', 'breakout'])
-    
-    s1_mask = (traj_df['trajectory_score'] >= s1_score)
-    if s1_patterns:
-        s1_mask = s1_mask | (traj_df['pattern_key'].isin(s1_patterns))
-    stage1 = traj_df[s1_mask].copy()
-    stage1 = stage1.sort_values('trajectory_score', ascending=False).reset_index(drop=True)
-    
-    if stage1.empty:
-        return stage1, pd.DataFrame(), pd.DataFrame()
-    
-    # ── STAGE 2: VALIDATION (5 Trajectory Engine Rules) ──
-    s2_tq_min = config.get('stage2_tq', 60)
-    s2_min_rules = config.get('stage2_min_rules', 4)
-    
-    stage2_rows = []
-    for _, row in stage1.iterrows():
-        h = histories.get(row['ticker'], {})
-        if not h:
-            continue
-        
-        rules_passed = 0
-        rules_detail = []
-        
-        # Rule 1: Trend component ≥ threshold (from trajectory scoring, not raw CSV TQ)
-        trend_comp = row.get('trend', 0) if 'trend' in row.index else 0
-        tq_proxy = float(trend_comp) if pd.notna(trend_comp) else 0
-        # Scale: trend component is 0-100, threshold same as before
-        if tq_proxy >= s2_tq_min:
-            rules_passed += 1
-            rules_detail.append(f'✅ Trend={tq_proxy:.0f}')
-        else:
-            rules_detail.append(f'❌ Trend={tq_proxy:.0f}')
-        
-        # Rule 2: No DECAY_HIGH or DECAY_MODERATE (trajectory engine's own trap detection)
-        decay_label = row.get('decay_label', '') if 'decay_label' in row.index else ''
-        if decay_label not in ('DECAY_HIGH', 'DECAY_MODERATE'):
-            rules_passed += 1
-            rules_detail.append(f'✅ {decay_label or "NO_DECAY"}')
-        else:
-            rules_detail.append(f'❌ {decay_label}')
-        
-        # Rule 3: T-Score ≥ 50 (trajectory engine's composite score as validation floor)
-        t_score = float(row.get('trajectory_score', 0))
-        if t_score >= 50:
-            rules_passed += 1
-            rules_detail.append(f'✅ TS={t_score:.0f}')
-        else:
-            rules_detail.append(f'❌ TS={t_score:.0f}')
-        
-        # Rule 4: Recent rank not crashing (last week Δ ≥ -20)
-        if len(h['ranks']) >= 2:
-            recent_delta = h['ranks'][-2] - h['ranks'][-1]  # positive = improved
-            if recent_delta >= -20:
-                rules_passed += 1
-                rules_detail.append(f'✅ Δ={recent_delta:+.0f}')
-            else:
-                rules_detail.append(f'❌ Δ={recent_delta:+.0f}')
-        else:
-            rules_detail.append('⚠️ No Δ data')
-        
-        # Rule 5: Near-High Check (from_high_pct) — v9.0 data-driven
-        fh_list = h.get('from_high_pct', [])
-        latest_fh = fh_list[-1] if fh_list else -50
-        if not isinstance(latest_fh, (int, float)) or np.isnan(latest_fh):
-            latest_fh = -50
-        if latest_fh >= -20:
-            rules_passed += 1
-            rules_detail.append(f'✅ FH={latest_fh:.0f}%')
-        else:
-            rules_detail.append(f'❌ FH={latest_fh:.0f}%')
-        
-        row_dict = row.to_dict()
-        row_dict['rules_passed'] = rules_passed
-        row_dict['rules_detail'] = ' | '.join(rules_detail)
-        row_dict['s2_pass'] = rules_passed >= s2_min_rules
-        row_dict['latest_tq'] = tq_proxy
-        latest_pats = h['pattern_history'][-1] if h.get('pattern_history') else ''
-        row_dict['latest_pats'] = latest_pats
-        stage2_rows.append(row_dict)
-    
-    stage2 = pd.DataFrame(stage2_rows)
-    if stage2.empty:
-        return stage1, stage2, pd.DataFrame()
-    
-    stage2 = stage2.sort_values(['s2_pass', 'trajectory_score'], ascending=[False, False]).reset_index(drop=True)
-    stage2_passed = stage2[stage2['s2_pass']].copy()
-    
-    if stage2_passed.empty:
-        return stage1, stage2, pd.DataFrame()
-    
-    # ── STAGE 3: FINAL FILTER (Trajectory Engine signals) ──
-    s3_tq_min = config.get('stage3_tq', 70)
-    s3_require_leader = config.get('stage3_require_leader', True)
-    s3_dt_weeks = config.get('stage3_no_downtrend_weeks', 4)
-    
-    stage3_rows = []
-    for _, row in stage2_passed.iterrows():
-        h = histories.get(row['ticker'], {})
-        if not h:
-            continue
-        
-        latest_tq = row.get('latest_tq', 0)
-        latest_pats = row.get('latest_pats', '')
-        
-        # Check 1: Trend component ≥ strict threshold
-        tq_pass = latest_tq >= s3_tq_min
-        
-        # Check 2: Conviction ≥ 60 OR Sector Alpha Leader tag
-        # (replaces fragile "CAT LEADER" string check that fails in bear markets)
-        conviction = row.get('conviction', 0) if 'conviction' in row.index else 0
-        sector_tag = str(row.get('sector_alpha_tag', '')) if 'sector_alpha_tag' in row.index else ''
-        has_leader = (conviction >= 60 or
-                      'LEADER' in sector_tag.upper() or
-                      'CAT LEADER' in latest_pats or 'MARKET LEADER' in latest_pats)
-        leader_pass = has_leader if s3_require_leader else True
-        
-        # Check 3: No DECAY_HIGH in recent trajectory (replaces market_state string check)
-        decay_label = str(row.get('decay_label', '')) if 'decay_label' in row.index else ''
-        recent_states = h['market_states'][-s3_dt_weeks:] if h.get('market_states') else []
-        no_downtrend = (decay_label not in ('DECAY_HIGH',) and
-                        not any('STRONG_DOWNTREND' in s for s in recent_states))
-        
-        # All 3 must pass
-        final_pass = tq_pass and leader_pass and no_downtrend
-        
-        row_dict = dict(row)
-        row_dict['tq_pass'] = tq_pass
-        row_dict['leader_pass'] = leader_pass
-        row_dict['no_downtrend'] = no_downtrend
-        row_dict['final_pass'] = final_pass
-        
-        # Build Stage 3 detail
-        s3_details = []
-        s3_details.append(f"{'✅' if tq_pass else '❌'} Trend≥{s3_tq_min} ({latest_tq:.0f})")
-        s3_details.append(f"{'✅' if leader_pass else '❌'} Leader/Conv≥60 ({conviction:.0f})")
-        s3_details.append(f"{'✅' if no_downtrend else '❌'} No Decay/DT ({decay_label or 'OK'})")
-        row_dict['s3_detail'] = ' | '.join(s3_details)
-        
-        stage3_rows.append(row_dict)
-    
-    stage3 = pd.DataFrame(stage3_rows)
-    if stage3.empty:
-        return stage1, stage2, stage3
-    
-    stage3 = stage3.sort_values(['final_pass', 'trajectory_score'], ascending=[False, False]).reset_index(drop=True)
-    
-    return stage1, stage2, stage3
-
-
 # ============================================
 # UI: SIDEBAR
 # ============================================
@@ -4130,6 +3855,15 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         # Conditional slider keys (only rendered when Custom Range is chosen)
         _conditional_keys = ['sb_gain_slider', 'sb_age_slider', 'sb_gap_slider']
 
+        # ── Handle pending clear (set by button callback on PREVIOUS run) ──
+        if st.session_state.get('_sb_pending_clear'):
+            del st.session_state['_sb_pending_clear']
+            for _k, _v in _defaults.items():
+                st.session_state[_k] = _v
+            for _ck in _conditional_keys:
+                if _ck in st.session_state:
+                    del st.session_state[_ck]
+
         # Count active filters
         _active = 0
         for _k in _sb_keys:
@@ -4142,11 +3876,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
 
         if st.button("🗑️ Clear All Filters", key='sb_clear_all', use_container_width=True,
                      type='primary' if _active > 0 else 'secondary'):
-            for _k, _v in _defaults.items():
-                st.session_state[_k] = _v
-            for _ck in _conditional_keys:
-                if _ck in st.session_state:
-                    del st.session_state[_ck]
+            st.session_state['_sb_pending_clear'] = True
             st.rerun()
 
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
@@ -4437,11 +4167,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
 
         if st.button("🗑️ Clear All Filters", key='sb_clear_all_bottom', use_container_width=True,
                      type='primary' if _active > 0 else 'secondary'):
-            for _k, _v in _defaults.items():
-                st.session_state[_k] = _v
-            for _ck in _conditional_keys:
-                if _ck in st.session_state:
-                    del st.session_state[_ck]
+            st.session_state['_sb_pending_clear'] = True
             st.rerun()
 
         st.caption("v10.1 · Alpha Engine · Data-Driven")
@@ -4692,6 +4418,273 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     df['t_rank'] = range(1, len(df) + 1)
 
     return df
+
+
+# ============================================
+# UI: MARKET PULSE TAB — v1.0
+# ============================================
+
+def render_market_pulse_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
+                            histories: dict, metadata: dict):
+    """📡 Market Pulse — bird's-eye market intelligence dashboard.
+
+    Sections:
+      1. Pulse Hero       – regime badge, market strength, 6 breadth KPIs
+      2. Breadth Over Time – % improving / % strong / advance-decline over weeks
+
+    All data is filter-aware — respects sidebar filters via filtered_df/histories.
+    Uses ONLY pre-computed data from histories/traj_df — zero new API calls.
+    """
+
+    n_stocks = len(filtered_df)
+    if n_stocks == 0:
+        st.info("No stocks match the current filters. Adjust sidebar filters to see Market Pulse.")
+        return
+
+    # ── Filter histories to only include tickers in filtered_df ──
+    _filtered_tickers = set(filtered_df['ticker'].unique())
+    _filtered_hist = {t: h for t, h in histories.items() if t in _filtered_tickers}
+    if not _filtered_hist:
+        st.info("No history data for filtered stocks.")
+        return
+
+    # ── Helper: build weekly snapshots from histories ────────────
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _build_weekly_snapshots(_hist_keys, _hist_data_tuple):
+        """Reconstruct per-week aggregates from filtered histories dict.
+
+        We receive histories data as a tuple-of-tuples for hashability.
+        Returns list of dicts, one per week, sorted chronologically.
+        """
+        hist = {k: v for k, v in zip(_hist_keys, _hist_data_tuple)}
+        # Discover all dates across tickers
+        date_set: dict = {}  # date_str -> week_index
+        for ticker, h in hist.items():
+            for i, d in enumerate(h.get('dates', [])):
+                ds = str(d)[:10]
+                if ds not in date_set:
+                    date_set[ds] = ds
+        sorted_dates = sorted(date_set.keys())
+        if not sorted_dates:
+            return []
+
+        weeks = []
+        for wi, ds in enumerate(sorted_dates):
+            snap = {
+                'date': ds, 'tickers': [], 'scores': [], 'ranks': [],
+                'prev_ranks': [], 'grades': [], 'patterns': [],
+                'sectors': [], 'decay_scores': [], 'trend_qualities': [],
+                'market_strengths': [],
+            }
+            for ticker, h in hist.items():
+                dates_list = [str(d)[:10] for d in h.get('dates', [])]
+                if ds not in dates_list:
+                    continue
+                idx = dates_list.index(ds)
+                snap['tickers'].append(ticker)
+                scores = h.get('scores', [])
+                snap['scores'].append(scores[idx] if idx < len(scores) else 0)
+                ranks = h.get('ranks', [])
+                snap['ranks'].append(ranks[idx] if idx < len(ranks) else 0)
+                prev_r = ranks[idx - 1] if idx > 0 and idx - 1 < len(ranks) else (ranks[idx] if idx < len(ranks) else 0)
+                snap['prev_ranks'].append(prev_r)
+                # Grade from score
+                sc = scores[idx] if idx < len(scores) else 0
+                gr = 'F'
+                for thr, lbl, _ in GRADE_DEFS:
+                    if sc >= thr:
+                        gr = lbl
+                        break
+                snap['grades'].append(gr)
+                pats = h.get('pattern_history', [])
+                snap['patterns'].append(pats[idx] if idx < len(pats) else 'neutral')
+                snap['sectors'].append(h.get('sector', ''))
+                tq = h.get('trend_qualities', [])
+                snap['trend_qualities'].append(tq[idx] if idx < len(tq) else 50)
+                ms = h.get('overall_market_strength', [])
+                snap['market_strengths'].append(ms[idx] if idx < len(ms) else 50)
+            weeks.append(snap)
+        return weeks
+
+    # Build hashable args for caching (uses FILTERED histories only)
+    _h_keys = tuple(sorted(_filtered_hist.keys()))
+    _h_data = tuple(
+        {k: (tuple(v) if isinstance(v, list) else v) for k, v in _filtered_hist[t].items()}
+        for t in _h_keys
+    )
+    weekly_snaps = _build_weekly_snapshots(_h_keys, _h_data)
+
+    if len(weekly_snaps) < 1:
+        st.info("Not enough data for Market Pulse. Load at least 1 weekly snapshot.")
+        return
+
+    latest = weekly_snaps[-1]
+    n_weeks = len(weekly_snaps)
+
+    # ── Current metrics ──────────────────────────────────────────
+    regime = filtered_df['market_regime'].iloc[0] if 'market_regime' in filtered_df.columns else 'SIDEWAYS'
+    trend_med = float(filtered_df['market_trend_median'].iloc[0]) if 'market_trend_median' in filtered_df.columns else 50.0
+    avg_score = float(filtered_df['trajectory_score'].mean()) if 'trajectory_score' in filtered_df.columns else 0
+    avg_alpha = float(filtered_df['alpha_score'].mean()) if 'alpha_score' in filtered_df.columns else 0
+
+    # Breadth from latest snapshot
+    lat_scores = np.array(latest['scores'], dtype=float)
+    lat_ranks = np.array(latest['ranks'], dtype=float)
+    lat_prev = np.array(latest['prev_ranks'], dtype=float)
+    improving = int(np.sum(lat_ranks < lat_prev))
+    declining = int(np.sum(lat_ranks > lat_prev))
+    unchanged = int(np.sum(lat_ranks == lat_prev))
+    pct_strong = int(100 * np.sum(lat_scores >= 55) / max(len(lat_scores), 1))
+    pct_improving = int(100 * improving / max(len(lat_ranks), 1))
+    ad_ratio = round(improving / max(declining, 1), 2)
+
+    # Regime styling
+    regime_cfg = {
+        'BULL':     ('#3fb950', '🟢', 'linear-gradient(135deg, rgba(63,185,80,0.12), rgba(63,185,80,0.04))'),
+        'BEAR':     ('#f85149', '🔴', 'linear-gradient(135deg, rgba(248,81,73,0.12), rgba(248,81,73,0.04))'),
+        'SIDEWAYS': ('#d29922', '🟡', 'linear-gradient(135deg, rgba(210,153,34,0.12), rgba(210,153,34,0.04))'),
+    }
+    r_color, r_icon, r_bg = regime_cfg.get(regime, regime_cfg['SIDEWAYS'])
+
+    # Strength bar width + color
+    strength_pct = max(0, min(100, trend_med))
+    s_color = '#3fb950' if strength_pct >= 58 else ('#f85149' if strength_pct < 42 else '#d29922')
+
+    # ────────────────────────────────────────────────────────────
+    # SECTION 1: PULSE HERO CARD
+    # ────────────────────────────────────────────────────────────
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#0d1117 0%,#161b22 100%);border-radius:16px;
+        padding:22px 28px;margin-bottom:18px;border:1px solid #30363d;
+        box-shadow:0 4px 24px rgba(0,0,0,0.3);">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;">
+        <div>
+          <div style="font-size:1.5rem;font-weight:800;color:#e6edf3;letter-spacing:-0.3px;">
+            📡 Market Pulse</div>
+          <div style="color:#8b949e;font-size:0.85rem;margin-top:2px;">
+            {metadata.get('date_range','')} &nbsp;·&nbsp; {n_weeks} weeks
+            &nbsp;·&nbsp; {n_stocks} stocks</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="{r_bg};border:1px solid {r_color}33;border-radius:12px;padding:10px 18px;
+              text-align:center;">
+            <div style="font-size:1.6rem;">{r_icon}</div>
+            <div style="font-size:0.92rem;font-weight:800;color:{r_color};letter-spacing:0.5px;">
+              {regime}</div>
+          </div>
+          <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:10px 18px;
+              text-align:center;min-width:100px;">
+            <div style="font-size:0.65rem;color:#8b949e;text-transform:uppercase;letter-spacing:1px;">
+              Mkt Strength</div>
+            <div style="font-size:1.3rem;font-weight:800;color:{s_color};">{strength_pct:.0f}</div>
+            <div style="background:#21262d;border-radius:3px;height:4px;margin-top:4px;overflow:hidden;">
+              <div style="width:{strength_pct}%;height:100%;background:{s_color};border-radius:3px;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 6 KPI chips -->
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:16px;">
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#3fb950;font-weight:700;font-size:1.15rem;">{pct_improving}%</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Improving</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#58a6ff;font-weight:700;font-size:1.15rem;">{pct_strong}%</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Strong (B+)</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#e6edf3;font-weight:700;font-size:1.15rem;">{ad_ratio}</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">A/D Ratio</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#d2a8ff;font-weight:700;font-size:1.15rem;">{avg_score:.0f}</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Avg T-Score</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:#FF6B35;font-weight:700;font-size:1.15rem;">{avg_alpha:.0f}</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Avg Alpha</div></div>
+        <div style="background:#0d1117;border-radius:10px;padding:10px;text-align:center;border:1px solid #30363d;">
+          <div style="color:{'#3fb950' if improving > declining else '#f85149'};font-weight:700;font-size:1.15rem;">
+            {improving}↑ {declining}↓</div>
+          <div style="color:#8b949e;font-size:0.68rem;text-transform:uppercase;">Adv / Dec</div></div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    # ────────────────────────────────────────────────────────────
+    # SECTION 2:  Breadth Over Time
+    # ────────────────────────────────────────────────────────────
+    dates_list = []
+    pct_improving_list = []
+    pct_strong_list = []
+    ad_ratio_list = []
+    avg_score_list = []
+    for snap in weekly_snaps:
+        sc_arr = np.array(snap['scores'], dtype=float)
+        rk_arr = np.array(snap['ranks'], dtype=float)
+        pr_arr = np.array(snap['prev_ranks'], dtype=float)
+        n_s = max(len(sc_arr), 1)
+        imp = int(np.sum(rk_arr < pr_arr))
+        dec = int(np.sum(rk_arr > pr_arr))
+        dates_list.append(snap['date'])
+        pct_improving_list.append(round(100 * imp / n_s, 1))
+        pct_strong_list.append(round(100 * np.sum(sc_arr >= 55) / n_s, 1))
+        ad_ratio_list.append(round(imp / max(dec, 1), 2))
+        avg_score_list.append(round(float(np.mean(sc_arr)), 1))
+
+    fig_breadth = go.Figure()
+    fig_breadth.add_trace(go.Scatter(
+        x=dates_list, y=pct_improving_list, name='% Improving',
+        mode='lines+markers', line=dict(color='#3fb950', width=2.5),
+        marker=dict(size=5), hovertemplate='%{x}<br>Improving: %{y}%<extra></extra>',
+    ))
+    fig_breadth.add_trace(go.Scatter(
+        x=dates_list, y=pct_strong_list, name='% Strong (B+)',
+        mode='lines+markers', line=dict(color='#58a6ff', width=2.5),
+        marker=dict(size=5), hovertemplate='%{x}<br>Strong: %{y}%<extra></extra>',
+    ))
+    fig_breadth.add_trace(go.Scatter(
+        x=dates_list, y=avg_score_list, name='Avg T-Score',
+        mode='lines+markers', line=dict(color='#d2a8ff', width=2, dash='dot'),
+        marker=dict(size=4), yaxis='y2',
+        hovertemplate='%{x}<br>Avg Score: %{y}<extra></extra>',
+    ))
+    fig_breadth.add_trace(go.Scatter(
+        x=dates_list, y=ad_ratio_list, name='A/D Ratio',
+        mode='lines+markers', line=dict(color='#d29922', width=2, dash='dash'),
+        marker=dict(size=4), yaxis='y2',
+        hovertemplate='%{x}<br>A/D: %{y}<extra></extra>',
+    ))
+    fig_breadth.update_layout(
+        template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+        height=380, margin=dict(l=50, r=50, t=40, b=40),
+        title=dict(text='Market Breadth Over Time', font=dict(size=14, color='#e6edf3')),
+        legend=dict(orientation='h', y=-0.15, font=dict(size=11)),
+        yaxis=dict(title=dict(text='% of Stocks', font=dict(size=11)),
+                   gridcolor='#21262d', zeroline=False),
+        yaxis2=dict(title=dict(text='Score / Ratio', font=dict(size=11)),
+                    overlaying='y', side='right',
+                    gridcolor='#21262d', zeroline=False),
+        xaxis=dict(gridcolor='#21262d'),
+        hovermode='x unified',
+    )
+    st.plotly_chart(fig_breadth, use_container_width=True, key='mp_breadth_chart')
+
+    # Breadth sparkline summary
+    if len(pct_improving_list) >= 2:
+        delta_imp = pct_improving_list[-1] - pct_improving_list[-2]
+        delta_str = pct_strong_list[-1] - pct_strong_list[-2]
+        d_i_c = '#3fb950' if delta_imp >= 0 else '#f85149'
+        d_s_c = '#3fb950' if delta_str >= 0 else '#f85149'
+        d_i_sign = '+' if delta_imp >= 0 else ''
+        d_s_sign = '+' if delta_str >= 0 else ''
+        st.markdown(f"""
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;">
+          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
+              font-size:0.82rem;color:#c9d1d9;">
+            <span style="color:{d_i_c};font-weight:700;">{d_i_sign}{delta_imp:.1f}%</span>
+            improving vs prev week</div>
+          <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:8px 16px;
+              font-size:0.82rem;color:#c9d1d9;">
+            <span style="color:{d_s_c};font-weight:700;">{d_s_sign}{delta_str:.1f}%</span>
+            strong (B+) vs prev week</div>
+        </div>""", unsafe_allow_html=True)
 
 
 # ============================================
@@ -5500,7 +5493,6 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
     wf_flow  = row.get('wave_inst_flow', 50)
     wf_harm  = row.get('wave_harmony', 50)
     wf_fund  = row.get('wave_fundamental', 50)
-    wf_tension = row.get('wave_position_tension') or 0
     wf_from_high = row.get('wave_from_high') or 0
     rally_gain = row.get('rally_gain', 0.0)
     rally_weeks = row.get('rally_weeks', 0)
@@ -5591,13 +5583,14 @@ def render_search_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, historie
 
     # ── Week-by-Week History ──
     with st.expander("📅 Week-by-Week History", expanded=False):
+        _n_weeks = len(ranks_list)
         week_data = {
-            'Date': h.get('dates', []),
+            'Date': h.get('dates', [])[:_n_weeks],
             'Rank': [int(r) for r in ranks_list],
-            'Pctl': [round(p, 1) for p in pcts] if pcts else [],
-            'Price ₹': [round(p, 1) for p in h['prices']],
-            'M.Score': [round(s, 1) for s in h.get('scores', [])],
-            'Stocks': totals_list,
+            'Pctl': [round(p, 1) for p in pcts] if len(pcts) == _n_weeks else [None] * _n_weeks,
+            'Price ₹': ([round(p, 1) for p in h['prices']] + [None] * _n_weeks)[:_n_weeks],
+            'M.Score': ([round(s, 1) for s in h.get('scores', [])] + [None] * _n_weeks)[:_n_weeks],
+            'Stocks': (totals_list + [None] * _n_weeks)[:_n_weeks],
         }
         wk_changes = [0] + [int(ranks_list[i - 1] - ranks_list[i]) for i in range(1, len(ranks_list))]
         week_data['Δ Rank'] = wk_changes
@@ -5811,10 +5804,10 @@ def _render_comparison_chart(main_ticker: str, compare_tickers: list,
     fig = go.Figure()
     for i, ticker in enumerate(all_tickers):
         h = histories.get(ticker, {})
-        if not h:
+        if not h or not h.get('ranks') or not h.get('total_per_week'):
             continue
         # Convert to percentiles for fair comparison
-        pcts = ranks_to_percentiles(h['ranks'], h['total_per_week'])
+        pcts = ranks_to_percentiles(h.get('ranks', []), h.get('total_per_week', []))
         name_row = traj_df[traj_df['ticker'] == ticker]
         label = f"{ticker}"
         if not name_row.empty:
@@ -5866,630 +5859,238 @@ def _render_comparison_chart(main_ticker: str, compare_tickers: list,
 
 
 # ============================================
-# UI: FUNNEL TAB (3-Stage Selection System)
-# ============================================
-
-def render_funnel_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame, histories: dict, metadata: dict):
-    """3-Stage Selection Funnel — v3.0 (Clean, Minimal, Smart)
-
-    Args:
-        filtered_df: Category/sector-filtered stocks (funnel input).
-        traj_df:     Full unfiltered data (for total universe count).
-    """
-
-    # ── Header ──
-    st.markdown("""
-    <div style="background:#0d1117; border-radius:14px; padding:18px 24px; margin-bottom:16px; border:1px solid #30363d;">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-            <div>
-                <span style="font-size:1.4rem; font-weight:800; color:#fff;">🎯 Selection Funnel</span>
-                <div style="color:#8b949e; font-size:0.85rem; margin-top:2px;">Systematic filtering: Discovery → Validation → Final Buys</div>
-            </div>
-            <div style="display:flex; gap:6px;">
-                <span style="background:#58a6ff22; color:#58a6ff; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #58a6ff44;">Stage 1: Score + Pattern</span>
-                <span style="background:#d2992222; color:#d29922; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #d2992244;">Stage 2: 5-Rule Engine</span>
-                <span style="background:#3fb95022; color:#3fb950; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #3fb95044;">Stage 3: Final Filter</span>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Configuration (compact inline) ──
-    with st.expander("⚙️ Funnel Configuration", expanded=False):
-        fc1, fc2, fc3 = st.columns(3)
-        with fc1:
-            st.markdown('<div style="color:#58a6ff; font-weight:700; font-size:0.85rem; margin-bottom:4px;">Stage 1 — Discovery</div>', unsafe_allow_html=True)
-            s1_score = st.number_input("Min T-Score", 30, 100, FUNNEL_DEFAULTS['stage1_score'], key='f_s1')
-            s1_patterns = st.multiselect(
-                "Include Patterns",
-                ['rocket', 'breakout', 'momentum_building', 'stable_elite', 'at_peak', 'steady_climber', 'recovery'],
-                default=FUNNEL_DEFAULTS['stage1_patterns'], key='f_s1_pat'
-            )
-        with fc2:
-            st.markdown('<div style="color:#d29922; font-weight:700; font-size:0.85rem; margin-bottom:4px;">Stage 2 — Validation</div>', unsafe_allow_html=True)
-            s2_tq = st.number_input("Min Trend Score", 30, 100, FUNNEL_DEFAULTS['stage2_tq'], key='f_s2_tq')
-            s2_ms = st.number_input("(Legacy — unused)", 20, 100, FUNNEL_DEFAULTS['stage2_master_score'], key='f_s2_ms', disabled=True)
-            s2_rules = st.number_input("Min Rules (of 5)", 2, 5, FUNNEL_DEFAULTS['stage2_min_rules'], key='f_s2_r')
-        with fc3:
-            st.markdown('<div style="color:#3fb950; font-weight:700; font-size:0.85rem; margin-bottom:4px;">Stage 3 — Final</div>', unsafe_allow_html=True)
-            s3_tq = st.number_input("Min Trend (strict)", 50, 100, FUNNEL_DEFAULTS['stage3_tq'], key='f_s3_tq')
-            s3_leader = st.checkbox("Require Leader/Conv≥60", FUNNEL_DEFAULTS['stage3_require_leader'], key='f_s3_l')
-            s3_dt = st.number_input("No Decay/DT (weeks)", 1, 10, FUNNEL_DEFAULTS['stage3_no_downtrend_weeks'], key='f_s3_dt')
-
-    funnel_config = {
-        'stage1_score': s1_score, 'stage1_patterns': s1_patterns,
-        'stage2_tq': s2_tq, 'stage2_master_score': s2_ms, 'stage2_min_rules': s2_rules,
-        'stage3_tq': s3_tq, 'stage3_require_leader': s3_leader, 'stage3_no_downtrend_weeks': s3_dt
-    }
-
-    # ── Execute Funnel (on filtered stocks) ──
-    stage1, stage2, stage3 = run_funnel(filtered_df, histories, funnel_config)
-
-    total = len(filtered_df)
-    s1_count = len(stage1)
-    s2_pass = len(stage2[stage2['s2_pass']]) if not stage2.empty and 's2_pass' in stage2.columns else 0
-    s3_pass = len(stage3[stage3['final_pass']]) if not stage3.empty and 'final_pass' in stage3.columns else 0
-
-    # ── Pipeline Metrics Strip ──
-    s1_pct = round(s1_count / max(total, 1) * 100, 1)
-    s2_pct = round(s2_pass / max(s1_count, 1) * 100, 1)
-    s3_pct = round(s3_pass / max(s2_pass, 1) * 100, 1)
-    overall_pct = round(s3_pass / max(total, 1) * 100, 2)
-
-    pipeline_items = [
-        ('📊 Universe', f'{total:,}', '100%', '#8b949e'),
-        ('🔍 Discovery', f'{s1_count}', f'{s1_pct}%', '#58a6ff'),
-        ('✅ Validated', f'{s2_pass}', f'{s2_pct}% pass', '#d29922'),
-        ('🏆 Final Buys', f'{s3_pass}', f'{s3_pct}% pass', '#3fb950'),
-        ('📌 Selection', f'{overall_pct}%', 'of universe', '#FFD700'),
-    ]
-    pipe_html = ''.join([
-        f'<div class="m-chip">'
-        f'<div style="font-size:0.6rem;color:#8b949e;text-transform:uppercase;">{label}</div>'
-        f'<div style="font-size:1.3rem;font-weight:800;color:{color};">{val}</div>'
-        f'<div style="font-size:0.6rem;color:#6e7681;">{sub}</div>'
-        f'</div>'
-        for label, val, sub, color in pipeline_items
-    ])
-    st.markdown(f'<div class="m-strip">{pipe_html}</div>', unsafe_allow_html=True)
-
-    st.markdown("")
-
-    # ── Visual Funnel Diagram ──
-    fc_left, fc_right = st.columns([2, 3])
-
-    with fc_left:
-        fig_funnel = go.Figure(go.Funnel(
-            y=['Universe', 'Stage 1', 'Stage 2', 'Final Buys'],
-            x=[total, s1_count, s2_pass, s3_pass],
-            textinfo='value+percent initial',
-            textposition='inside',
-            textfont=dict(size=13),
-            marker=dict(
-                color=['#30363d', '#58a6ff', '#d29922', '#3fb950'],
-                line=dict(width=1, color='#21262d')
-            ),
-            connector=dict(line=dict(color='#30363d', width=1))
-        ))
-        fig_funnel.update_layout(
-            height=300,
-            template='plotly_dark',
-            margin=dict(t=10, b=10, l=10, r=10),
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(size=12),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_funnel, use_container_width=True)
-
-    with fc_right:
-        # Stage flow breakdown — single self-contained HTML block
-        pat_list = ', '.join(s1_patterns[:3]) + ('...' if len(s1_patterns) > 3 else '')
-        s1_bar_w = min(s1_pct, 100)
-        s2_bar_w = min(s2_pct, 100)
-        s3_bar_w = min(s3_pct, 100)
-        leader_text = 'Leader required' if s3_leader else 'Leader optional'
-
-        flow_html = f"""
-        <div style="background:#161b22; border-radius:12px; padding:16px; border:1px solid #30363d;">
-        <div style="font-size:0.72rem; color:#8b949e; text-transform:uppercase; margin-bottom:12px;">Pipeline Flow</div>
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-            <div style="width:8px; height:8px; border-radius:50%; background:#58a6ff; flex-shrink:0;"></div>
-            <div style="flex:1;">
-                <div style="display:flex; justify-content:space-between;"><span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 1 — Discovery</span><span style="color:#58a6ff; font-weight:700;">{s1_count} stocks</span></div>
-                <div style="color:#6e7681; font-size:0.75rem; margin-top:2px;">T-Score ≥ {s1_score} OR pattern in [{pat_list}]</div>
-                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;"><div style="background:#58a6ff; height:6px; border-radius:4px; width:{s1_bar_w}%;"></div></div>
-            </div>
-        </div>
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
-            <div style="width:8px; height:8px; border-radius:50%; background:#d29922; flex-shrink:0;"></div>
-            <div style="flex:1;">
-                <div style="display:flex; justify-content:space-between;"><span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 2 — Validation</span><span style="color:#d29922; font-weight:700;">{s2_pass} passed</span></div>
-                <div style="color:#6e7681; font-size:0.75rem; margin-top:2px;">5 rules: TQ≥{s2_tq} | No Downtrend | MS≥{s2_ms} | Δ≥-20 | Vol — need {s2_rules}/5</div>
-                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;"><div style="background:#d29922; height:6px; border-radius:4px; width:{s2_bar_w}%;"></div></div>
-            </div>
-        </div>
-        <div style="display:flex; align-items:center; gap:10px;">
-            <div style="width:8px; height:8px; border-radius:50%; background:#3fb950; flex-shrink:0;"></div>
-            <div style="flex:1;">
-                <div style="display:flex; justify-content:space-between;"><span style="color:#e6edf3; font-size:0.85rem; font-weight:600;">Stage 3 — Final Buys</span><span style="color:#3fb950; font-weight:700;">{s3_pass} selected</span></div>
-                <div style="color:#6e7681; font-size:0.75rem; margin-top:2px;">TQ≥{s3_tq} | {leader_text} | No downtrend last {s3_dt}w</div>
-                <div style="background:#21262d; border-radius:4px; height:6px; margin-top:4px;"><div style="background:#3fb950; height:6px; border-radius:4px; width:{s3_bar_w}%;"></div></div>
-            </div>
-        </div>
-        </div>
-        """
-        st.markdown(flow_html, unsafe_allow_html=True)
-
-    st.markdown("")
-
-    # ══════════════════════════════════════════
-    # FINAL BUYS — Most Important, Shown First
-    # ══════════════════════════════════════════
-    st.markdown('<div class="sec-head">🏆 Final Buys</div>', unsafe_allow_html=True)
-
-    if s3_pass > 0:
-        final_buys = stage3[stage3['final_pass']].copy().reset_index(drop=True)
-
-        # Precompute T-Rank map (Confidence-Aware Ranking)
-        t_rank_sorted = traj_df.sort_values(
-            ['trajectory_score', 'confidence', 'consistency'],
-            ascending=[False, False, False]
-        ).reset_index(drop=True)
-        t_rank_map = {t: i + 1 for i, t in enumerate(t_rank_sorted['ticker'])}
-        total_stocks = len(t_rank_sorted)
-
-        # Card grid — 2 per row
-        for i in range(0, len(final_buys), 2):
-            cols = st.columns(2)
-            for j, col in enumerate(cols):
-                if i + j >= len(final_buys):
-                    break
-                r = final_buys.iloc[i + j]
-                h = histories.get(r['ticker'], {})
-                latest_price = h['prices'][-1] if h.get('prices') else 0
-                p_key = r.get('pattern_key', 'neutral')
-                p_emoji, p_name, _ = PATTERN_DEFS.get(p_key, ('➖', 'Neutral', ''))
-                p_color = PATTERN_COLORS.get(p_key, '#8b949e')
-                grade_color = {'S': '#FFD700', 'A': '#3fb950', 'B': '#58a6ff', 'C': '#d29922', 'D': '#FF5722', 'F': '#f85149'}.get(r['grade'], '#888')
-                t_rank = t_rank_map.get(r['ticker'], 0)
-
-                with col:
-                    st.markdown(f"""
-                    <div class="final-buy-card">
-                        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-                            <div>
-                                <div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">
-                                    <span style="font-size:1.15rem; font-weight:800; color:#3fb950;">{r['ticker']}</span>
-                                    <span style="background:{p_color}22; color:{p_color}; padding:2px 8px; border-radius:10px; font-size:0.68rem; border:1px solid {p_color}44;">{p_emoji} {p_name}</span>
-                                </div>
-                                <div style="color:#8b949e; font-size:0.8rem;">{r.get('company_name', '')[:35]}</div>
-                                <div style="color:#484f58; font-size:0.7rem;">{r.get('category', '')} • {r.get('sector', '')}</div>
-                            </div>
-                            <div style="text-align:right;">
-                                <div style="font-size:1.5rem; font-weight:800; color:#FF6B35;">{r['trajectory_score']:.1f}</div>
-                                <div style="font-size:0.6rem; color:#8b949e;">T-SCORE</div>
-                            </div>
-                        </div>
-                        <div style="display:flex; gap:12px; margin-top:10px; padding-top:8px; border-top:1px solid #21262d; flex-wrap:wrap;">
-                            <div><span style="color:#6e7681; font-size:0.65rem;">T-Rank</span><br><span style="color:#58a6ff; font-weight:700;">#{t_rank}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.65rem;">Rank</span><br><span style="color:#e6edf3; font-weight:700;">#{r['current_rank']}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.65rem;">Grade</span><br><span style="color:{grade_color}; font-weight:700;">{r['grade_emoji']} {r['grade']}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.65rem;">TMI</span><br><span style="color:#e6edf3; font-weight:700;">{r['tmi']:.0f}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.65rem;">TQ</span><br><span style="color:#e6edf3; font-weight:700;">{r.get('latest_tq', 0):.0f}</span></div>
-                            <div><span style="color:#6e7681; font-size:0.65rem;">Rules</span><br><span style="color:#3fb950; font-weight:700;">{r.get('rules_passed', 0)}/5</span></div>
-                            <div><span style="color:#6e7681; font-size:0.65rem;">Price</span><br><span style="color:#e6edf3; font-weight:700;">₹{latest_price:,.1f}</span></div>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-        # Summary table
-        st.markdown("")
-        fb_cols = ['ticker', 'company_name', 'category', 'trajectory_score', 'grade',
-                   'pattern', 'tmi', 'current_rank', 'best_rank', 'rank_change',
-                   'latest_tq', 'rules_passed']
-        fb_display = final_buys[[c for c in fb_cols if c in final_buys.columns]].copy()
-        fb_display.columns = [c.replace('_', ' ').title() for c in fb_display.columns]
-        st.dataframe(fb_display, column_config={
-            'Trajectory Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-        }, hide_index=True, use_container_width=True)
-    else:
-        st.markdown("""
-        <div style="background:#161b22; border-radius:10px; padding:24px; text-align:center; border:1px solid #30363d;">
-            <div style="font-size:1.3rem; margin-bottom:6px;">🔍</div>
-            <div style="color:#8b949e; font-size:0.9rem;">No stocks passed all 3 stages</div>
-            <div style="color:#484f58; font-size:0.8rem; margin-top:4px;">Try relaxing Stage 3 criteria in the config above</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("")
-
-    # ══════════════════════════════════════════
-    # STAGE 2: Validation Detail
-    # ══════════════════════════════════════════
-    with st.expander(f"✅ Stage 2 — Validation ({s2_pass} passed / {len(stage2) if not stage2.empty else 0} tested)", expanded=False):
-        if not stage2.empty:
-            st.markdown(f'<div style="color:#6e7681; font-size:0.8rem; margin-bottom:8px;">5 Rules: TQ≥{s2_tq} | Not DOWNTREND | MS≥{s2_ms} | Δ≥-20 | Volume — need {s2_rules}/5</div>', unsafe_allow_html=True)
-            s2_display_cols = ['ticker', 'company_name', 'trajectory_score', 'rules_passed',
-                               's2_pass', 'rules_detail', 'pattern', 'current_rank']
-            s2_display = stage2[[c for c in s2_display_cols if c in stage2.columns]].copy()
-            s2_display.columns = ['Ticker', 'Company', 'T-Score', 'Rules', 'Pass', 'Detail', 'Pattern', 'Rank']
-            s2_display['Company'] = s2_display['Company'].str[:30]
-            st.dataframe(s2_display, column_config={
-                'Pass': st.column_config.CheckboxColumn('Pass'),
-                'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-            }, hide_index=True, use_container_width=True, height=400)
-        else:
-            st.caption("No stocks entered Stage 2")
-
-    # ══════════════════════════════════════════
-    # STAGE 1: Discovery
-    # ══════════════════════════════════════════
-    with st.expander(f"🔍 Stage 1 — Discovery ({s1_count} candidates)", expanded=False):
-        if not stage1.empty:
-            s1_cols = ['ticker', 'company_name', 'category', 'trajectory_score',
-                       'grade', 'pattern', 'tmi', 'current_rank']
-            s1_display = stage1[[c for c in s1_cols if c in stage1.columns]].head(100).copy()
-            s1_display.columns = [c.replace('_', ' ').title() for c in s1_display.columns]
-            st.dataframe(s1_display, column_config={
-                'Trajectory Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-                'Tmi': st.column_config.ProgressColumn('TMI', min_value=0, max_value=100, format="%.0f"),
-            }, hide_index=True, use_container_width=True, height=400)
-        else:
-            st.caption("No stocks passed Stage 1")
-
-    # ══════════════════════════════════════════
-    # NEAR MISSES
-    # ══════════════════════════════════════════
-    if not stage3.empty:
-        near_misses = stage3[~stage3['final_pass']].copy()
-        if len(near_misses) > 0:
-            with st.expander(f"📋 Near Misses — {len(near_misses)} stocks passed Stage 2 but failed Stage 3", expanded=False):
-                nm_cols = ['ticker', 'company_name', 'trajectory_score', 's3_detail', 'latest_tq', 'current_rank']
-                nm_display = near_misses[[c for c in nm_cols if c in near_misses.columns]].copy()
-                nm_display.columns = ['Ticker', 'Company', 'T-Score', 'S3 Detail', 'TQ', 'Rank']
-                nm_display['Company'] = nm_display['Company'].str[:30]
-                st.dataframe(nm_display, column_config={
-                    'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.1f"),
-                }, hide_index=True, use_container_width=True)
-
-
-# ============================================
-# UI: ALERTS TAB
-# ============================================
-
-def render_alerts_tab(filtered_df: pd.DataFrame, histories: dict):
-    """Alerts Tab v5.0 — Ultimate Edition.
-
-    - Readable font sizes (no sub-0.7 rem)
-    - Batch CSS-grid HTML per section
-    - Top Movers: 50 per side, multi-week filter (1w / 2w / 4w / 8w / All)
-    """
-
-    # ── Ensure columns ──────────────────────────────────────────────────
-    _DEFAULTS = [
-        ('decay_label', ''), ('decay_multiplier', 1.0),
-        ('price_label', 'NEUTRAL'), ('sector_alpha_tag', 'NEUTRAL'),
-        ('grade', 'F'), ('grade_emoji', '📉'),
-        ('pattern_key', 'neutral'), ('pattern', '➖ Neutral'),
-        ('company_name', ''), ('sector', ''), ('weeks', 0),
-    ]
-    for col, default in _DEFAULTS:
-        if col not in filtered_df.columns:
-            filtered_df[col] = default
-
-    # ── Helpers ──────────────────────────────────────────────────────────
-    def _safe_ret(h: dict, key: str) -> str:
-        vals = [v for v in h.get(key, [])
-                if v is not None and not (isinstance(v, float) and np.isnan(v))]
-        return f"{vals[-1]:+.1f}%" if vals else '—'
-
-    def _last_price(h: dict) -> float:
-        return h['prices'][-1] if h.get('prices') else 0
-
-    def _metric(label: str, value: str, color: str = '#e6edf3') -> str:
-        return (f'<div style="min-width:44px;">'
-                f'<div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.3px;">{label}</div>'
-                f'<div style="color:{color};font-weight:700;font-size:0.88rem;margin-top:2px;">{value}</div></div>')
-
-    def _score_bar(pct: float, color: str) -> str:
-        w = min(max(pct, 0), 100)
-        return (f'<div style="background:#21262d;border-radius:3px;height:4px;margin-top:10px;">'
-                f'<div style="width:{w}%;height:4px;border-radius:3px;'
-                f'background:linear-gradient(90deg,{color},{color}88);"></div></div>')
-
-    # ── Compute alert data ──────────────────────────────────────────────
-    decay_high = int((filtered_df['decay_label'] == 'DECAY_HIGH').sum())
-    decay_mod  = int((filtered_df['decay_label'] == 'DECAY_MODERATE').sum())
-    conv_mask  = (
-        (filtered_df['grade'].isin(['S', 'A'])) &
-        (~filtered_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE'])) &
-        (filtered_df['weeks'] >= 4)
-    )
-    conv_count = int(conv_mask.sum())
-    confirmed  = int((filtered_df['price_label'] == 'PRICE_CONFIRMED').sum())
-    divergent  = int((filtered_df['price_label'] == 'PRICE_DIVERGENT').sum())
-    _filtered_tickers = set(filtered_df['ticker'].tolist())
-    gainers_1w, _ = get_top_movers(histories, n=1, weeks=1, tickers=_filtered_tickers)
-    top_delta  = int(gainers_1w.iloc[0]['rank_change']) if not gainers_1w.empty else 0
-    trap_total = decay_high + decay_mod
-
-    # ── Header Card ─────────────────────────────────────────────────────
-    trap_bg = '#f8514918' if trap_total > 0 else '#21262d'
-    trap_fg = '#f85149'   if trap_total > 0 else '#484f58'
-    div_bg  = '#d2992218' if divergent > 0 else '#21262d'
-    div_fg  = '#d29922'   if divergent > 0 else '#484f58'
-    st.markdown(f"""
-    <div style="background:#0d1117;border-radius:14px;padding:18px 24px;margin-bottom:16px;border:1px solid #30363d;">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
-        <div>
-          <span style="font-size:1.4rem;font-weight:800;color:#fff;">🚨 Alerts &amp; Signals</span>
-          <div style="color:#8b949e;font-size:0.88rem;margin-top:2px;">Real-time warnings · conviction picks · market movers</div>
-        </div>
-        <div style="display:flex;gap:6px;align-items:center;">
-          <span style="background:{trap_bg};color:{trap_fg};padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">{trap_total} Traps</span>
-          <span style="background:#3fb95018;color:#3fb950;padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">{conv_count} Conviction</span>
-          <span style="background:{div_bg};color:{div_fg};padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">{divergent} Divergent</span>
-        </div>
-      </div>
-    </div>""", unsafe_allow_html=True)
-
-    # ── Summary Strip ───────────────────────────────────────────────────
-    chips = [
-        ('🔻 Severe',    str(decay_high),   'traps', '#f85149'),
-        ('⚠️ Moderate',  str(decay_mod),    'decay', '#d29922'),
-        ('🏆 Conviction', str(conv_count),  'picks', '#3fb950'),
-        ('💰 Confirmed', str(confirmed),    'price', '#3fb950'),
-        ('📉 Divergent', str(divergent),    'price', '#f85149' if divergent > 0 else '#484f58'),
-        ('🔥 Top Move',  f'+{top_delta}',   'ranks', '#58a6ff'),
-    ]
-    chip_html = ''.join(
-        f'<div class="m-chip">'
-        f'<div style="font-size:0.7rem;color:#8b949e;text-transform:uppercase;">{lbl}</div>'
-        f'<div style="font-size:1.2rem;font-weight:800;color:{clr};">{val}</div>'
-        f'<div style="font-size:0.68rem;color:#6e7681;">{sub}</div></div>'
-        for lbl, val, sub, clr in chips
-    )
-    st.markdown(f'<div class="m-strip">{chip_html}</div>', unsafe_allow_html=True)
-    st.markdown('')
-
-    # ════════════════════════════════════════════════════════════════════
-    # § 1  MOMENTUM DECAY TRAPS
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🚨 Momentum Decay Traps</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Strong trajectory but deteriorating price momentum — rank correction may follow</div>', unsafe_allow_html=True)
-
-    high_traps = filtered_df[
-        (filtered_df['decay_label'].isin(['DECAY_HIGH', 'DECAY_MODERATE'])) &
-        (filtered_df['trajectory_score'] >= 40)
-    ].sort_values('trajectory_score', ascending=False).head(12)
-
-    if high_traps.empty:
-        st.markdown(
-            '<div style="background:#161b22;border-radius:10px;padding:18px;text-align:center;'
-            'border:1px solid #30363d;"><span style="color:#3fb950;font-weight:600;font-size:0.9rem;">'
-            '✅ No momentum decay traps detected</span></div>', unsafe_allow_html=True)
-    else:
-        cards = []
-        for _, tr in high_traps.iterrows():
-            th = histories.get(tr['ticker'], {})
-            price = _last_price(th)
-            lr7  = _safe_ret(th, 'ret_7d')
-            lr30 = _safe_ret(th, 'ret_30d')
-            sev  = tr.get('decay_label', '')
-            is_severe = sev == 'DECAY_HIGH'
-            sc = '#f85149' if is_severe else '#d29922'
-            tag = 'SEVERE' if is_severe else 'MODERATE'
-            dm  = tr.get('decay_multiplier', 1.0)
-            score = tr['trajectory_score']
-
-            cards.append(
-                f'<div style="background:rgba(248,81,73,0.03);border:1px solid rgba(248,81,73,'
-                f'{"0.45" if is_severe else "0.25"});border-radius:12px;padding:14px;'
-                f'border-left:3px solid {sc};">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-                f'<div><span style="font-weight:700;font-size:0.95rem;color:#e6edf3;">{tr["ticker"]}</span>'
-                f'<span style="color:#8b949e;font-size:0.78rem;margin-left:8px;">{str(tr.get("company_name",""))[:22]}</span></div>'
-                f'<span style="background:{sc}18;color:{sc};padding:2px 8px;border-radius:8px;'
-                f'font-size:0.72rem;font-weight:700;">{tag}</span></div>'
-                f'<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;">'
-                f'{_metric("Rank", f"#{int(tr["current_rank"])}")}'
-                f'{_metric("Score", f"{score:.0f}", "#FF6B35")}'
-                f'{_metric("7d", lr7, sc)}'
-                f'{_metric("30d", lr30, sc)}'
-                f'{_metric("Decay", f"x{dm:.3f}", sc)}'
-                f'{_metric("Price", f"₹{price:,.0f}")}'
-                f'</div>{_score_bar(score, sc)}</div>'
-            )
-
-        st.markdown(
-            f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">'
-            f'{"".join(cards)}</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    # § 2  CONVICTION PICKS
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🏆 Conviction Picks</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Grade S/A · Clean momentum · 4+ weeks · Price-confirmed preferred</div>', unsafe_allow_html=True)
-
-    conv_df = filtered_df[
-        conv_mask & (filtered_df['price_label'] == 'PRICE_CONFIRMED')
-    ].sort_values('trajectory_score', ascending=False).head(8)
-    if len(conv_df) < 3:
-        conv_df = filtered_df[conv_mask].sort_values('trajectory_score', ascending=False).head(8)
-
-    if conv_df.empty:
-        st.markdown(
-            '<div style="background:#161b22;border-radius:10px;padding:18px;text-align:center;'
-            'border:1px solid #30363d;"><span style="color:#8b949e;font-size:0.9rem;">'
-            'No conviction picks with current filters</span></div>', unsafe_allow_html=True)
-    else:
-        cards = []
-        for _, cr in conv_df.iterrows():
-            gc = GRADE_COLORS.get(cr['grade'], '#8b949e')
-            ch = histories.get(cr['ticker'], {})
-            price = _last_price(ch)
-            lr7  = _safe_ret(ch, 'ret_7d')
-            p_key = cr.get('pattern_key', 'neutral')
-            p_emoji, p_name, _ = PATTERN_DEFS.get(p_key, ('➖', 'Neutral', ''))
-            p_color = PATTERN_COLORS.get(p_key, '#8b949e')
-            score = cr['trajectory_score']
-            wks = int(cr.get('weeks', 0))
-
-            pills = ''
-            if cr.get('sector_alpha_tag') == 'SECTOR_LEADER':
-                pills += '<span class="pill p-gld">👑 Leader</span> '
-            elif cr.get('sector_alpha_tag') == 'SECTOR_OUTPERFORM':
-                pills += '<span class="pill p-grn">Outperform</span> '
-            if cr.get('price_label') == 'PRICE_CONFIRMED':
-                pills += '<span class="pill p-grn">💰 Confirmed</span> '
-
-            cards.append(
-                f'<div style="background:rgba(63,185,80,0.03);border:1px solid rgba(63,185,80,0.35);'
-                f'border-radius:12px;padding:14px;border-left:3px solid #3fb950;">'
-                f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
-                f'<div><span style="font-weight:700;font-size:0.95rem;color:#e6edf3;">{cr["ticker"]}</span>'
-                f'<div style="color:#8b949e;font-size:0.78rem;margin-top:1px;">{str(cr.get("company_name",""))[:24]}</div></div>'
-                f'<div style="text-align:right;">'
-                f'<div style="font-size:1.3rem;font-weight:800;color:{gc};">{score:.0f}</div>'
-                f'<div style="font-size:0.72rem;color:#8b949e;">{cr.get("grade_emoji","")} {cr["grade"]}</div></div></div>'
-                f'<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;">'
-                f'{_metric("Rank", f"#{int(cr["current_rank"])}")}'
-                f'{_metric("Pattern", f"{p_emoji} {p_name[:12]}", p_color)}'
-                f'{_metric("7d", lr7, "#3fb950")}'
-                f'{_metric("Price", f"₹{price:,.0f}")}'
-                f'{_metric("Weeks", str(wks), "#58a6ff")}'
-                f'</div>{_score_bar(score, "#3fb950")}'
-                f'<div style="margin-top:6px;">{pills}</div></div>'
-            )
-
-        st.markdown(
-            f'<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">'
-            f'{"".join(cards)}</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
-    # ════════════════════════════════════════════════════════════════════
-    # § 3  PRICE DIVERGENT
-    # ════════════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">📉 Price Divergent</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sec-cap">Trajectory rising but price returns negative — potential rank correction ahead</div>', unsafe_allow_html=True)
-
-    div_stocks = filtered_df[
-        filtered_df['price_label'] == 'PRICE_DIVERGENT'
-    ].sort_values('trajectory_score', ascending=False).head(12)
-
-    if div_stocks.empty:
-        st.markdown(
-            '<div style="background:#161b22;border-radius:10px;padding:18px;text-align:center;'
-            'border:1px solid #30363d;"><span style="color:#3fb950;font-weight:600;font-size:0.9rem;">'
-            '✅ No price-divergent stocks detected</span></div>', unsafe_allow_html=True)
-    else:
-        cards = []
-        for _, dv in div_stocks.iterrows():
-            gc = GRADE_COLORS.get(dv['grade'], '#8b949e')
-            dh = histories.get(dv['ticker'], {})
-            price = _last_price(dh)
-            lr7  = _safe_ret(dh, 'ret_7d')
-            lr30 = _safe_ret(dh, 'ret_30d')
-            score = dv['trajectory_score']
-
-            cards.append(
-                f'<div style="background:rgba(210,153,34,0.03);border:1px solid rgba(210,153,34,0.30);'
-                f'border-radius:12px;padding:14px;border-left:3px solid #d29922;">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
-                f'<div><span style="font-weight:700;font-size:0.95rem;color:#e6edf3;">{dv["ticker"]}</span>'
-                f'<span style="color:#8b949e;font-size:0.78rem;margin-left:8px;">{str(dv.get("company_name",""))[:22]}</span></div>'
-                f'<span style="color:{gc};font-weight:700;font-size:0.95rem;">{dv.get("grade_emoji","")} {score:.0f}</span></div>'
-                f'<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;">'
-                f'{_metric("Rank", f"#{int(dv["current_rank"])}")}'
-                f'{_metric("7d", lr7, "#d29922")}'
-                f'{_metric("30d", lr30, "#d29922")}'
-                f'{_metric("Price", f"₹{price:,.0f}")}'
-                f'<div style="min-width:44px;"><div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.3px;">Status</div>'
-                f'<div style="margin-top:2px;"><span class="pill p-red" style="font-size:0.72rem;">Divergent</span></div></div>'
-                f'</div>{_score_bar(score, "#d29922")}</div>'
-            )
-
-        st.markdown(
-            f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">'
-            f'{"".join(cards)}</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
-
-# ============================================
 # UI: TOP MOVERS TAB
 # ============================================
 
 def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
-    """🔥 Top Movers Tab — 50 per side, multi-week filter."""
+    """🔥 Top Movers Tab v2.0 — multi-week window, 50/100/150 stock selector.
+
+    v2.0 fixes:
+      - XSS: all ticker/company names html-escaped
+      - Dropdown for 50/100/150 stocks per side
+      - Header hero badges update to match selected time window
+      - Info bar reflects actual count + window
+      - max-height scales with selected count
+      - Sector column added
+      - NaN guards on every .get() / merge field
+      - Summary stats row (avg/median rank change)
+    """
+    import html as _html
 
     # ── Ensure columns ──
-    _DEFAULTS = [
-        ('grade', 'F'), ('grade_emoji', '📉'),
-        ('company_name', ''), ('sector', ''), ('weeks', 0),
-        ('trajectory_score', 0),
-    ]
-    for col, default in _DEFAULTS:
+    for col, default in [('grade', 'F'), ('grade_emoji', '📉'), ('company_name', ''),
+                         ('sector', ''), ('weeks', 0), ('trajectory_score', 0)]:
         if col not in filtered_df.columns:
             filtered_df[col] = default
 
     _filtered_tickers = set(filtered_df['ticker'].tolist())
 
-    # ── Header Card ─────────────────────────────────────────────
-    gainers_1w, decliners_1w = get_top_movers(histories, n=1, weeks=1, tickers=_filtered_tickers)
-    top_gainer_delta = int(gainers_1w.iloc[0]['rank_change']) if not gainers_1w.empty else 0
-    top_decliner_delta = int(decliners_1w.iloc[0]['rank_change']) if not decliners_1w.empty else 0
-    top_gainer_name = gainers_1w.iloc[0]['ticker'] if not gainers_1w.empty else '—'
-    top_decliner_name = decliners_1w.iloc[0]['ticker'] if not decliners_1w.empty else '—'
+    # ── Controls: Time Window + Stock Count ──────────────────────
+    max_hist_len = max((len(h.get('ranks', [])) for h in histories.values()), default=2) - 1
+    week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len] or [1]
+    week_labels = {1: '1 Week', 2: '2 Weeks', 4: '4 Weeks', 8: '8 Weeks', 12: '12 Weeks'}
 
+    c_wk, c_ct, _ = st.columns([1, 1, 2])
+    with c_wk:
+        mv_weeks = st.selectbox(
+            'Time Window', options=week_options,
+            format_func=lambda x: week_labels.get(x, f'{x} Weeks'),
+            index=0, key='movers_tab_weeks',
+        )
+    with c_ct:
+        mv_count = st.selectbox(
+            'Stocks Per Side', options=[50, 100, 150],
+            index=0, key='movers_tab_count',
+        )
+
+    # ── Fetch movers ─────────────────────────────────────────────
+    gainers, decliners = get_top_movers(histories, n=mv_count, weeks=mv_weeks,
+                                         tickers=_filtered_tickers)
+
+    # ── Detect pattern flips + new entries/exits over the same window ──
+    new_rockets, new_crashes, new_entries, exited_tickers = [], [], [], []
+    for ticker, h in histories.items():
+        if _filtered_tickers is not None and ticker not in _filtered_tickers:
+            continue
+        pats = h.get('pattern_history', [])
+        ranks = h.get('ranks', [])
+        n_weeks = len(ranks)
+        # Pattern flips: compare current vs N weeks ago
+        if len(pats) >= mv_weeks + 1:
+            cur_pat = pats[-1]
+            prev_pat = pats[-(mv_weeks + 1)]
+            if cur_pat == 'rocket' and prev_pat != 'rocket':
+                new_rockets.append(ticker)
+            if cur_pat == 'crash' and prev_pat != 'crash':
+                new_crashes.append(ticker)
+        # New entries: present in latest week but absent N weeks ago
+        dates = h.get('dates', [])
+        if n_weeks >= 1 and n_weeks < mv_weeks + 1:
+            new_entries.append(ticker)
+    # Exited: had data N weeks ago but not in latest week
+    for ticker, h in histories.items():
+        if _filtered_tickers is not None and ticker not in _filtered_tickers:
+            continue
+        ranks = h.get('ranks', [])
+        dates = h.get('dates', [])
+        if len(ranks) >= mv_weeks + 1:
+            # This ticker has old data — check if it's missing from the latest snapshot
+            pass  # still present, not exited
+        # Tickers that disappeared: were in prev but not in latest
+    # Simpler approach: use the actual date lists
+    _all_dates = set()
+    for h in histories.values():
+        for d in h.get('dates', []):
+            _all_dates.add(str(d)[:10])
+    _sorted_dates = sorted(_all_dates)
+    if len(_sorted_dates) >= mv_weeks + 1:
+        _latest_date = _sorted_dates[-1]
+        _prev_date = _sorted_dates[-(mv_weeks + 1)]
+        _latest_tickers = set()
+        _prev_tickers = set()
+        for ticker, h in histories.items():
+            if _filtered_tickers is not None and ticker not in _filtered_tickers:
+                continue
+            ds = [str(d)[:10] for d in h.get('dates', [])]
+            if _latest_date in ds:
+                _latest_tickers.add(ticker)
+            if _prev_date in ds:
+                _prev_tickers.add(ticker)
+        new_entries = sorted(_latest_tickers - _prev_tickers)
+        exited_tickers = sorted(_prev_tickers - _latest_tickers)
+
+    # ── Header Card (uses actual data) ───────────────────────────
+    _safe = _html.escape
+    if not gainers.empty:
+        tg_delta = int(gainers.iloc[0].get('rank_change', 0))
+        tg_name = _safe(str(gainers.iloc[0].get('ticker', '—')))
+    else:
+        tg_delta, tg_name = 0, '—'
+    if not decliners.empty:
+        td_delta = int(decliners.iloc[0].get('rank_change', 0))
+        td_name = _safe(str(decliners.iloc[0].get('ticker', '—')))
+    else:
+        td_delta, td_name = 0, '—'
+
+    wk_label = week_labels.get(mv_weeks, f'{mv_weeks}w')
     st.markdown(f"""
     <div style="background:#0d1117;border-radius:14px;padding:18px 24px;margin-bottom:16px;border:1px solid #30363d;">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <div>
           <span style="font-size:1.4rem;font-weight:800;color:#fff;">🔥 Top Movers</span>
-          <div style="color:#8b949e;font-size:0.88rem;margin-top:2px;">Biggest rank changes — filter by time window</div>
+          <div style="color:#8b949e;font-size:0.88rem;margin-top:2px;">
+            Biggest rank changes over <span style="color:#58a6ff;font-weight:700;">{wk_label}</span>
+            &nbsp;·&nbsp; {mv_count} per side
+          </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center;">
-          <span style="background:#3fb95018;color:#3fb950;padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">
-            ⬆️ {top_gainer_name} +{top_gainer_delta}</span>
-          <span style="background:#f8514918;color:#f85149;padding:4px 10px;border-radius:8px;font-size:0.78rem;font-weight:600;">
-            ⬇️ {top_decliner_name} {top_decliner_delta}</span>
+          <span style="background:#3fb95018;color:#3fb950;padding:4px 10px;border-radius:8px;
+                font-size:0.78rem;font-weight:600;">⬆️ {tg_name} +{tg_delta}</span>
+          <span style="background:#f8514918;color:#f85149;padding:4px 10px;border-radius:8px;
+                font-size:0.78rem;font-weight:600;">⬇️ {td_name} {td_delta}</span>
         </div>
       </div>
     </div>""", unsafe_allow_html=True)
 
-    # ── Time Window Selector ─────────────────────────────────────
-    max_hist_len = max((len(h['ranks']) for h in histories.values()), default=2) - 1
-    week_options = [w for w in [1, 2, 4, 8, 12] if w <= max_hist_len]
-    if not week_options:
-        week_options = [1]
-    week_labels = {1: '1 Week', 2: '2 Weeks', 4: '4 Weeks', 8: '8 Weeks', 12: '12 Weeks'}
+    # ── Summary stats ────────────────────────────────────────────
+    def _stats(df_mv):
+        if df_mv.empty:
+            return 0, 0, 0, 0
+        rc = df_mv['rank_change']
+        return len(df_mv), int(rc.mean()), int(rc.median()), int(rc.iloc[0])
 
-    sel_col, info_col = st.columns([1, 3])
-    with sel_col:
-        mv_weeks = st.selectbox(
-            'Time Window',
-            options=week_options,
-            format_func=lambda x: week_labels.get(x, f'{x} Weeks'),
-            index=0,
-            key='movers_tab_weeks',
-        )
-    with info_col:
+    g_cnt, g_avg, g_med, g_best = _stats(gainers)
+    d_cnt, d_avg, d_med, d_worst = _stats(decliners)
+    st.markdown(f"""
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px;">
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">{g_cnt}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Climbers</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">+{g_avg}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Avg Climb</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#3fb950;font-weight:700;font-size:1.1rem;">+{g_best}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Best Climb</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_cnt}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Decliners</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_avg}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Avg Drop</div></div>
+      <div style="background:#161b22;border-radius:10px;padding:10px 12px;text-align:center;border:1px solid #30363d;">
+        <div style="color:#f85149;font-weight:700;font-size:1.1rem;">{d_worst}</div>
+        <div style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Worst Drop</div></div>
+    </div>""", unsafe_allow_html=True)
+
+    # ── Pattern Flips + New Entries/Exits ─────────────────────────
+    _n_rockets = len(new_rockets)
+    _n_crashes = len(new_crashes)
+    _n_entries = len(new_entries)
+    _n_exited = len(exited_tickers)
+    _has_signals = _n_rockets + _n_crashes + _n_entries + _n_exited > 0
+
+    if _has_signals:
+        # Build compact pill lists for rockets and crashes
+        def _ticker_pills(tickers, color, limit=12):
+            if not tickers:
+                return '<span style="color:#6e7681;font-size:0.75rem;">None</span>'
+            pills = []
+            for tk in tickers[:limit]:
+                pills.append(
+                    f'<span style="display:inline-block;padding:2px 8px;border-radius:8px;'
+                    f'font-size:0.72rem;font-weight:600;color:{color};'
+                    f'background:{color}12;border:1px solid {color}30;margin:2px;">'
+                    f'{_safe(tk)}</span>')
+            if len(tickers) > limit:
+                pills.append(f'<span style="color:#6e7681;font-size:0.72rem;">+{len(tickers) - limit} more</span>')
+            return ' '.join(pills)
+
+        rocket_pills = _ticker_pills(new_rockets, '#FF4500')
+        crash_pills = _ticker_pills(new_crashes, '#DC143C')
+        entry_pills = _ticker_pills(new_entries, '#58a6ff')
+        exit_pills = _ticker_pills(exited_tickers, '#8b949e')
+
         st.markdown(f"""
-        <div style="background:#161b22;border-radius:10px;padding:10px 16px;margin-top:6px;border:1px solid #30363d;">
-            <span style="color:#8b949e;font-size:0.82rem;">Showing rank change over </span>
-            <span style="color:#58a6ff;font-weight:700;font-size:0.88rem;">{week_labels.get(mv_weeks, f"{mv_weeks}w")}</span>
-            <span style="color:#8b949e;font-size:0.82rem;"> · Top 50 climbers &amp; 50 decliners</span>
+        <div style="background:#0d1117;border-radius:12px;padding:16px 20px;margin-bottom:14px;
+            border:1px solid #30363d;">
+          <div style="font-size:0.82rem;font-weight:700;color:#c9d1d9;margin-bottom:10px;
+              letter-spacing:0.3px;">⚡ Pattern Flips & Universe Changes
+            <span style="color:#6e7681;font-weight:400;font-size:0.75rem;margin-left:8px;">
+              (over {wk_label})</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;">
+              <div style="display:flex;align-items:center;gap:4px;">
+                <span style="color:#FF4500;font-weight:800;font-size:1rem;">{_n_rockets}</span>
+                <span style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">New 🚀</span></div>
+              <div>{rocket_pills}</div>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <span style="color:#DC143C;font-weight:800;font-size:1rem;">{_n_crashes}</span>
+                <span style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">New 💥</span></div>
+              <div>{crash_pills}</div>
+            </div>
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;">
+              <div style="display:flex;align-items:center;gap:4px;">
+                <span style="color:#58a6ff;font-weight:800;font-size:1rem;">{_n_entries}</span>
+                <span style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Entered</span></div>
+              <div>{entry_pills}</div>
+              <div style="display:flex;align-items:center;gap:4px;">
+                <span style="color:#8b949e;font-weight:800;font-size:1rem;">{_n_exited}</span>
+                <span style="color:#8b949e;font-size:0.7rem;text-transform:uppercase;">Exited</span></div>
+              <div>{exit_pills}</div>
+            </div>
+          </div>
         </div>""", unsafe_allow_html=True)
 
-    gainers, decliners = get_top_movers(histories, n=50, weeks=mv_weeks, tickers=_filtered_tickers)
+    # ── Mover Table Builder ──────────────────────────────────────
+    enrich_cols = ['ticker', 'trajectory_score', 'grade', 'sector']
+    enrich_df = filtered_df[
+        [c for c in enrich_cols if c in filtered_df.columns]
+    ].drop_duplicates('ticker')
+
+    scroll_h = {50: 580, 100: 1050, 150: 1500}.get(mv_count, 580)
 
     def _mover_table_html(df_mv, accent, icon, label):
-        """Build one mover panel as a single HTML string."""
         count = len(df_mv)
         hdr = (f'<div style="background:#161b22;border-radius:10px 10px 0 0;padding:12px 16px;'
                f'border:1px solid #30363d;border-bottom:2px solid {accent};display:flex;'
@@ -6498,389 +6099,81 @@ def render_top_movers_tab(filtered_df: pd.DataFrame, histories: dict):
                f'<span style="color:#6e7681;font-size:0.78rem;">{count} stocks</span></div>')
 
         if df_mv.empty:
-            return (hdr + '<div style="background:#0d1117;border-radius:0 0 10px 10px;padding:18px;'
-                    'border:1px solid #30363d;border-top:0;text-align:center;color:#6e7681;font-size:0.85rem;'
-                    '">No movers detected</div>')
+            return (hdr + '<div style="background:#0d1117;border-radius:0 0 10px 10px;padding:28px;'
+                    'border:1px solid #30363d;border-top:0;text-align:center;color:#6e7681;'
+                    'font-size:0.88rem;">No movers detected for this window</div>')
 
-        enriched = df_mv.merge(
-            filtered_df[['ticker', 'trajectory_score', 'grade']].drop_duplicates('ticker'),
-            on='ticker', how='left')
+        enriched = df_mv.merge(enrich_df, on='ticker', how='left')
 
         col_hdr = (
-            '<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
+            '<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
             'background:#161b22;border-bottom:1px solid #30363d;font-size:0.72rem;color:#6e7681;'
             'text-transform:uppercase;letter-spacing:0.5px;">'
+            '<span style="min-width:28px;text-align:center;color:#6e7681;font-size:0.68rem;">#</span>'
             '<span style="min-width:44px;text-align:right;">Chg</span>'
             '<span style="flex:1;">Stock</span>'
+            '<span class="mv-sector" style="min-width:72px;text-align:left;">Sector</span>'
             '<span style="min-width:56px;text-align:right;">Price</span>'
             '<span style="min-width:80px;text-align:center;">Prev → Now</span>'
-            '<span style="min-width:36px;text-align:center;">Grd</span>'
-            '<span style="min-width:36px;text-align:right;">Score</span></div>'
-        )
+            '<span style="min-width:32px;text-align:center;">Grd</span>'
+            '<span style="min-width:36px;text-align:right;">Score</span></div>')
 
         rows_html = [col_hdr]
         for i, (_, m) in enumerate(enriched.iterrows()):
-            rc = int(m['rank_change'])
-            ts = m.get('trajectory_score', 0)
-            ts = 0 if pd.isna(ts) else ts
-            gr = m.get('grade', '—')
-            gr = '—' if pd.isna(gr) else gr
+            rc = int(m.get('rank_change', 0) if pd.notna(m.get('rank_change', 0)) else 0)
+            ts = float(m.get('trajectory_score', 0) if pd.notna(m.get('trajectory_score')) else 0)
+            gr = str(m.get('grade', '—') if pd.notna(m.get('grade')) else '—')
             gc = GRADE_COLORS.get(gr, '#8b949e')
+            sector_raw = str(m.get('sector', '') if pd.notna(m.get('sector')) else '')
+            sector_short = _safe(sector_raw[:14]) if sector_raw else '—'
             stripe = 'rgba(22,27,34,0.5)' if i % 2 else 'transparent'
-            chg_c = '#3fb950' if rc > 0 else '#f85149'
+            chg_c = '#3fb950' if rc > 0 else ('#f85149' if rc < 0 else '#8b949e')
             chg_sign = '+' if rc > 0 else ''
 
-            price_val = m.get('price', 0)
-            price_val = 0 if pd.isna(price_val) else float(price_val)
-            price_str = f'₹{price_val:,.0f}' if price_val >= 100 else (f'₹{price_val:,.2f}' if price_val > 0 else '—')
+            price_val = float(m.get('price', 0) if pd.notna(m.get('price')) else 0)
+            if price_val >= 100:
+                price_str = f'₹{price_val:,.0f}'
+            elif price_val > 0:
+                price_str = f'₹{price_val:,.2f}'
+            else:
+                price_str = '—'
+
+            prev_r = int(m.get('prev_rank', 0) if pd.notna(m.get('prev_rank')) else 0)
+            curr_r = int(m.get('current_rank', 0) if pd.notna(m.get('current_rank')) else 0)
+            ticker_esc = _safe(str(m.get('ticker', '')))
+            comp_esc = _safe(str(m.get('company_name', '') if pd.notna(m.get('company_name')) else '')[:22])
 
             rows_html.append(
-                f'<div style="display:flex;align-items:center;padding:6px 14px;gap:8px;background:{stripe};'
-                f'border-bottom:1px solid #21262d;">'
-                f'<span style="color:{chg_c};font-weight:800;font-size:0.88rem;min-width:44px;text-align:right;'
-                f'font-variant-numeric:tabular-nums;">{chg_sign}{rc}</span>'
+                f'<div class="mv-row" style="display:flex;align-items:center;padding:6px 14px;gap:8px;'
+                f'background:{stripe};border-bottom:1px solid #21262d;">'
+                f'<span style="min-width:28px;text-align:center;color:#6e7681;font-size:0.72rem;'
+                f'font-variant-numeric:tabular-nums;">{i+1}</span>'
+                f'<span style="color:{chg_c};font-weight:800;font-size:0.88rem;min-width:44px;'
+                f'text-align:right;font-variant-numeric:tabular-nums;">{chg_sign}{rc}</span>'
                 f'<div style="flex:1;overflow:hidden;white-space:nowrap;">'
-                f'<span style="color:#e6edf3;font-weight:600;font-size:0.85rem;">{m["ticker"]}</span>'
-                f'<span style="color:#8b949e;font-size:0.75rem;margin-left:6px;">'
-                f'{str(m.get("company_name",""))[:20]}</span></div>'
-                f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:56px;text-align:right;'
-                f'font-variant-numeric:tabular-nums;">{price_str}</span>'
+                f'<span class="mv-ticker" style="color:#e6edf3;font-weight:600;font-size:0.85rem;">{ticker_esc}</span>'
+                f'<span style="color:#8b949e;font-size:0.73rem;margin-left:6px;">{comp_esc}</span></div>'
+                f'<span class="mv-sector" style="color:#8b949e;font-size:0.75rem;min-width:72px;overflow:hidden;'
+                f'white-space:nowrap;text-overflow:ellipsis;">{sector_short}</span>'
+                f'<span style="color:#d2a8ff;font-weight:600;font-size:0.82rem;min-width:56px;'
+                f'text-align:right;font-variant-numeric:tabular-nums;">{price_str}</span>'
                 f'<span style="color:#8b949e;font-size:0.8rem;min-width:80px;text-align:center;'
-                f'font-variant-numeric:tabular-nums;">{int(m["prev_rank"])} → {int(m["current_rank"])}</span>'
-                f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:36px;text-align:center;">{gr}</span>'
-                f'<span style="color:#FF6B35;font-weight:600;font-size:0.82rem;min-width:36px;text-align:right;'
-                f'font-variant-numeric:tabular-nums;">{ts:.0f}</span></div>')
+                f'font-variant-numeric:tabular-nums;">{prev_r} → {curr_r}</span>'
+                f'<span style="color:{gc};font-weight:700;font-size:0.82rem;min-width:32px;'
+                f'text-align:center;">{_safe(gr)}</span>'
+                f'<span style="color:#FF6B35;font-weight:600;font-size:0.82rem;min-width:36px;'
+                f'text-align:right;font-variant-numeric:tabular-nums;">{ts:.0f}</span></div>')
 
         body = (f'<div style="background:#0d1117;border-radius:0 0 10px 10px;border:1px solid #30363d;'
-                f'border-top:0;overflow:hidden;max-height:580px;overflow-y:auto;">{"".join(rows_html)}</div>')
+                f'border-top:0;overflow:hidden;max-height:{scroll_h}px;overflow-y:auto;">'
+                f'{"".join(rows_html)}</div>')
         return hdr + body
 
-    g_html = _mover_table_html(gainers,   '#3fb950', '⬆️', 'Biggest Climbers')
+    g_html = _mover_table_html(gainers, '#3fb950', '⬆️', 'Biggest Climbers')
     d_html = _mover_table_html(decliners, '#f85149', '⬇️', 'Biggest Decliners')
     st.markdown(
-        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
+        f'<div class="mv-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'
         f'<div>{g_html}</div><div>{d_html}</div></div>', unsafe_allow_html=True)
-
-
-# ============================================
-# UI: EARLY DISCOVERY TAB
-# ============================================
-
-def render_early_discovery_tab(filtered_df: pd.DataFrame, traj_df: pd.DataFrame,
-                                histories: dict, metadata: dict):
-    """🔮 Early Discovery — catch stocks EARLY in their upward moves.
-
-    Uses v9.0 data-proven alpha signals (from_high, breakout, BOUNCE)
-    instead of position confirmation used by the main T-Score.
-    """
-
-    # ── Header Card ──────────────────────────────────────────────
-    st.markdown("""
-    <div style="background:#0d1117; border-radius:14px; padding:18px 24px; margin-bottom:16px; border:1px solid #30363d;">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-            <div>
-                <span style="font-size:1.4rem; font-weight:800; color:#fff;">🔮 Early Discovery</span>
-                <div style="color:#8b949e; font-size:0.85rem; margin-top:2px;">Catch stocks EARLY — before the main T-Score confirms them</div>
-            </div>
-            <div style="display:flex; gap:6px;">
-                <span style="background:#00E67622; color:#00E676; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #00E67644;">from_high: +0.55%/wk</span>
-                <span style="background:#FF6B3522; color:#FF6B35; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #FF6B3544;">breakout: +0.44%/wk</span>
-                <span style="background:#58a6ff22; color:#58a6ff; padding:4px 10px; border-radius:8px; font-size:0.72rem; border:1px solid #58a6ff44;">BOUNCE: +1.17%/wk</span>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Configuration ────────────────────────────────────────────
-    with st.expander("⚙️ Discovery Configuration", expanded=False):
-        dc1, dc2, dc3 = st.columns(3)
-        with dc1:
-            min_disc_score = st.slider("Min Discovery Score", 0, 80, 45, key='disc_min')
-        with dc2:
-            disc_rally_stages = st.multiselect(
-                "Rally Stages",
-                ['FRESH', 'EARLY', 'RUNNING', 'MATURE', 'LATE'],
-                default=['FRESH', 'EARLY', 'RUNNING'],
-                key='disc_rally'
-            )
-        with dc3:
-            disc_exclude_decay = st.checkbox("Exclude Severe Decay", value=True, key='disc_nodecay')
-
-    # ── Compute discovery scores for all filtered stocks ─────────
-    disc_rows = []
-    for _, row in filtered_df.iterrows():
-        h = histories.get(row['ticker'], {})
-        if not h or int(row.get('weeks', 0) or 0) < 2:
-            continue
-
-        ed_score = _compute_early_discovery_score(row, h)
-
-        # Get from_high for display
-        fh_list = h.get('from_high_pct', [])
-        from_high_disp = None
-        if fh_list:
-            fh_val = fh_list[-1]
-            if fh_val is not None and isinstance(fh_val, (int, float)):
-                try:
-                    if not np.isnan(fh_val):
-                        from_high_disp = float(fh_val)
-                except (TypeError, ValueError):
-                    pass
-
-        d = row.to_dict()
-        d['discovery_score'] = ed_score
-        d['from_high_display'] = from_high_disp
-        d_emoji, d_label = _get_discovery_grade(ed_score)
-        d['disc_grade_emoji'] = d_emoji
-        d['disc_grade'] = d_label
-        disc_rows.append(d)
-
-    if not disc_rows:
-        st.info("No stocks available for Early Discovery analysis. Upload more data or adjust filters.")
-        return
-
-    disc_df = pd.DataFrame(disc_rows)
-
-    # ── Apply discovery-specific filters ─────────────────────────
-    mask = disc_df['discovery_score'] >= min_disc_score
-
-    if disc_rally_stages and 'rally_stage' in disc_df.columns:
-        mask = mask & disc_df['rally_stage'].isin(disc_rally_stages)
-
-    if disc_exclude_decay and 'decay_label' in disc_df.columns:
-        mask = mask & (~disc_df['decay_label'].isin(['DECAY_HIGH']))
-
-    candidates = disc_df[mask].sort_values('discovery_score', ascending=False).copy().reset_index(drop=True)
-
-    # ── Metric Strip ─────────────────────────────────────────────
-    n_cand = len(candidates)
-    avg_disc = candidates['discovery_score'].mean() if n_cand > 0 else 0
-    n_prime = int((candidates['discovery_score'] >= 80).sum()) if n_cand > 0 else 0
-    n_strong = int((candidates['discovery_score'] >= 65).sum()) if n_cand > 0 else 0
-    n_fresh = int((candidates.get('rally_stage', pd.Series(dtype=str)) == 'FRESH').sum()) if n_cand > 0 else 0
-    n_early = int((candidates.get('rally_stage', pd.Series(dtype=str)) == 'EARLY').sum()) if n_cand > 0 else 0
-    n_bounce = 0
-    if n_cand > 0 and 'market_state' in candidates.columns:
-        n_bounce = int(candidates['market_state'].astype(str).str.strip().str.upper().eq('BOUNCE').sum())
-
-    def _chip(val, lbl, cls=''):
-        return f'<div class="m-chip {cls}"><div class="m-val">{val}</div><div class="m-lbl">{lbl}</div></div>'
-
-    chips = ''.join([
-        _chip(f'{n_cand}', 'Candidates'),
-        _chip(f'{avg_disc:.0f}', 'Avg D-Score', 'm-orange' if avg_disc >= 50 else ''),
-        _chip(f'{n_prime}', '🔥 Prime', 'm-green' if n_prime > 0 else ''),
-        _chip(f'{n_strong}', '✅ Strong', 'm-green' if n_strong > 0 else ''),
-        _chip(f'{n_fresh}', '🌱 Fresh'),
-        _chip(f'{n_early}', '🚀 Early'),
-        _chip(f'{n_bounce}', '⚡ Bounce', 'm-gold' if n_bounce > 0 else ''),
-    ])
-    st.markdown(f'<div class="m-strip">{chips}</div>', unsafe_allow_html=True)
-    st.markdown("")
-
-    if candidates.empty:
-        st.markdown("""
-        <div style="background:#161b22; border-radius:10px; padding:24px; text-align:center; border:1px solid #30363d;">
-            <div style="font-size:1.3rem; margin-bottom:6px;">🔍</div>
-            <div style="color:#8b949e; font-size:0.9rem;">No stocks match Early Discovery criteria</div>
-            <div style="color:#484f58; font-size:0.8rem; margin-top:4px;">Try lowering the minimum score or adding more rally stages</div>
-        </div>
-        """, unsafe_allow_html=True)
-        return
-
-    # ── T-Rank map (for display) ─────────────────────────────────
-    t_rank_sorted = traj_df.sort_values(
-        ['trajectory_score', 'confidence', 'consistency'],
-        ascending=[False, False, False]
-    ).reset_index(drop=True)
-    t_rank_map = {t: i + 1 for i, t in enumerate(t_rank_sorted['ticker'])}
-
-    _stage_colors = {
-        'FRESH': '#00E676', 'EARLY': '#3fb950', 'RUNNING': '#FF9800',
-        'MATURE': '#FF5722', 'LATE': '#FF1744', 'UNKNOWN': '#484f58'
-    }
-
-    # ══════════════════════════════════════════════════════════════
-    # TOP PICKS — Card Grid (2 per row, max 8)
-    # ══════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">🔮 Top Early Picks</div>', unsafe_allow_html=True)
-
-    top_picks = candidates.head(8)
-
-    for i in range(0, len(top_picks), 2):
-        row_cards = []
-        for j in range(2):
-            if i + j >= len(top_picks):
-                row_cards.append('<div></div>')
-                continue
-            r = top_picks.iloc[i + j]
-            rh = histories.get(r['ticker'], {})
-            latest_price = rh['prices'][-1] if rh.get('prices') else 0
-
-            p_key = r.get('pattern_key', 'neutral')
-            p_emoji, p_name, _ = PATTERN_DEFS.get(p_key, ('➖', 'Neutral', ''))
-            p_color = PATTERN_COLORS.get(p_key, '#8b949e')
-            t_rank = t_rank_map.get(r['ticker'], 0)
-            rally_st = str(r.get('rally_stage', 'UNKNOWN') or 'UNKNOWN')
-            st_color = _stage_colors.get(rally_st, '#484f58')
-
-            fh_disp = r.get('from_high_display')
-            fh_text = f"{fh_disp:.0f}%" if fh_disp is not None else '—'
-
-            disc_score = r['discovery_score']
-            d_emoji = r.get('disc_grade_emoji', '⚡')
-            d_label = r.get('disc_grade', 'WATCH')
-
-            ms = str(r.get('market_state', '') or '').strip().upper()
-            bounce_badge = (
-                '<span style="background:#FFD70022;color:#FFD700;padding:2px 6px;'
-                'border-radius:8px;font-size:0.65rem;border:1px solid #FFD70044;'
-                'margin-left:6px;">⚡ BOUNCE</span>'
-            ) if ms == 'BOUNCE' else ''
-
-            lw_change = int(r.get('last_week_change', 0) or 0)
-            lw_color = '#3fb950' if lw_change > 0 else '#f85149' if lw_change < 0 else '#8b949e'
-            company = str(r.get('company_name', ''))[:35]
-            category = r.get('category', '')
-            sector = r.get('sector', '')
-            rally_gain = r.get('rally_gain', 0)
-            breakout_q = r.get('breakout_quality', 50)
-            t_score = r['trajectory_score']
-
-            def _m(lbl, val, clr='#e6edf3'):
-                return (f'<div><span style="color:#6e7681;font-size:0.65rem;">{lbl}</span><br>'
-                        f'<span style="color:{clr};font-weight:700;">{val}</span></div>')
-
-            card = (
-                f'<div style="background:rgba(0,230,118,0.03);border:1px solid rgba(0,230,118,0.25);'
-                f'border-radius:12px;padding:14px;border-left:3px solid {st_color};">'
-                f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
-                f'<div>'
-                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;flex-wrap:wrap;">'
-                f'<span style="font-size:1.15rem;font-weight:800;color:#e6edf3;">{r["ticker"]}</span>'
-                f'<span style="background:{st_color}22;color:{st_color};padding:2px 8px;'
-                f'border-radius:10px;font-size:0.68rem;border:1px solid {st_color}44;">🌱 {rally_st}</span>'
-                f'<span style="background:{p_color}22;color:{p_color};padding:2px 8px;'
-                f'border-radius:10px;font-size:0.68rem;border:1px solid {p_color}44;">{p_emoji} {p_name}</span>'
-                f'{bounce_badge}'
-                f'</div>'
-                f'<div style="color:#8b949e;font-size:0.8rem;">{company}</div>'
-                f'<div style="color:#484f58;font-size:0.7rem;">{category} • {sector}</div>'
-                f'</div>'
-                f'<div style="text-align:right;">'
-                f'<div style="font-size:1.5rem;font-weight:800;color:#00E676;">{disc_score:.0f}</div>'
-                f'<div style="font-size:0.6rem;color:#8b949e;">{d_emoji} {d_label}</div>'
-                f'</div></div>'
-                f'<div style="display:flex;gap:12px;margin-top:10px;padding-top:8px;'
-                f'border-top:1px solid #21262d;flex-wrap:wrap;">'
-                f'{_m("T-Rank", f"#{t_rank}", "#58a6ff")}'
-                f'{_m("T-Score", f"{t_score:.0f}", "#FF6B35")}'
-                f'{_m("From High", fh_text)}'
-                f'{_m("Rally Gain", f"+{rally_gain:.1f}%", st_color)}'
-                f'{_m("Δ Week", f"{lw_change:+d}", lw_color)}'
-                f'{_m("Breakout", f"{breakout_q:.0f}")}'
-                f'{_m("Price", f"₹{latest_price:,.1f}")}'
-                f'</div></div>'
-            )
-            row_cards.append(card)
-
-        st.markdown(
-            f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">'
-            f'{row_cards[0]}{row_cards[1]}</div>',
-            unsafe_allow_html=True
-        )
-
-    st.markdown("")
-
-    # ══════════════════════════════════════════════════════════════
-    # FULL DISCOVERY TABLE
-    # ══════════════════════════════════════════════════════════════
-    st.markdown('<div class="sec-head">📋 All Discovery Candidates</div>', unsafe_allow_html=True)
-
-    # Ensure columns with safe defaults
-    for col_name, default_val in [
-        ('rally_stage', 'UNKNOWN'), ('rally_gain', 0.0), ('rally_leg_pct', 50.0),
-        ('breakout_quality', 50.0), ('company_name', ''), ('sector', ''),
-        ('velocity', 50.0), ('wave_fusion_score', 50.0),
-    ]:
-        if col_name not in candidates.columns:
-            candidates[col_name] = default_val
-
-    table_cols = [
-        'ticker', 'company_name', 'sector', 'discovery_score', 'disc_grade',
-        'trajectory_score', 'grade', 'pattern', 'rally_stage', 'rally_gain',
-        'from_high_display', 'last_week_change', 'rank_change',
-        'breakout_quality', 'velocity', 'wave_fusion_score',
-        'current_rank', 'weeks'
-    ]
-    available_cols = [c for c in table_cols if c in candidates.columns]
-    table_df = candidates[available_cols].copy()
-
-    rename_map = {
-        'ticker': 'Ticker', 'company_name': 'Company', 'sector': 'Sector',
-        'discovery_score': 'D-Score', 'disc_grade': 'D-Grade',
-        'trajectory_score': 'T-Score', 'grade': 'Grade', 'pattern': 'Pattern',
-        'rally_stage': 'Rally', 'rally_gain': 'Rally%',
-        'from_high_display': 'FromHigh%', 'last_week_change': 'Δ Week',
-        'rank_change': 'Δ Total', 'breakout_quality': 'Breakout',
-        'velocity': 'Velocity', 'wave_fusion_score': 'Wave',
-        'current_rank': 'Rank', 'weeks': 'Wks'
-    }
-    table_df = table_df.rename(columns={k: v for k, v in rename_map.items() if k in table_df.columns})
-
-    if 'Company' in table_df.columns:
-        table_df['Company'] = table_df['Company'].astype(str).str[:24]
-    if 'Sector' in table_df.columns:
-        table_df['Sector'] = table_df['Sector'].astype(str).str[:18]
-
-    col_config = {
-        'D-Score': st.column_config.ProgressColumn('D-Score', min_value=0, max_value=100, format="%.0f"),
-        'T-Score': st.column_config.ProgressColumn('T-Score', min_value=0, max_value=100, format="%.0f"),
-        'Breakout': st.column_config.ProgressColumn('Breakout', min_value=0, max_value=100, format="%.0f"),
-        'Velocity': st.column_config.ProgressColumn('Velocity', min_value=0, max_value=100, format="%.0f"),
-        'Wave': st.column_config.ProgressColumn('Wave', min_value=0, max_value=100, format="%.0f"),
-        'Δ Week': st.column_config.NumberColumn(format="%+d"),
-        'Δ Total': st.column_config.NumberColumn(format="%+d"),
-        'Rally%': st.column_config.NumberColumn(format="+%.1f%%"),
-        'FromHigh%': st.column_config.NumberColumn(format="%.0f%%"),
-    }
-
-    tbl_height = min(750, max(180, len(table_df) * 35 + 60))
-    st.dataframe(table_df, column_config=col_config,
-                 hide_index=True, use_container_width=True, height=tbl_height)
-
-    # ── How It Works ─────────────────────────────────────────────
-    with st.expander("📖 How Early Discovery Works", expanded=False):
-        st.markdown("""
-        **Early Discovery** uses a different scoring model than the main T-Score.
-
-        The main T-Score rewards stocks **already confirmed at the top** (positional quality = 18-40% weight,
-        elite bonus, Bayesian shrinkage penalizing new entries). Early Discovery has **zero weight on current
-        position** — it scores the *rate of change* and *breakout signals* that predict the **NEXT** move.
-
-        | Component | Weight | Signal | Alpha |
-        |-----------|--------|--------|-------|
-        | **Rank Momentum** | 25% | Recent rank acceleration (weekly + total) | Speed of move |
-        | **Breakout Strength** | 25% | Breakout quality from WAVE Detection | +0.44%/wk |
-        | **Near-High Signal** | 20% | Distance from 52-week high (from_high_pct) | +0.55%/wk |
-        | **Entry Timing** | 15% | Rally freshness (FRESH/EARLY) + velocity | Early = best |
-        | **Cross-Validation** | 15% | Wave Fusion score − decay penalty | Confirmation |
-
-        **Bonuses:** BOUNCE market state → +12%, UPTREND → +3%
-
-        **Discovery Grades:**
-
-        | Grade | Score | Meaning |
-        |-------|-------|---------|
-        | 🔥 PRIME | ≥ 80 | All signals aligned — highest conviction early entry |
-        | ✅ STRONG | ≥ 65 | Strong signals — good early entry candidate |
-        | ⚡ EMERGING | ≥ 50 | Early signals present — watch closely |
-        | 👀 WATCH | ≥ 35 | Weak signals — monitor but don't act yet |
-        | ➖ WEAK | < 35 | Not a discovery candidate |
-
-        **Best used for:** Finding stocks that are starting a rally (FRESH/EARLY stage),
-        breaking out with strong WAVE confirmation, and near their 52-week high.
-        """)
 
 
 # ============================================
@@ -7062,6 +6355,15 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         'S10: Regime-Adaptive',
         'S11: Momentum-Quality',
         'S12: Max Alpha',
+        'S13: Capitulation Contrarian',
+        'S14: Bounce Recovery',
+        'S15: Quality GARP',
+        'S16: Pattern Flip Alpha',
+        'S17: Stealth Alpha',
+        'S18: Near-High Breakout',
+        'S19: Winner DNA Momentum',
+        'S20: Winner DNA Contrarian',
+        'S21: Winner DNA Composite',
     ]
     all_results = {name: [] for name in strategy_names}
 
@@ -7320,6 +6622,177 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
         s12_tickers = _sector_cap(s12_tickers_raw, 2)[:20]
         s12_weights = {t: r.get('alpha_score', 50) for t, r in traj.items() if t in s12_tickers}
 
+        # ── S13: Capitulation Contrarian (data-proven: +2.99%, 60% WR) ──
+        # Stocks showing CAPITULATION pattern — extreme selling exhaustion
+        # signals high-probability mean reversion. Strongest single-pattern signal.
+        s13_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            pats_str = str(row.get('patterns', ''))
+            if 'CAPITULATION' in pats_str and t in forward_rets:
+                s13_tickers.append(t)
+
+        # ── S14: Bounce Recovery (BOUNCE state: +3.56%, 54.2% WR) ──
+        # Stocks in BOUNCE or PULLBACK market state with score ≥ 50.
+        # BOUNCE is the single strongest market state signal.
+        s14_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+            state_val = str(row.get('market_state', ''))
+            if state_val in ('BOUNCE', 'PULLBACK') and ms_val >= 50 and t in forward_rets:
+                s14_tickers.append(t)
+
+        # ── S15: Quality GARP (Quality Leader+Score≥65: +0.98%, GARP+Score≥65: +1.00%) ──
+        # Stocks with QUALITY LEADER or GARP LEADER pattern + high master_score.
+        # Combines fundamental quality signals with scoring system.
+        s15_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+            pats_str = str(row.get('patterns', ''))
+            has_quality = 'QUALITY LEADER' in pats_str or 'GARP' in pats_str
+            if has_quality and ms_val >= 65 and t in forward_rets:
+                s15_tickers.append(t)
+
+        # ── S16: Pattern Flip Alpha (NEW Capitulation: +3.06%, 60.8% WR) ──
+        # Stocks where CAPITULATION or VOL EXPLOSION+score≥60 pattern NEWLY appeared
+        # (was absent in previous week). Fresh pattern appearance = strongest signal.
+        s16_tickers = []
+        if week_idx >= 1:
+            prev_date = dates[week_idx - 1]
+            prev_df = weekly_data.get(prev_date)
+            if prev_df is not None:
+                prev_pats_map = dict(zip(prev_df['ticker'].astype(str).str.strip(),
+                                         prev_df['patterns'].astype(str)))
+                for _, row in df.iterrows():
+                    t = str(row['ticker']).strip()
+                    if t not in forward_rets:
+                        continue
+                    cur_pats_str = str(row.get('patterns', ''))
+                    prev_pats_str = prev_pats_map.get(t, '')
+                    cur_set = set(p.strip() for p in cur_pats_str.split('|') if p.strip() and p.strip() != 'nan')
+                    prev_set = set(p.strip() for p in prev_pats_str.split('|') if p.strip() and p.strip() != 'nan')
+                    new_pats = cur_set - prev_set
+                    # Newly appeared capitulation or vol explosion with decent score
+                    ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+                    for np_name in new_pats:
+                        if 'CAPITULATION' in np_name:
+                            s16_tickers.append(t)
+                            break
+                        if 'VOL EXPLOSION' in np_name and ms_val >= 60:
+                            s16_tickers.append(t)
+                            break
+
+        # ── S17: Stealth Alpha (Stealth+Rank≤100: +0.10%, 48% WR in bear market) ──
+        # Under-the-radar stocks with STEALTH pattern + strong rank.
+        # Stealth = accumulation without price movement — leads to breakouts.
+        s17_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            pats_str = str(row.get('patterns', ''))
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            if 'STEALTH' in pats_str and rk <= 100 and t in forward_rets:
+                s17_tickers.append(t)
+
+        # ── S18: Near-High Breakout (Near High+Breakout≥70: -0.13%, 45.6% WR) ──
+        # Stocks within 10% of 52-week high + strong breakout score.
+        # Large-N screen (4335 obs) — relative strength filter.
+        s18_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            brk_val = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
+            if fh > -10 and brk_val >= 70 and t in forward_rets:
+                s18_tickers.append(t)
+
+        # ── S19: Winner DNA — Momentum Path ──
+        # From deep analysis of 200 best 6-month winners: trending leaders with
+        # high TQ/Score/Breakout, near highs, UPTREND state, leadership patterns.
+        # Two winner archetypes identified; this captures the momentum/leadership path.
+        s19_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            if t not in forward_rets:
+                continue
+            ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+            tq_val = float(row.get('trend_quality', 0)) if pd.notna(row.get('trend_quality')) else 0
+            brk_val = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
+            pos_val = float(row.get('position_score', 0)) if pd.notna(row.get('position_score')) else 0
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            state_val = str(row.get('market_state', ''))
+            pats_str = str(row.get('patterns', ''))
+            cat_val = str(row.get('category', ''))
+            if (ms_val >= 50 and tq_val >= 50 and brk_val >= 40 and pos_val >= 40
+                and rk <= 800 and fh > -25
+                and state_val in ('UPTREND', 'STRONG_UPTREND', 'PULLBACK')
+                and any(lp in pats_str for lp in ['CAT LEADER', 'MARKET LEADER', 'LIQUID LEADER',
+                                                   '52W HIGH APPROACH', 'PREMIUM MOMENTUM', 'RUNAWAY GAP'])
+                and 'HIDDEN GEM' not in pats_str
+                and 'Micro' not in cat_val):
+                s19_tickers.append(t)
+
+        # ── S20: Winner DNA — Contrarian Path ──
+        # From deep analysis: beaten-down stocks in DOWNTREND with reversal signals.
+        # rank≤1000, from_high -40% to -15%, has VOL EXPLOSION/RANGE COMPRESS/
+        # CAPITULATION/PULLBACK SUPPORT. Not Micro Cap. Not Hidden Gem.
+        s20_tickers = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            if t not in forward_rets:
+                continue
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            state_val = str(row.get('market_state', ''))
+            pats_str = str(row.get('patterns', ''))
+            cat_val = str(row.get('category', ''))
+            if (state_val == 'DOWNTREND'
+                and rk <= 1000
+                and -40 <= fh <= -15
+                and any(rp in pats_str for rp in ['VOL EXPLOSION', 'RANGE COMPRESS',
+                                                   'CAPITULATION', 'PULLBACK SUPPORT'])
+                and 'HIDDEN GEM' not in pats_str
+                and 'Micro' not in cat_val):
+                s20_tickers.append(t)
+
+        # ── S21: Winner DNA Composite ──
+        # Scores each stock using Winner DNA Score based on Random Forest feature
+        # importances (AUC=0.928). Combines both momentum and contrarian paths.
+        # Pattern bonuses from chi-squared enrichment ratios.
+        # Top 20 by DNA score, sector-capped at 3/sector.
+        s21_scored = []
+        for _, row in df.iterrows():
+            t = str(row['ticker']).strip()
+            if t not in forward_rets:
+                continue
+            ms_val = float(row['master_score']) if pd.notna(row.get('master_score')) else 0
+            tq_val = float(row.get('trend_quality', 0)) if pd.notna(row.get('trend_quality')) else 0
+            brk_val = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
+            pos_val = float(row.get('position_score', 0)) if pd.notna(row.get('position_score')) else 0
+            vol_val = float(row.get('volume_score', 0)) if pd.notna(row.get('volume_score')) else 0
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            pats_str = str(row.get('patterns', ''))
+            cat_val = str(row.get('category', ''))
+            if 'Micro' in cat_val or 'HIDDEN GEM' in pats_str:
+                continue
+            rank_sc = max(0, (2100 - min(rk, 2100)) / 2100) * 100
+            fh_sc = max(0, min(100, (fh + 50) * 2))
+            dna = (pos_val * 0.10 + tq_val * 0.085 + fh_sc * 0.084
+                   + rank_sc * 0.08 + vol_val * 0.078 + ms_val * 0.072 + brk_val * 0.07)
+            if 'RUNAWAY GAP' in pats_str: dna += 8
+            if '52W HIGH APPROACH' in pats_str: dna += 6
+            if 'MARKET LEADER' in pats_str: dna += 4
+            if 'CAT LEADER' in pats_str: dna += 4
+            if 'LIQUID LEADER' in pats_str: dna += 3
+            if 'PREMIUM MOMENTUM' in pats_str: dna += 3
+            if 'PULLBACK SUPPORT' in pats_str: dna += 3
+            if 'VOL EXPLOSION' in pats_str: dna += 2
+            s21_scored.append((t, dna))
+        s21_scored.sort(key=lambda x: x[1], reverse=True)
+        s21_tickers = _sector_cap([t for t, _ in s21_scored], 3)[:20]
+
         # ── Measure forward returns for each strategy ──
         strategy_picks = {
             'S1: Universe Avg': s1_tickers,
@@ -7335,6 +6808,15 @@ def _run_strategy_backtest(uploaded_files, progress_callback=None):
             'S10: Regime-Adaptive': s10_tickers,
             'S11: Momentum-Quality': s11_tickers,
             'S12: Max Alpha': s12_tickers,
+            'S13: Capitulation Contrarian': s13_tickers,
+            'S14: Bounce Recovery': s14_tickers,
+            'S15: Quality GARP': s15_tickers,
+            'S16: Pattern Flip Alpha': s16_tickers,
+            'S17: Stealth Alpha': s17_tickers,
+            'S18: Near-High Breakout': s18_tickers,
+            'S19: Winner DNA Momentum': s19_tickers,
+            'S20: Winner DNA Contrarian': s20_tickers,
+            'S21: Winner DNA Composite': s21_tickers,
         }
 
         week_label = date.strftime('%Y-%m-%d')
@@ -7903,6 +7385,15 @@ def render_backtest_tab(uploaded_files):
         | **S10: Regime-Adaptive** | Bull: Top T-Score + no decay; Bear: Conviction ≥ 65 + persistent + no decay | Does regime adaptation help? |
         | **S11: Momentum-Quality** | ret_1y ≥ 25% + from_low ≥ 50% + Conviction ≥ 50 + no decay, sector-capped | Do 12-month momentum + low-distance signals add alpha? |
         | **S12: Max Alpha** | Top 20 by Alpha Score (≥40), alpha-weighted returns, sector-capped ≤2/sector | Does a pure forward-predictor score maximize future returns? |
+        | **S13: Capitulation Contrarian** | Stocks with 💣 CAPITULATION pattern (extreme selling exhaustion) | Backtest-proven: +2.99% avg, 60% WR. Mean reversion signal. |
+        | **S14: Bounce Recovery** | BOUNCE/PULLBACK market state + Score ≥ 50 | BOUNCE is the #1 market state: +3.56% avg, 54.2% WR. |
+        | **S15: Quality GARP** | QUALITY LEADER or GARP pattern + Score ≥ 65 | Quality + fundamentals: +0.98% avg (Quality), +1.00% avg (GARP). |
+        | **S16: Pattern Flip Alpha** | CAPITULATION or VOL EXPLOSION+Score≥60 NEWLY appeared this week | Fresh pattern signal: NEW Capitulation +3.06%, 60.8% WR. |
+        | **S17: Stealth Alpha** | 🤫 STEALTH pattern + Rank ≤ 100 | Stealth accumulation in top ranks: +0.10% in bear market, 48% WR. |
+        | **S18: Near-High Breakout** | Within 10% of 52w high + Breakout score ≥ 70 | Relative strength: largest N screen (4335 obs), 45.6% WR. |
+        | **S19: Winner DNA Momentum** | TQ≥50 + Score≥50 + Brk≥40 + Pos≥40 + Rank≤800 + Near High>-25% + UPTREND/PULLBACK + Leadership pattern + No Micro/Hidden Gem | Momentum path from deep 200-winner analysis. Trending leaders archetype. |
+        | **S20: Winner DNA Contrarian** | DOWNTREND + Rank≤1000 + From High -40% to -15% + Reversal pattern (VOL EXPLOSION/RANGE COMPRESS/CAPITULATION/PULLBACK SUPPORT) + No Micro/Hidden Gem | Contrarian path from 200-winner analysis. Mean-reversion archetype. |
+        | **S21: Winner DNA Composite** | Top 20 by Winner DNA Score (RF-weighted: position, TQ, from-high, rank, volume, score, breakout + pattern bonuses). Sector-capped 3/sector. | ML-derived composite score (RF AUC=0.928). Both paths combined. |
 
         **Forward Return:** Actual price change from current week to next week. Computed from price data, not ret_7d.
 
@@ -7917,6 +7408,12 @@ def render_backtest_tab(uploaded_files):
         **Momentum-Quality (S11):** Filters for stocks with strong 12-month returns (≥25%), far from 52-week low (≥50%), minimum conviction (≥50), and no momentum decay. Sector-capped at 3/sector. Tests whether long-term momentum + structural uptrend confirmation adds alpha.
         
         **Max Alpha (S12):** Uses Alpha Score — a purpose-built forward-return predictor combining ONLY factors with proven next-week alpha: near-high proximity (+0.55%/wk), breakout quality (+0.44%/wk), persistence (+3.91%/wk), position strength (+0.34%/wk), market state (BOUNCE +1.17%/wk), no-decay, wave fusion, and early rally stage. Returns are alpha-score-weighted (higher alpha_score = more capital). Sector-capped at 2/sector for diversification.
+        
+        **Winner DNA Momentum (S19):** Derived from forensic analysis of the 200 stocks with the highest 6-month returns. These winners had significantly higher trend quality (+10.5, p<0.001), position score (+9.2), breakout score (+6.6), and were closer to highs (+5.6pp). S19 captures the "momentum leadership" archetype: already strong stocks (Score≥50, TQ≥50, Rank≤800) in UPTREND/PULLBACK with leadership patterns (CAT/MARKET/LIQUID LEADER, 52W HIGH APPROACH, PREMIUM MOMENTUM, RUNAWAY GAP). Excludes Micro Cap (-25.7% under-represented in winners) and HIDDEN GEM (0% in winners).
+        
+        **Winner DNA Contrarian (S20):** The second winner archetype from the same analysis — beaten-down stocks that staged massive comebacks. Examples: MTARTECH (+198%, Rank 1401, DOWNTREND), 513599 (+131%, Rank 887, DOWNTREND). S20 captures these contrarian plays: DOWNTREND state with Rank≤1000, From High -40% to -15% (beaten but not dead), and reversal signals (VOL EXPLOSION 1.6x enriched, RANGE COMPRESS 4.3x combo enrichment, CAPITULATION, PULLBACK SUPPORT 2.1x enriched).
+        
+        **Winner DNA Composite (S21):** Uses a Winner DNA Score derived from Random Forest feature importances (AUC=0.928) from the 200-winner analysis. The RF identified money_flow, position_score, trend_quality, from_high_pct, rank, volume_score, master_score, and breakout_score as the strongest discriminators. Pattern bonuses from chi-squared enrichment: RUNAWAY GAP (+9.7x enriched), 52W HIGH APPROACH (+3.6x), MARKET/CAT LEADER (+1.8x/1.5x). Top 20 by DNA score, sector-capped at 3/sector.
         """)
 
     # ── Download Backtest Results ──
@@ -8001,6 +7498,1914 @@ def render_backtest_tab(uploaded_files):
 
 
 # ============================================
+# UI: PATTERN ANALYSER TAB
+# ============================================
+
+def render_pattern_analyser_tab(uploaded_files):
+    """Data-driven pattern intelligence across all loaded CSVs."""
+    st.markdown("### 🔬 Pattern Analyser — Data-Driven Intelligence")
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#0d1117,#161b22); border-radius:10px;
+                padding:16px; border:1px solid #30363d; margin-bottom:16px;">
+        <div style="font-size:0.85rem; color:#8b949e;">
+            <b>What this does:</b> Analyses every pattern, market state, and combination across
+            ALL your loaded CSVs. Uses <b>price-based forward returns</b> (next week's actual price change)
+            to measure which signals genuinely predict future performance. No lookahead bias.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Parse all CSVs ──
+    weekly_data = {}
+    for ufile in uploaded_files:
+        date = parse_date_from_filename(ufile.name)
+        if date is None:
+            continue
+        try:
+            ufile.seek(0)
+            df = pd.read_csv(ufile)
+            if 'rank' in df.columns and 'ticker' in df.columns:
+                df['ticker'] = df['ticker'].astype(str).str.strip()
+                df['rank'] = pd.to_numeric(df['rank'], errors='coerce')
+                df['master_score'] = pd.to_numeric(df.get('master_score', 0), errors='coerce').fillna(0)
+                df['price'] = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+                weekly_data[date] = df
+        except Exception:
+            pass
+
+    dates = sorted(weekly_data.keys())
+    if len(dates) < 3:
+        st.warning("Need at least 3 weekly CSVs for pattern analysis.")
+        return
+
+    pa_cache_key = ('PA', tuple(sorted((f.name, f.size) for f in uploaded_files)))
+    cached = st.session_state.get('_pa_result')
+    cached_key = st.session_state.get('_pa_key')
+    pa_data = cached if (cached is not None and cached_key == pa_cache_key) else None
+
+    col_run, col_info = st.columns([1, 3])
+    with col_run:
+        run_btn = st.button("🔬 Run Analysis", type="primary", use_container_width=True, key='pa_run')
+    with col_info:
+        if pa_data is None:
+            st.caption(f"📁 {len(dates)} weekly CSVs → {len(dates)-1} forward-return windows")
+        else:
+            st.caption(f"✅ Loaded ({pa_data['n_obs']:,} observations). Click to refresh.")
+
+    if run_btn:
+        prog = st.progress(0, text="Building pattern analysis...")
+        pa_data = _build_pattern_analysis(weekly_data, dates, prog)
+        st.session_state['_pa_result'] = pa_data
+        st.session_state['_pa_key'] = pa_cache_key
+        prog.progress(1.0, text="Analysis complete!")
+
+    if pa_data is None:
+        st.info("Click **Run Analysis** to compute pattern intelligence from your data.")
+        return
+
+    # ── Download Full Report ──
+    def _build_pa_report(pa_data):
+        import io
+        buf = io.StringIO()
+        dr = pa_data.get('date_range', ('?', '?'))
+        buf.write(f"PATTERN ANALYSER REPORT\n")
+        buf.write(f"Period: {dr[0]} to {dr[1]} | Observations: {pa_data['n_obs']:,} | Weeks: {pa_data['n_weeks']}\n\n")
+
+        def _write_section(title, stats, extra_cols=None):
+            buf.write(f"=== {title} ===\n")
+            if not stats:
+                buf.write("(no data)\n\n")
+                return
+            header = "Name,N,Avg_Return_%,Median_Return_%,Win_Rate_%"
+            if extra_cols:
+                header += ',' + ','.join(extra_cols)
+            buf.write(header + "\n")
+            for s in stats:
+                line = f"{s['name']},{s['n']},{s['avg']:.3f},{s['med']:.3f},{s['wr']:.1f}"
+                buf.write(line + "\n")
+            buf.write("\n")
+
+        _write_section("PATTERN PERFORMANCE (sorted by avg return)", pa_data.get('pat_stats', []))
+        _write_section("PATTERN FLIPS (new pattern appearances)", pa_data.get('flip_stats', []))
+        _write_section("MARKET STATE PERFORMANCE", pa_data.get('state_stats', []))
+        _write_section("SCORE BUCKET PERFORMANCE", pa_data.get('score_stats', []))
+        _write_section("RANK BUCKET PERFORMANCE", pa_data.get('rank_stats', []))
+        _write_section("CATEGORY PERFORMANCE", pa_data.get('cat_stats', []))
+        _write_section("SECTOR PERFORMANCE", pa_data.get('sector_stats', []))
+        _write_section("MONTH PERFORMANCE", pa_data.get('month_stats', []))
+        _write_section("COMBO PERFORMANCE (pattern combinations)", pa_data.get('combo_stats', []))
+
+        # Multi-Factor Screens
+        screens = pa_data.get('screens', {})
+        if screens:
+            buf.write("=== MULTI-FACTOR SCREENS ===\n")
+            buf.write("Screen,N,Avg_Return_%,Median_Return_%,Win_Rate_%,Note\n")
+            for sname, sd in sorted(screens.items(), key=lambda x: -x[1].get('avg', 0)):
+                note = "(too few)" if sd.get('few') else ""
+                buf.write(f"{sname},{sd['n']},{sd['avg']:.3f},{sd['med']:.3f},{sd['wr']:.1f},{note}\n")
+            buf.write("\n")
+
+        # Pattern x State Matrix
+        psm = pa_data.get('pat_state_matrix', {})
+        if psm:
+            all_states = sorted({st for sd in psm.values() for st in sd})
+            buf.write("=== PATTERN x STATE MATRIX (Avg Return %) ===\n")
+            buf.write("Pattern," + ",".join(f"{st}_Avg,{st}_WR,{st}_N" for st in all_states) + "\n")
+            for pat in sorted(psm.keys()):
+                parts = [pat]
+                for st in all_states:
+                    cell = psm[pat].get(st)
+                    if cell:
+                        parts.append(f"{cell['avg']:.3f}")
+                        parts.append(f"{cell['wr']:.1f}")
+                        parts.append(str(cell['n']))
+                    else:
+                        parts.extend(['', '', ''])
+                buf.write(",".join(parts) + "\n")
+            buf.write("\n")
+
+        # Category x Score Matrix
+        csm = pa_data.get('cat_score_matrix', {})
+        if csm:
+            all_buckets = sorted({b for sd in csm.values() for b in sd})
+            buf.write("=== CATEGORY x SCORE MATRIX (Avg Return %) ===\n")
+            buf.write("Category," + ",".join(f"{b}_Avg,{b}_WR,{b}_N" for b in all_buckets) + "\n")
+            for cat in sorted(csm.keys()):
+                parts = [cat]
+                for b in all_buckets:
+                    cell = csm[cat].get(b)
+                    if cell:
+                        parts.append(f"{cell['avg']:.3f}")
+                        parts.append(f"{cell['wr']:.1f}")
+                        parts.append(str(cell['n']))
+                    else:
+                        parts.extend(['', '', ''])
+                buf.write(",".join(parts) + "\n")
+            buf.write("\n")
+
+        # DNA Buckets
+        dna_b = pa_data.get('dna_buckets', {})
+        dna_c = pa_data.get('dna_criteria', {})
+        if dna_b:
+            buf.write("=== WINNER DNA SCORE BUCKETS ===\n")
+            buf.write(f"Thresholds: Top10%>={dna_c.get('q90',0):.1f}, Top25%>={dna_c.get('q75',0):.1f}, Median={dna_c.get('q50',0):.1f}\n")
+            buf.write("Bucket,N,Avg_Return_%,Median_Return_%,Win_Rate_%\n")
+            for label in ['Top 10%', 'Top 25%', '50-75%', '25-50%', 'Bottom 25%']:
+                d = dna_b.get(label)
+                if d:
+                    buf.write(f"{label},{d['n']},{d['avg']:.3f},{d['med']:.3f},{d['wr']:.1f}\n")
+            buf.write("\n")
+
+        return buf.getvalue().encode('utf-8')
+
+    report_csv = _build_pa_report(pa_data)
+    st.download_button(
+        label="📥 Download Full Pattern Report (CSV)",
+        data=report_csv,
+        file_name="pattern_analyser_report.csv",
+        mime="text/csv",
+        key='pa_dl_full',
+    )
+
+    pa1, pa2, pa3, pa4, pa5, pa6, pa7 = st.tabs([
+        "📊 Pattern Performance", "🎯 Multi-Factor Screens",
+        "🔄 Pattern Flips", "🗺️ Pattern × State Matrix",
+        "🧩 Combo Explorer", "📈 Category & Sector", "🧬 Winner DNA",
+    ])
+    with pa1:
+        _render_pa_pattern_performance(pa_data)
+    with pa2:
+        _render_pa_multifactor_screens(pa_data)
+    with pa3:
+        _render_pa_pattern_flips(pa_data)
+    with pa4:
+        _render_pa_pattern_state_matrix(pa_data)
+    with pa5:
+        _render_pa_combo_explorer(pa_data)
+    with pa6:
+        _render_pa_category_sector(pa_data)
+    with pa7:
+        _render_pa_winner_dna(pa_data)
+
+
+# ---------- Pattern Analyser: data builder ----------
+
+def _build_pattern_analysis(weekly_data, dates, progress_bar):
+    """Build comprehensive pattern analysis from consecutive week pairs."""
+    from collections import defaultdict
+
+    results = []
+    pat_rets = defaultdict(list)
+    combo_rets = defaultdict(list)
+    state_rets = defaultdict(list)
+    score_bucket_rets = defaultdict(list)
+    rank_bucket_rets = defaultdict(list)
+    cat_rets = defaultdict(list)
+    sector_rets = defaultdict(list)
+    pat_state_rets = defaultdict(lambda: defaultdict(list))
+    cat_score_rets = defaultdict(lambda: defaultdict(list))
+    new_pat_rets = defaultdict(list)
+    month_rets = defaultdict(list)
+
+    n_pairs = len(dates) - 1
+    for i in range(n_pairs):
+        progress_bar.progress(i / max(n_pairs, 1) * 0.9,
+                              text=f"Analysing week {i+1}/{n_pairs}...")
+        d1, d2 = dates[i], dates[i + 1]
+        df1 = weekly_data[d1]
+        df2 = weekly_data[d2]
+        p2 = dict(zip(df2['ticker'].astype(str).str.strip(), df2['price']))
+        month_str = d1.strftime('%Y-%m')
+
+        prev_pats_map = {}
+        if i > 0:
+            prev_df = weekly_data[dates[i - 1]]
+            prev_pats_map = dict(zip(
+                prev_df['ticker'].astype(str).str.strip(),
+                prev_df['patterns'].astype(str),
+            ))
+
+        for _, row in df1.iterrows():
+            tk = str(row['ticker']).strip()
+            pr1 = float(row['price']) if pd.notna(row.get('price')) and float(row.get('price', 0)) > 0 else 0
+            pr2_val = p2.get(tk, 0)
+            pr2 = float(pr2_val) if pd.notna(pr2_val) and float(pr2_val) > 0 else 0
+            if pr1 <= 0 or pr2 <= 0:
+                continue
+            fwd = (pr2 / pr1 - 1) * 100
+            ms = float(row.get('master_score', 0)) if pd.notna(row.get('master_score')) else 0
+            rk = int(row['rank']) if pd.notna(row.get('rank')) else 9999
+            state = str(row.get('market_state', '')).strip()
+            tq = float(row.get('trend_quality', 0)) if pd.notna(row.get('trend_quality')) else 0
+            mom = float(row.get('momentum_score', 0)) if pd.notna(row.get('momentum_score')) else 0
+            brk = float(row.get('breakout_score', 0)) if pd.notna(row.get('breakout_score')) else 0
+            fh = float(row.get('from_high_pct', -99)) if pd.notna(row.get('from_high_pct')) else -99
+            pos = float(row.get('position_score', 0)) if pd.notna(row.get('position_score')) else 0
+            vol = float(row.get('volume_score', 0)) if pd.notna(row.get('volume_score')) else 0
+            cat = str(row.get('category', '')).strip()
+            sect = str(row.get('sector', '')).strip()
+            pats_str = str(row.get('patterns', ''))
+            pats_list = [p.strip() for p in pats_str.split('|') if p.strip() and p.strip() != 'nan']
+            n_pats = len(pats_list)
+
+            results.append(dict(
+                fwd=fwd, ms=ms, rk=rk, state=state, tq=tq, mom=mom,
+                brk=brk, fh=fh, cat=cat, sector=sect, n_pats=n_pats,
+                pats_str=pats_str, pos=pos, vol=vol,
+            ))
+
+            for p in pats_list:
+                pat_rets[p].append(fwd)
+                if state:
+                    pat_state_rets[p][state].append(fwd)
+
+            if n_pats >= 2:
+                combo_rets[' + '.join(sorted(pats_list)[:4])].append(fwd)
+
+            if state:
+                state_rets[state].append(fwd)
+
+            sb = '70+' if ms >= 70 else '60-70' if ms >= 60 else '50-60' if ms >= 50 else '40-50' if ms >= 40 else '0-40'
+            score_bucket_rets[sb].append(fwd)
+
+            rb = 'Top 10' if rk <= 10 else 'Top 50' if rk <= 50 else 'Top 100' if rk <= 100 else 'Top 500' if rk <= 500 else '500+'
+            rank_bucket_rets[rb].append(fwd)
+
+            if cat:
+                cat_rets[cat].append(fwd)
+                cat_score_rets[cat][sb].append(fwd)
+            if sect:
+                sector_rets[sect].append(fwd)
+            month_rets[month_str].append(fwd)
+
+            if prev_pats_map:
+                prev_set = set(pp.strip() for pp in prev_pats_map.get(tk, '').split('|')
+                               if pp.strip() and pp.strip() != 'nan')
+                for np_name in (set(pats_list) - prev_set):
+                    new_pat_rets[np_name].append(fwd)
+
+    # Multi-factor screens
+    rdf = pd.DataFrame(results) if results else pd.DataFrame()
+    screens = {}
+    if not rdf.empty:
+        def _scr(name, mask):
+            sub = rdf[mask]
+            n = len(sub)
+            if n >= 5:
+                screens[name] = dict(n=n, avg=sub['fwd'].mean(), med=sub['fwd'].median(),
+                                     wr=(sub['fwd'] > 0).mean() * 100)
+            else:
+                screens[name] = dict(n=n, avg=0, med=0, wr=0, few=True)
+
+        _scr('Capitulation', rdf['pats_str'].str.contains('CAPITULATION', na=False))
+        _scr('High Score + PULLBACK state', (rdf['ms'] >= 70) & (rdf['state'] == 'PULLBACK'))
+        _scr('High Score + BOUNCE state', (rdf['ms'] >= 60) & (rdf['state'] == 'BOUNCE'))
+        _scr('Quality Leader + Score≥65', rdf['pats_str'].str.contains('QUALITY LEADER', na=False) & (rdf['ms'] >= 65))
+        _scr('GARP + Score≥65', rdf['pats_str'].str.contains('GARP', na=False) & (rdf['ms'] >= 65))
+        _scr('Stealth + Rank≤100', rdf['pats_str'].str.contains('STEALTH', na=False) & (rdf['rk'] <= 100))
+        _scr('Near High + Breakout≥70', (rdf['fh'] > -10) & (rdf['brk'] >= 70))
+        _scr('High Score + Near High', (rdf['ms'] >= 70) & (rdf['fh'] > -10))
+        _scr('Top 50 + TQ≥70', (rdf['rk'] <= 50) & (rdf['tq'] >= 70))
+        _scr('Cat+Mkt Leader + Institutional',
+             rdf['pats_str'].str.contains('CAT LEADER', na=False) &
+             rdf['pats_str'].str.contains('MARKET LEADER', na=False) &
+             rdf['pats_str'].str.contains('INSTITUTIONAL', na=False) &
+             ~rdf['pats_str'].str.contains('TSUNAMI', na=False))
+        _scr('Quality Leader + GARP',
+             rdf['pats_str'].str.contains('QUALITY LEADER', na=False) &
+             rdf['pats_str'].str.contains('GARP', na=False))
+        _scr('BOUNCE + Score≥50', (rdf['state'] == 'BOUNCE') & (rdf['ms'] >= 50))
+        _scr('Vol Explosion + Mom≥60',
+             rdf['pats_str'].str.contains('VOL EXPLOSION', na=False) & (rdf['mom'] >= 60))
+        _scr('Golden Cross + TQ≥70',
+             rdf['pats_str'].str.contains('GOLDEN CROSS', na=False) & (rdf['tq'] >= 70))
+        _scr('Distribution (AVOID)', rdf['pats_str'].str.contains('DISTRIBUTION', na=False))
+        _scr('Hidden Gem (AVOID)', rdf['pats_str'].str.contains('HIDDEN GEM', na=False))
+        _scr('Mega Cap + Score≥60', (rdf['cat'] == 'Mega Cap') & (rdf['ms'] >= 60))
+        _scr('Large Cap + Near High + Institutional',
+             (rdf['cat'] == 'Large Cap') & (rdf['fh'] > -10) &
+             rdf['pats_str'].str.contains('INSTITUTIONAL', na=False) &
+             ~rdf['pats_str'].str.contains('TSUNAMI', na=False))
+
+        # ── Winner DNA screens ──
+        _scr('🧬 DNA: Momentum Path',
+             (rdf['ms'] >= 50) & (rdf['tq'] >= 50) & (rdf['brk'] >= 40) & (rdf['pos'] >= 40) &
+             (rdf['rk'] <= 800) & (rdf['fh'] > -25) &
+             rdf['state'].isin(['UPTREND', 'STRONG_UPTREND', 'PULLBACK']) &
+             rdf['pats_str'].str.contains('CAT LEADER|MARKET LEADER|LIQUID LEADER|52W HIGH APPROACH|PREMIUM MOMENTUM|RUNAWAY GAP', na=False, regex=True) &
+             ~rdf['pats_str'].str.contains('HIDDEN GEM', na=False) &
+             ~rdf['cat'].str.contains('Micro', na=False))
+        _scr('🧬 DNA: Contrarian Path',
+             (rdf['state'] == 'DOWNTREND') &
+             (rdf['rk'] <= 1000) &
+             (rdf['fh'] >= -40) & (rdf['fh'] <= -15) &
+             rdf['pats_str'].str.contains('VOL EXPLOSION|RANGE COMPRESS|CAPITULATION|PULLBACK SUPPORT', na=False, regex=True) &
+             ~rdf['pats_str'].str.contains('HIDDEN GEM', na=False) &
+             ~rdf['cat'].str.contains('Micro', na=False))
+
+    # ── Winner DNA Score computation ──
+    dna_buckets = {}
+    dna_criteria = {}
+    if not rdf.empty and 'pos' in rdf.columns and 'vol' in rdf.columns:
+        rdf['rank_sc'] = ((2100 - rdf['rk'].clip(1, 2100)) / 2100) * 100
+        rdf['fh_sc'] = ((rdf['fh'] + 50) * 2).clip(0, 100)
+        rdf['dna_score'] = (
+            rdf['pos'] * 0.10 + rdf['tq'] * 0.085 + rdf['fh_sc'] * 0.084
+            + rdf['rank_sc'] * 0.08 + rdf['vol'] * 0.078
+            + rdf['ms'] * 0.072 + rdf['brk'] * 0.07
+        )
+        # Pattern bonuses from chi-squared enrichment
+        for pat, bonus in [('RUNAWAY GAP', 8), ('52W HIGH APPROACH', 6),
+                           ('MARKET LEADER', 4), ('CAT LEADER', 4),
+                           ('LIQUID LEADER', 3), ('PREMIUM MOMENTUM', 3),
+                           ('PULLBACK SUPPORT', 3), ('VOL EXPLOSION', 2)]:
+            rdf.loc[rdf['pats_str'].str.contains(pat, na=False), 'dna_score'] += bonus
+        # Penalties
+        rdf.loc[rdf['pats_str'].str.contains('HIDDEN GEM', na=False), 'dna_score'] -= 10
+        rdf.loc[rdf['cat'].str.contains('Micro', na=False), 'dna_score'] -= 8
+
+        # DNA decile buckets
+        q90 = rdf['dna_score'].quantile(0.9)
+        q75 = rdf['dna_score'].quantile(0.75)
+        q50 = rdf['dna_score'].quantile(0.5)
+        q25 = rdf['dna_score'].quantile(0.25)
+        for label, mask in [
+            ('Top 10%', rdf['dna_score'] >= q90),
+            ('Top 25%', (rdf['dna_score'] >= q75) & (rdf['dna_score'] < q90)),
+            ('50-75%', (rdf['dna_score'] >= q50) & (rdf['dna_score'] < q75)),
+            ('25-50%', (rdf['dna_score'] >= q25) & (rdf['dna_score'] < q50)),
+            ('Bottom 25%', rdf['dna_score'] < q25),
+        ]:
+            sub = rdf[mask]
+            if len(sub) >= 10:
+                dna_buckets[label] = dict(
+                    n=len(sub), avg=float(sub['fwd'].mean()),
+                    med=float(sub['fwd'].median()),
+                    wr=float((sub['fwd'] > 0).mean() * 100),
+                )
+        dna_criteria = dict(
+            q90=float(q90), q75=float(q75), q50=float(q50), q25=float(q25),
+            mean=float(rdf['dna_score'].mean()), std=float(rdf['dna_score'].std()),
+        )
+
+    def _summarize(rets_dict, min_n=10):
+        out = []
+        for key, rets in rets_dict.items():
+            if len(rets) >= min_n:
+                out.append(dict(
+                    name=key, n=len(rets), avg=float(np.mean(rets)),
+                    med=float(np.median(rets)),
+                    wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
+                ))
+        return sorted(out, key=lambda x: -x['avg'])
+
+    pat_state_matrix = {}
+    for pat, sd in pat_state_rets.items():
+        pat_state_matrix[pat] = {}
+        for st_name, rets in sd.items():
+            if len(rets) >= 5:
+                pat_state_matrix[pat][st_name] = dict(
+                    n=len(rets), avg=float(np.mean(rets)),
+                    wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
+                )
+
+    cat_score_matrix = {}
+    for cat, sd in cat_score_rets.items():
+        cat_score_matrix[cat] = {}
+        for sl, rets in sd.items():
+            if len(rets) >= 10:
+                cat_score_matrix[cat][sl] = dict(
+                    n=len(rets), avg=float(np.mean(rets)),
+                    wr=float(sum(1 for r in rets if r > 0) / len(rets) * 100),
+                )
+
+    return dict(
+        n_obs=len(results), n_weeks=len(dates) - 1,
+        date_range=(dates[0].strftime('%Y-%m-%d'), dates[-1].strftime('%Y-%m-%d')),
+        pat_stats=_summarize(pat_rets, 10),
+        combo_stats=_summarize(combo_rets, 10),
+        state_stats=_summarize(state_rets, 20),
+        score_stats=_summarize(score_bucket_rets, 20),
+        rank_stats=_summarize(rank_bucket_rets, 20),
+        cat_stats=_summarize(cat_rets, 20),
+        sector_stats=_summarize(sector_rets, 50),
+        month_stats=_summarize(month_rets, 20),
+        screens=screens,
+        flip_stats=_summarize(new_pat_rets, 10),
+        pat_state_matrix=pat_state_matrix,
+        cat_score_matrix=cat_score_matrix,
+        dna_buckets=dna_buckets,
+        dna_criteria=dna_criteria,
+    )
+
+
+# ---------- Pattern Analyser: color helpers ----------
+
+def _pa_color(val, threshold_good=0, threshold_great=1.0):
+    if val >= threshold_great:
+        return '#3fb950'
+    elif val >= threshold_good:
+        return '#58a6ff'
+    elif val >= -0.5:
+        return '#d29922'
+    return '#ff7b72'
+
+
+def _pa_wr_color(wr):
+    if wr >= 55:
+        return '#3fb950'
+    elif wr >= 45:
+        return '#58a6ff'
+    elif wr >= 38:
+        return '#d29922'
+    return '#ff7b72'
+
+
+# ---------- Pattern Analyser: sub-tab renderers ----------
+
+def _render_pa_pattern_performance(pa_data):
+    """Pattern performance table + state + monthly charts."""
+    st.markdown("#### 📊 Individual Pattern Forward Returns")
+    st.caption(f"{pa_data['n_obs']:,} stock-week observations across {pa_data['n_weeks']} weeks "
+               f"({pa_data['date_range'][0]} → {pa_data['date_range'][1]})")
+
+    pat_stats = pa_data['pat_stats']
+    if not pat_stats:
+        st.info("No pattern data available.")
+        return
+
+    best = pat_stats[0]
+    worst = pat_stats[-1]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🏆 Best Pattern", best['name'], f"{best['avg']:+.2f}% avg")
+    c2.metric("⚠️ Worst Pattern", worst['name'], f"{worst['avg']:+.2f}% avg")
+    c3.metric("📊 Patterns Tracked", len(pat_stats))
+
+    rows_html = ""
+    for i, s in enumerate(pat_stats):
+        bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 10px;color:#c9d1d9;">{i+1}</td>'
+            f'<td style="padding:6px 10px;color:#e6edf3;">{s["name"]}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["med"])};">{s["med"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};font-weight:600;">{s["wr"]:.1f}%</td>'
+            f'</tr>'
+        )
+    st.markdown(f"""
+    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d; color:#8b949e;">
+        <th style="padding:8px 10px;text-align:left;">#</th>
+        <th style="padding:8px 10px;text-align:left;">Pattern</th>
+        <th style="padding:8px 10px;text-align:right;">N</th>
+        <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+        <th style="padding:8px 10px;text-align:right;">Med Return</th>
+        <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+    </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("#### 🌡️ Market State Performance")
+    state_stats = pa_data['state_stats']
+    if state_stats:
+        fig = go.Figure()
+        names = [s['name'] for s in state_stats]
+        avgs = [s['avg'] for s in state_stats]
+        wrs = [s['wr'] for s in state_stats]
+        fig.add_trace(go.Bar(
+            x=names, y=avgs, marker_color=[_pa_color(a) for a in avgs],
+            text=[f"{a:+.2f}%<br>WR:{w:.0f}%" for a, w in zip(avgs, wrs)],
+            textposition='outside', textfont=dict(size=10),
+        ))
+        fig.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=350, margin=dict(l=40, r=20, t=30, b=60),
+            yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+        )
+        fig.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig, use_container_width=True, key='pa_state_chart')
+
+    st.markdown("#### 📅 Monthly Market Regime")
+    month_stats = pa_data['month_stats']
+    if month_stats:
+        ms_sorted = sorted(month_stats, key=lambda x: x['name'])
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+            x=[s['name'] for s in ms_sorted],
+            y=[s['avg'] for s in ms_sorted],
+            marker_color=['#3fb950' if s['avg'] >= 0 else '#ff7b72' for s in ms_sorted],
+            text=[f"{s['avg']:+.1f}%" for s in ms_sorted], textposition='outside',
+        ))
+        fig2.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=300, margin=dict(l=40, r=20, t=30, b=40),
+            yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+        )
+        fig2.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig2, use_container_width=True, key='pa_month_chart')
+
+
+def _render_pa_multifactor_screens(pa_data):
+    """Pre-built multi-factor screens ranked by performance."""
+    st.markdown("#### 🎯 Multi-Factor Screens — Pre-Built Signal Combinations")
+    st.caption("Each screen combines multiple factors. Ranked by average forward return.")
+    screens = pa_data.get('screens', {})
+    if not screens:
+        st.info("No screen data available.")
+        return
+
+    sorted_screens = sorted(screens.items(), key=lambda x: x[1].get('avg', -999), reverse=True)
+    rows_html = ""
+    for i, (name, s) in enumerate(sorted_screens):
+        if s.get('few'):
+            avg_str, med_str, wr_str = "—", "—", f"N={s['n']}"
+            avg_color = wr_color = '#484f58'
+        else:
+            avg_str = f"{s['avg']:+.2f}%"
+            med_str = f"{s['med']:+.2f}%"
+            wr_str = f"{s['wr']:.1f}%"
+            avg_color = _pa_color(s['avg'])
+            wr_color = _pa_wr_color(s['wr'])
+        tag = ""
+        if 'AVOID' in name:
+            tag = ' <span style="background:#ff7b72;color:#0d1117;border-radius:4px;padding:1px 6px;font-size:0.7rem;font-weight:700;">AVOID</span>'
+        elif s.get('avg', -1) >= 1.0 and not s.get('few'):
+            tag = ' <span style="background:#3fb950;color:#0d1117;border-radius:4px;padding:1px 6px;font-size:0.7rem;font-weight:700;">STRONG</span>'
+        elif s.get('avg', -1) >= 0 and not s.get('few'):
+            tag = ' <span style="background:#58a6ff;color:#0d1117;border-radius:4px;padding:1px 6px;font-size:0.7rem;font-weight:700;">EDGE</span>'
+        bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 10px;color:#e6edf3;">{name}{tag}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{avg_color};font-weight:600;">{avg_str}</td>'
+            f'<td style="padding:6px 10px;text-align:right;">{med_str}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{wr_color};font-weight:600;">{wr_str}</td>'
+            f'</tr>'
+        )
+    st.markdown(f"""
+    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d; color:#8b949e;">
+        <th style="padding:8px 10px;text-align:left;">Screen</th>
+        <th style="padding:8px 10px;text-align:right;">N</th>
+        <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+        <th style="padding:8px 10px;text-align:right;">Med Return</th>
+        <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+    </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+    st.markdown("""
+    <div style="background:#161b22;border-radius:8px;padding:12px;margin-top:12px;border:1px solid #30363d;">
+        <div style="font-size:0.78rem;color:#8b949e;">
+            <b>🟢 STRONG</b> = Avg ≥ +1.0% &nbsp; <b>🔵 EDGE</b> = Avg ≥ 0% &nbsp;
+            <b>🔴 AVOID</b> = Confirmed negative signal
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _render_pa_pattern_flips(pa_data):
+    """Newly-appeared pattern performance."""
+    st.markdown("#### 🔄 Pattern Flip Analysis — New Appearance Signals")
+    st.caption("When a pattern NEWLY appears (absent the previous week), what happens next?")
+    flip_stats = pa_data.get('flip_stats', [])
+    if not flip_stats:
+        st.info("No flip data available (need ≥3 CSVs).")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🚀 Best New Signal", f"NEW {flip_stats[0]['name']}", f"{flip_stats[0]['avg']:+.2f}%")
+    c2.metric("⚠️ Worst New Signal", f"NEW {flip_stats[-1]['name']}", f"{flip_stats[-1]['avg']:+.2f}%")
+    c3.metric("🔄 Patterns Tracked", len(flip_stats))
+
+    rows_html = ""
+    for i, s in enumerate(flip_stats):
+        bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        ind = "🟢" if s['avg'] >= 0.5 else "🔵" if s['avg'] >= 0 else "🟡" if s['avg'] >= -0.5 else "🔴"
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 10px;color:#c9d1d9;">{ind}</td>'
+            f'<td style="padding:6px 10px;color:#e6edf3;">NEW {s["name"]}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]:,}</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["med"])};">{s["med"]:+.2f}%</td>'
+            f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};font-weight:600;">{s["wr"]:.1f}%</td>'
+            f'</tr>'
+        )
+    st.markdown(f"""
+    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d; color:#8b949e;">
+        <th style="padding:8px 10px;"></th>
+        <th style="padding:8px 10px;text-align:left;">New Pattern Signal</th>
+        <th style="padding:8px 10px;text-align:right;">N</th>
+        <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+        <th style="padding:8px 10px;text-align:right;">Med Return</th>
+        <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+    </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+
+
+def _render_pa_pattern_state_matrix(pa_data):
+    """Pattern × Market State heatmap."""
+    st.markdown("#### 🗺️ Pattern × Market State Matrix")
+    st.caption("Green = positive avg return, Red = negative. N ≥ 5 required.")
+    matrix = pa_data.get('pat_state_matrix', {})
+    if not matrix:
+        st.info("No matrix data available.")
+        return
+
+    all_states = set()
+    for pd_dict in matrix.values():
+        all_states.update(pd_dict.keys())
+    state_order = ['BOUNCE', 'STRONG_DOWNTREND', 'DOWNTREND', 'PULLBACK',
+                   'STRONG_UPTREND', 'SIDEWAYS', 'UPTREND', 'ROTATION']
+    states = [s for s in state_order if s in all_states]
+
+    pat_overall = {s['name']: s['avg'] for s in pa_data.get('pat_stats', [])}
+    pats_sorted = [p for p in sorted(matrix.keys(), key=lambda x: -pat_overall.get(x, -99))
+                   if matrix[p]]
+    if not pats_sorted or not states:
+        st.info("Insufficient cross-data for matrix.")
+        return
+
+    z_vals, hover_text = [], []
+    for pat in pats_sorted:
+        rz, rh = [], []
+        for state in states:
+            cell = matrix.get(pat, {}).get(state)
+            if cell:
+                rz.append(cell['avg'])
+                rh.append(f"{pat} × {state}<br>Avg: {cell['avg']:+.2f}%<br>WR: {cell['wr']:.0f}%<br>N: {cell['n']}")
+            else:
+                rz.append(None)
+                rh.append(f"{pat} × {state}<br>N < 5")
+        z_vals.append(rz)
+        hover_text.append(rh)
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z_vals, x=states, y=pats_sorted,
+        colorscale=[[0, '#ff7b72'], [0.35, '#21262d'], [0.5, '#30363d'],
+                    [0.65, '#21262d'], [1.0, '#3fb950']],
+        zmid=0, text=hover_text, hovertemplate='%{text}<extra></extra>',
+        colorbar=dict(title='Avg Ret %', tickformat='+.1f'),
+    ))
+    fig.update_layout(
+        template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+        height=max(350, len(pats_sorted) * 22 + 100),
+        margin=dict(l=180, r=20, t=30, b=60),
+        yaxis=dict(autorange='reversed'), xaxis=dict(side='top'),
+    )
+    st.plotly_chart(fig, use_container_width=True, key='pa_heatmap')
+
+
+def _render_pa_combo_explorer(pa_data):
+    """Top and worst pattern combos."""
+    st.markdown("#### 🧩 Pattern Combo Explorer")
+    st.caption("Exact pattern combinations (≥2 patterns) ranked by forward return. N ≥ 10.")
+    combo_stats = pa_data.get('combo_stats', [])
+    if not combo_stats:
+        st.info("No combo data available.")
+        return
+
+    def _combo_table(title, data):
+        if not data:
+            return
+        st.markdown(f"##### {title}")
+        rows_html = ""
+        for i, s in enumerate(data):
+            bg = '#161b22' if i % 2 == 0 else '#0d1117'
+            rows_html += (
+                f'<tr style="background:{bg};">'
+                f'<td style="padding:6px 10px;color:#e6edf3;max-width:400px;overflow:hidden;text-overflow:ellipsis;">{s["name"]}</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:#8b949e;">{s["n"]}</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</td>'
+                f'<td style="padding:6px 10px;text-align:right;color:{_pa_wr_color(s["wr"])};">{s["wr"]:.1f}%</td>'
+                f'</tr>'
+            )
+        st.markdown(f"""
+        <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+        <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+        <thead><tr style="background:#21262d; color:#8b949e;">
+            <th style="padding:8px 10px;text-align:left;">Pattern Combo</th>
+            <th style="padding:8px 10px;text-align:right;">N</th>
+            <th style="padding:8px 10px;text-align:right;">Avg Return</th>
+            <th style="padding:8px 10px;text-align:right;">Win Rate</th>
+        </tr></thead><tbody>{rows_html}</tbody></table></div>
+        """, unsafe_allow_html=True)
+
+    _combo_table("🟢 Top Positive Combos", [c for c in combo_stats if c['avg'] >= 0][:20])
+    _combo_table("🔴 Worst Combos (AVOID)", list(reversed([c for c in combo_stats if c['avg'] < 0]))[:10])
+
+
+def _render_pa_category_sector(pa_data):
+    """Category, sector, score and rank breakdowns."""
+    st.markdown("#### 📈 Category & Sector Performance")
+
+    cat_stats = pa_data.get('cat_stats', [])
+    if cat_stats:
+        st.markdown("##### 🏢 Category (Market Cap)")
+        cat_order = ['Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']
+        ordered = sorted(cat_stats, key=lambda x: cat_order.index(x['name']) if x['name'] in cat_order else 99)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=[s['name'] for s in ordered], y=[s['avg'] for s in ordered],
+            marker_color=[_pa_color(s['avg']) for s in ordered],
+            text=[f"{s['avg']:+.2f}%<br>WR:{s['wr']:.0f}%<br>N:{s['n']:,}" for s in ordered],
+            textposition='outside', textfont=dict(size=10),
+        ))
+        fig.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=320, margin=dict(l=40, r=20, t=30, b=40),
+            yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+        )
+        fig.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig, use_container_width=True, key='pa_cat_chart')
+
+    cat_score_matrix = pa_data.get('cat_score_matrix', {})
+    if cat_score_matrix:
+        st.markdown("##### 🏢 × 📊 Category × Score Matrix")
+        score_labels = ['70+', '60-70', '50-60', '40-50', '0-40']
+        cat_order_list = ['Mega Cap', 'Large Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']
+        rows_html = ""
+        for ci, cat in enumerate(cat_order_list):
+            if cat not in cat_score_matrix:
+                continue
+            cells = ""
+            for sl in score_labels:
+                cell = cat_score_matrix[cat].get(sl)
+                if cell:
+                    color = _pa_color(cell['avg'])
+                    cells += (f'<td style="padding:6px;text-align:center;color:{color};font-weight:600;">'
+                              f'{cell["avg"]:+.1f}%<br><span style="font-size:0.7rem;color:#8b949e;">'
+                              f'WR:{cell["wr"]:.0f}% N:{cell["n"]}</span></td>')
+                else:
+                    cells += '<td style="padding:6px;text-align:center;color:#484f58;">—</td>'
+            bg = '#161b22' if ci % 2 == 0 else '#0d1117'
+            rows_html += f'<tr style="background:{bg};"><td style="padding:6px 10px;color:#e6edf3;font-weight:600;">{cat}</td>{cells}</tr>'
+        hdr = ''.join(f'<th style="padding:8px;text-align:center;">Score {sl}</th>' for sl in score_labels)
+        st.markdown(f"""
+        <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+        <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+        <thead><tr style="background:#21262d; color:#8b949e;">
+            <th style="padding:8px 10px;text-align:left;">Category</th>{hdr}
+        </tr></thead><tbody>{rows_html}</tbody></table></div>
+        """, unsafe_allow_html=True)
+
+    sector_stats = pa_data.get('sector_stats', [])
+    if sector_stats:
+        st.markdown("##### 🏭 Top 15 Sectors")
+        top15 = sector_stats[:15]
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+            x=[s['avg'] for s in top15], y=[s['name'] for s in top15],
+            orientation='h',
+            marker_color=['#3fb950' if s['avg'] >= 0 else '#ff7b72' for s in top15],
+            text=[f"{s['avg']:+.2f}% (WR:{s['wr']:.0f}%)" for s in top15],
+            textposition='outside', textfont=dict(size=9),
+        ))
+        fig2.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=max(300, len(top15) * 28 + 80),
+            margin=dict(l=180, r=60, t=30, b=40),
+            xaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+            yaxis=dict(autorange='reversed'),
+        )
+        fig2.add_vline(x=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig2, use_container_width=True, key='pa_sector_chart')
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### 📊 Score Range Performance")
+        for s in sorted(pa_data.get('score_stats', []),
+                        key=lambda x: ['70+', '60-70', '50-60', '40-50', '0-40'].index(x['name'])
+                        if x['name'] in ['70+', '60-70', '50-60', '40-50', '0-40'] else 99):
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #21262d;">'
+                f'<span style="color:#e6edf3;">Score {s["name"]}</span>'
+                f'<span><span style="color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</span>'
+                f' <span style="color:{_pa_wr_color(s["wr"])};">WR:{s["wr"]:.0f}%</span>'
+                f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
+                unsafe_allow_html=True,
+            )
+    with c2:
+        st.markdown("##### 🏅 Rank Range Performance")
+        for s in sorted(pa_data.get('rank_stats', []),
+                        key=lambda x: ['Top 10', 'Top 50', 'Top 100', 'Top 500', '500+'].index(x['name'])
+                        if x['name'] in ['Top 10', 'Top 50', 'Top 100', 'Top 500', '500+'] else 99):
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #21262d;">'
+                f'<span style="color:#e6edf3;">{s["name"]}</span>'
+                f'<span><span style="color:{_pa_color(s["avg"])};font-weight:600;">{s["avg"]:+.2f}%</span>'
+                f' <span style="color:{_pa_wr_color(s["wr"])};">WR:{s["wr"]:.0f}%</span>'
+                f' <span style="color:#484f58;">N:{s["n"]:,}</span></span></div>',
+                unsafe_allow_html=True,
+            )
+
+
+# ---------- Pattern Analyser: Winner DNA sub-tab ----------
+
+def _render_pa_winner_dna(pa_data):
+    """Winner DNA analysis — derived from deep forensic analysis of 200 top 6-month winners."""
+    st.markdown("#### 🧬 Winner DNA — What Makes a 6-Month Winner?")
+    st.caption("Based on forensic analysis of the 200 stocks with highest 6-month returns. "
+               "Two winner archetypes identified: Momentum Leaders and Deep Contrarians.")
+
+    # ── DNA Score Distribution ──
+    dna_buckets = pa_data.get('dna_buckets', {})
+    dna_criteria = pa_data.get('dna_criteria', {})
+
+    if not dna_buckets:
+        st.info("DNA score data not available. Click **Run Analysis** to compute.")
+        return
+
+    # ── Header metrics ──
+    screens = pa_data.get('screens', {})
+    mom_scr = screens.get('🧬 DNA: Momentum Path', {})
+    con_scr = screens.get('🧬 DNA: Contrarian Path', {})
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        if mom_scr and not mom_scr.get('few'):
+            st.metric("Momentum Path Avg", f"{mom_scr['avg']:+.2f}%",
+                       f"WR: {mom_scr['wr']:.1f}% (N={mom_scr['n']})")
+        else:
+            st.metric("Momentum Path", "—", "Insufficient data")
+    with c2:
+        if con_scr and not con_scr.get('few'):
+            st.metric("Contrarian Path Avg", f"{con_scr['avg']:+.2f}%",
+                       f"WR: {con_scr['wr']:.1f}% (N={con_scr['n']})")
+        else:
+            st.metric("Contrarian Path", "—", "Insufficient data")
+    with c3:
+        top_bucket = dna_buckets.get('Top 10%', {})
+        if top_bucket:
+            st.metric("DNA Top 10% Avg", f"{top_bucket['avg']:+.2f}%",
+                       f"WR: {top_bucket['wr']:.1f}% (N={top_bucket['n']})")
+    with c4:
+        bot_bucket = dna_buckets.get('Bottom 25%', {})
+        if bot_bucket:
+            st.metric("DNA Bottom 25% Avg", f"{bot_bucket['avg']:+.2f}%",
+                       f"WR: {bot_bucket['wr']:.1f}% (N={bot_bucket['n']})")
+
+    st.markdown("---")
+
+    # ── Two Paths Side by Side ──
+    left, right = st.columns(2)
+    with left:
+        st.markdown("""
+        ##### 🚀 Path 1: Momentum Leaders
+        <div style="background:#161b22; padding:16px; border-radius:10px; border:1px solid #238636;">
+        <p style="color:#3fb950; font-weight:700; margin-bottom:8px;">BUY when ALL criteria met:</p>
+        <ul style="color:#e6edf3; font-size:0.85rem; margin:0; padding-left:18px;">
+        <li>Master Score ≥ 50</li>
+        <li>Trend Quality ≥ 50 <span style="color:#3fb950;">(+10.5 vs others, p<0.001)</span></li>
+        <li>Breakout Score ≥ 40 <span style="color:#3fb950;">(+6.6 vs others)</span></li>
+        <li>Position Score ≥ 40 <span style="color:#3fb950;">(+9.2 vs others)</span></li>
+        <li>Rank ≤ 800 <span style="color:#8b949e;">(winners avg: 819)</span></li>
+        <li>From High > -25% <span style="color:#3fb950;">(closer to highs)</span></li>
+        <li>State: UPTREND / STRONG_UPTREND / PULLBACK</li>
+        <li>Has: CAT/MARKET/LIQUID LEADER, 52W HIGH, PREMIUM MOM, or RUNAWAY GAP</li>
+        <li>❌ NOT Micro Cap <span style="color:#ff7b72;">(-25.7% under-rep)</span></li>
+        <li>❌ NOT Hidden Gem <span style="color:#ff7b72;">(0% in winners)</span></li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with right:
+        st.markdown("""
+        ##### 🔄 Path 2: Deep Contrarians
+        <div style="background:#161b22; padding:16px; border-radius:10px; border:1px solid #1f6feb;">
+        <p style="color:#58a6ff; font-weight:700; margin-bottom:8px;">BUY when ALL criteria met:</p>
+        <ul style="color:#e6edf3; font-size:0.85rem; margin:0; padding-left:18px;">
+        <li>State: DOWNTREND <span style="color:#8b949e;">(mean-reversion setup)</span></li>
+        <li>Rank ≤ 1000 <span style="color:#8b949e;">(not garbage)</span></li>
+        <li>From High: -40% to -15% <span style="color:#58a6ff;">(beaten but not dead)</span></li>
+        <li>Has: VOL EXPLOSION <span style="color:#58a6ff;">(1.6x enriched)</span></li>
+        <li>Or: RANGE COMPRESS <span style="color:#58a6ff;">(4.3x combo enriched)</span></li>
+        <li>Or: CAPITULATION <span style="color:#58a6ff;">(mean reversion)</span></li>
+        <li>Or: PULLBACK SUPPORT <span style="color:#58a6ff;">(2.1x enriched)</span></li>
+        <li>❌ NOT Micro Cap</li>
+        <li>❌ NOT Hidden Gem</li>
+        </ul>
+        <p style="color:#8b949e; font-size:0.75rem; margin-top:8px;">
+        Examples: MTARTECH +198%, 513599 +131%, NATIONALUM +125%</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── DNA Score Performance by Decile ──
+    st.markdown("##### 📊 DNA Score Performance — Does Higher DNA Score = Better Returns?")
+    bucket_order = ['Top 10%', 'Top 25%', '50-75%', '25-50%', 'Bottom 25%']
+    bucket_display = [b for b in bucket_order if b in dna_buckets]
+
+    if bucket_display:
+        fig = go.Figure()
+        avgs = [dna_buckets[b]['avg'] for b in bucket_display]
+        wrs = [dna_buckets[b]['wr'] for b in bucket_display]
+        ns = [dna_buckets[b]['n'] for b in bucket_display]
+        colors = [_pa_color(a) for a in avgs]
+        fig.add_trace(go.Bar(
+            x=bucket_display, y=avgs,
+            marker_color=colors,
+            text=[f"{a:+.2f}%<br>WR:{w:.0f}%<br>N:{n:,}" for a, w, n in zip(avgs, wrs, ns)],
+            textposition='outside', textfont=dict(size=11),
+        ))
+        fig.update_layout(
+            template='plotly_dark', paper_bgcolor='#0d1117', plot_bgcolor='#0d1117',
+            height=350, margin=dict(l=40, r=20, t=30, b=40),
+            yaxis=dict(title='Avg Forward Return %', gridcolor='#21262d'),
+            xaxis=dict(title='DNA Score Bucket'),
+        )
+        fig.add_hline(y=0, line_dash='dot', line_color='#484f58')
+        st.plotly_chart(fig, use_container_width=True, key='pa_dna_decile')
+
+    # ── DNA Score Thresholds ──
+    if dna_criteria:
+        st.markdown("##### 🎯 DNA Score Thresholds")
+        th_cols = st.columns(5)
+        labels = [('Top 10%', 'q90', '#3fb950'), ('Top 25%', 'q75', '#58a6ff'),
+                  ('Median', 'q50', '#d29922'), ('Bottom 25%', 'q25', '#ff7b72'),
+                  ('Mean ± Std', 'mean', '#8b949e')]
+        for col, (label, key, color) in zip(th_cols, labels):
+            with col:
+                if key == 'mean':
+                    val = f"{dna_criteria.get('mean', 0):.1f} ± {dna_criteria.get('std', 0):.1f}"
+                else:
+                    val = f"{dna_criteria.get(key, 0):.1f}"
+                st.markdown(
+                    f'<div style="text-align:center;padding:8px;background:#161b22;border-radius:8px;border:1px solid #30363d;">'
+                    f'<div style="color:#8b949e;font-size:0.75rem;">{label}</div>'
+                    f'<div style="color:{color};font-size:1.2rem;font-weight:700;">{val}</div></div>',
+                    unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ── Key Findings Summary ──
+    st.markdown("##### 🔬 Key Findings from 200-Winner Deep Analysis")
+    st.markdown("""
+    <div style="background:#161b22; padding:16px; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d;">
+    <th style="padding:8px;text-align:left;color:#8b949e;">Signal</th>
+    <th style="padding:8px;text-align:right;color:#8b949e;">Winners</th>
+    <th style="padding:8px;text-align:right;color:#8b949e;">Others</th>
+    <th style="padding:8px;text-align:right;color:#8b949e;">Diff</th>
+    <th style="padding:8px;text-align:right;color:#8b949e;">Sig</th>
+    </tr></thead><tbody>
+    <tr style="background:#0d1117;"><td style="padding:6px 8px;color:#e6edf3;">Trend Quality</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">55.2</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">44.7</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+10.5</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#161b22;"><td style="padding:6px 8px;color:#e6edf3;">Position Score</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">47.4</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">38.1</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+9.2</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#0d1117;"><td style="padding:6px 8px;color:#e6edf3;">Breakout Score</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">49.9</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">43.2</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+6.6</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#161b22;"><td style="padding:6px 8px;color:#e6edf3;">Master Score</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">48.3</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">43.2</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+5.2</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#0d1117;"><td style="padding:6px 8px;color:#e6edf3;">From High %</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">-23.5%</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">-29.1%</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">+5.6pp</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    <tr style="background:#161b22;"><td style="padding:6px 8px;color:#e6edf3;">Rank (lower=better)</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">819</td>
+    <td style="padding:6px;text-align:right;color:#8b949e;">1077</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;font-weight:600;">-258</td>
+    <td style="padding:6px;text-align:right;color:#3fb950;">***</td></tr>
+    </tbody></table>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── Pattern Enrichment ──
+    st.markdown("##### 🎯 Pattern Enrichment — Chi-Squared Significance")
+    pat_data = [
+        ('🏃 RUNAWAY GAP', '9.7x', '#3fb950', '***'),
+        ('🎲 52W HIGH APPROACH', '3.6x', '#3fb950', '**'),
+        ('🛡️ PULLBACK SUPPORT', '2.1x', '#3fb950', '*'),
+        ('💰 LIQUID LEADER', '1.9x', '#3fb950', '***'),
+        ('🔥 PREMIUM MOMENTUM', '1.8x', '#58a6ff', '*'),
+        ('👑 MARKET LEADER', '1.8x', '#58a6ff', '***'),
+        ('⚡ VOL EXPLOSION', '1.6x', '#58a6ff', '**'),
+        ('🐱 CAT LEADER', '1.5x', '#58a6ff', '***'),
+        ('💎 HIDDEN GEM', '0.0x ❌', '#ff7b72', '*'),
+    ]
+    rows_html = ""
+    for i, (pat, enrich, color, sig) in enumerate(pat_data):
+        bg = '#161b22' if i % 2 == 0 else '#0d1117'
+        rows_html += (
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 10px;color:#e6edf3;">{pat}</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{color};font-weight:700;">{enrich}</td>'
+            f'<td style="padding:6px 10px;text-align:center;color:{color};">{sig}</td></tr>'
+        )
+    st.markdown(f"""
+    <div style="overflow-x:auto; border-radius:10px; border:1px solid #30363d;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+    <thead><tr style="background:#21262d; color:#8b949e;">
+        <th style="padding:8px 10px;text-align:left;">Pattern</th>
+        <th style="padding:8px 10px;text-align:center;">Winner Enrichment</th>
+        <th style="padding:8px 10px;text-align:center;">Significance</th>
+    </tr></thead><tbody>{rows_html}</tbody></table></div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── DNA Score Formula ──
+    with st.expander("🧮 Winner DNA Score Formula", expanded=False):
+        st.markdown("""
+        **Winner DNA Score** is computed from Random Forest feature importances (AUC = 0.928):
+
+        ```
+        DNA Score = position_score × 0.10
+                  + trend_quality × 0.085
+                  + from_high_normalized × 0.084
+                  + rank_percentile × 0.08
+                  + volume_score × 0.078
+                  + master_score × 0.072
+                  + breakout_score × 0.07
+        ```
+
+        **Pattern Bonuses** (from chi-squared enrichment ratios):
+        | Pattern | Bonus | Enrichment |
+        |---------|-------|-----------|
+        | RUNAWAY GAP | +8 | 9.7x |
+        | 52W HIGH APPROACH | +6 | 3.6x |
+        | MARKET LEADER | +4 | 1.8x |
+        | CAT LEADER | +4 | 1.5x |
+        | LIQUID LEADER | +3 | 1.9x |
+        | PREMIUM MOMENTUM | +3 | 1.8x |
+        | PULLBACK SUPPORT | +3 | 2.1x |
+        | VOL EXPLOSION | +2 | 1.6x |
+
+        **Penalties:** HIDDEN GEM -10, Micro Cap -8
+
+        **Category Distribution** (in winners): Small Cap +12.4%, Mid Cap +7.3%, Large Cap +7.0%, Micro Cap -25.7%
+
+        **EPS Sweet Spot:** 20-50% EPS change tier (+9.0pp over-represented in winners)
+        """)
+
+
+# ============================================
+# ============================================
+# UI: DNA WATCHLIST TAB
+# ============================================
+
+def render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories):
+    """🎯 DNA Watchlist — Category-specific forward-looking winner scanner."""
+    st.markdown("### 🎯 DNA Watchlist — Find Winners Before They Win")
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#0d1117,#161b22); border-radius:10px;
+                padding:16px; border:1px solid #30363d; margin-bottom:16px;">
+        <div style="font-size:0.85rem; color:#8b949e;">
+            <b>What this does:</b> Scans TODAY's stocks using <b>category-specific DNA profiles</b>
+            derived from actual 6-month winners. Each cap size has its own scoring formula
+            calibrated to how past winners looked <b>before</b> they started winning.<br>
+            <b>Large Cap</b>: Position + Tension leaders | <b>Mega Cap</b>: Volume + Near-high + Low tension |
+            <b>Mid Cap</b>: Score leaders + Trend quality | <b>Small Cap</b>: Position + TQ driven |
+            <b>Micro Cap</b>: Coiled Spring — low volume, high tension, rotation state
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Parse all weekly data ──
+    weekly_data = {}
+    for ufile in uploaded_files:
+        try:
+            ufile.seek(0)
+            df = pd.read_csv(ufile)
+            df['ticker'] = df['ticker'].astype(str).str.strip()
+            fname = getattr(ufile, 'name', str(ufile))
+            parts = fname.replace('.csv', '').split('_')
+            date_str = parts[2] if len(parts) >= 3 else fname
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+            weekly_data[dt] = df
+        except Exception:
+            continue
+
+    if len(weekly_data) < 2:
+        st.warning("Need at least 2 weeks of CSV data for DNA Watchlist.")
+        return
+
+    dates = sorted(weekly_data.keys())
+    latest_df = weekly_data[dates[-1]]
+    prev_df = weekly_data[dates[-2]] if len(dates) >= 2 else None
+
+    # ── Category selector ──
+    cat_options = ["All Categories", "Large Cap", "Mega Cap", "Mid Cap", "Small Cap", "Micro Cap"]
+    sel_cat = st.selectbox("📁 Select Category", cat_options, key='dna_wl_cat')
+
+    # ═══════════════════════════════════════════════════════
+    # DNA SCORING FUNCTIONS — Calibrated to actual winners
+    # ═══════════════════════════════════════════════════════
+
+    def _safe(row, col, default=0):
+        v = row.get(col)
+        if pd.isna(v):
+            return default
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return default
+
+    def _get_patterns(row):
+        p = str(row.get('patterns', ''))
+        return [x.strip() for x in p.split('|') if x.strip() and x.strip() != 'nan']
+
+    def _score_large(row):
+        """Large Cap: position_score***, position_tension***, from_low_pct***
+        Enriched: LIQUID LEADER, CAT LEADER, VOL EXPLOSION, STEALTH, PYRAMID"""
+        score = 0
+        reasons = []
+        pos = _safe(row, 'position_score')
+        pt = _safe(row, 'position_tension')
+        fl = _safe(row, 'from_low_pct')
+        ms = _safe(row, 'master_score')
+        rk = _safe(row, 'rank', 9999)
+        fh = _safe(row, 'from_high_pct', -99)
+        pats = _get_patterns(row)
+
+        # Position score ≥ 30 (winner P25)
+        if pos >= 55:
+            score += 20; reasons.append('High Position')
+        elif pos >= 35:
+            score += 12; reasons.append('Good Position')
+        elif pos >= 30:
+            score += 5
+
+        # Position tension ≥ 55 (others avg), winners avg 69
+        if pt >= 90:
+            score += 20; reasons.append('Very High Tension')
+        elif pt >= 69:
+            score += 14; reasons.append('High Tension')
+        elif pt >= 55:
+            score += 7
+
+        # From low ≥ 36 (others avg), winners 49
+        if fl >= 49:
+            score += 12; reasons.append('Strong From Low')
+        elif fl >= 36:
+            score += 6
+
+        # Rank ≤ 750 (median)
+        if rk <= 400:
+            score += 10; reasons.append('Top Rank')
+        elif rk <= 750:
+            score += 6
+
+        # Master score
+        if ms >= 57:
+            score += 8; reasons.append('High Master Score')
+        elif ms >= 47:
+            score += 4
+
+        # From high (closer to 0 better)
+        if fh >= -12:
+            score += 8; reasons.append('Near 52W High')
+        elif fh >= -18:
+            score += 4
+
+        # Pattern bonuses
+        for p in pats:
+            if 'LIQUID LEADER' in p:
+                score += 6; reasons.append('Liquid Leader')
+            elif 'CAT LEADER' in p:
+                score += 5; reasons.append('Cat Leader')
+            elif 'VOL EXPLOSION' in p:
+                score += 5; reasons.append('Vol Explosion')
+            elif 'STEALTH' in p:
+                score += 6; reasons.append('Stealth (BT+12%)')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+            elif 'PYRAMID' in p:
+                score += 4; reasons.append('Pyramid')
+            elif '52W HIGH' in p:
+                score += 4; reasons.append('52W High Approach')
+            elif 'GOLDEN CROSS' in p:
+                score += 4; reasons.append('Golden Cross')
+            elif 'CAPITULATION' in p:
+                score += 6; reasons.append('Capitulation (BT#2)')
+
+        # State bonus
+        state = str(row.get('market_state', '')).strip()
+        if state == 'UPTREND':
+            score += 4
+        elif state == 'ROTATION':
+            score += 2
+
+        return min(score, 100), reasons
+
+    def _score_mega(row):
+        """Mega Cap: volume_score*, from_high_pct*, LOW position_tension***,
+        LOW from_low_pct***. Enriched: PREMIUM MOMENTUM, INSTITUTIONAL, VOL EXPLOSION"""
+        score = 0
+        reasons = []
+        vol = _safe(row, 'volume_score')
+        fh = _safe(row, 'from_high_pct', -99)
+        pt = _safe(row, 'position_tension')
+        fl = _safe(row, 'from_low_pct')
+        rk = _safe(row, 'rank', 9999)
+        rvol_s = _safe(row, 'rvol_score')
+        brk = _safe(row, 'breakout_score')
+        tq = _safe(row, 'trend_quality')
+        pats = _get_patterns(row)
+
+        # Volume score ≥ 59 (winner median 60)
+        if vol >= 69:
+            score += 18; reasons.append('Very High Volume')
+        elif vol >= 59:
+            score += 12; reasons.append('High Volume')
+        elif vol >= 49:
+            score += 5
+
+        # Near high (winner -15 vs others -19)
+        if fh >= -7:
+            score += 16; reasons.append('Very Near High')
+        elif fh >= -15:
+            score += 10; reasons.append('Near High')
+        elif fh >= -24:
+            score += 4
+
+        # LOW position tension (winners 41 vs others 57)
+        if pt <= 30:
+            score += 16; reasons.append('Low Tension (Mega DNA)')
+        elif pt <= 41:
+            score += 10; reasons.append('Moderate-Low Tension')
+        elif pt <= 57:
+            score += 4
+
+        # LOW from low (winners 26 vs others 38)
+        if fl <= 20:
+            score += 12; reasons.append('Low From Low (Stable)')
+        elif fl <= 26:
+            score += 8
+        elif fl <= 38:
+            score += 3
+
+        # Trend quality
+        if tq >= 82:
+            score += 8; reasons.append('Strong Trend')
+        elif tq >= 60:
+            score += 4
+
+        # Breakout
+        if brk >= 83:
+            score += 6; reasons.append('High Breakout')
+        elif brk >= 51:
+            score += 3
+
+        # Rvol score (winners 45 vs 36)
+        if rvol_s >= 45:
+            score += 6; reasons.append('High Rvol')
+
+        # Pattern bonuses
+        for p in pats:
+            if 'PREMIUM MOMENTUM' in p:
+                score += 8; reasons.append('Premium Momentum')
+            elif 'INSTITUTIONAL' in p:
+                score += 8; reasons.append('Institutional')
+            elif 'VOL EXPLOSION' in p:
+                score += 6; reasons.append('Vol Explosion')
+            elif '52W HIGH' in p:
+                score += 5; reasons.append('52W High Approach')
+            elif 'PULLBACK SUPPORT' in p:
+                score += 5; reasons.append('Pullback Support')
+            elif 'STEALTH' in p:
+                score += 6; reasons.append('Stealth (BT+12%)')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+            elif 'CAPITULATION' in p:
+                score += 5; reasons.append('Capitulation (BT#2)')
+
+        # State bonus (SIDEWAYS and UPTREND strongly enriched)
+        state = str(row.get('market_state', '')).strip()
+        if state == 'UPTREND':
+            score += 5
+        elif state == 'SIDEWAYS':
+            score += 3
+        # Downtrend penalty (0% winners in downtrend)
+        if state in ('DOWNTREND', 'STRONG_DOWNTREND'):
+            score -= 10
+
+        return min(score, 100), reasons
+
+    def _score_mid(row):
+        """Mid Cap: master_score***, position_score***, breakout_score***,
+        trend_quality***, rank***, from_high_pct**. Dual-path: momentum + contrarian."""
+        score = 0
+        reasons = []
+        ms = _safe(row, 'master_score')
+        pos = _safe(row, 'position_score')
+        brk = _safe(row, 'breakout_score')
+        tq = _safe(row, 'trend_quality')
+        rk = _safe(row, 'rank', 9999)
+        fh = _safe(row, 'from_high_pct', -99)
+        fl = _safe(row, 'from_low_pct')
+        pt = _safe(row, 'position_tension')
+        mom = _safe(row, 'momentum_score')
+        pats = _get_patterns(row)
+        state = str(row.get('market_state', '')).strip()
+
+        # ── Path detection ──
+        is_momentum = state in ('UPTREND', 'STRONG_UPTREND') or (tq >= 66 and ms >= 51)
+        is_contrarian = state in ('DOWNTREND', 'STRONG_DOWNTREND') and pos >= 40
+
+        # Master score ≥ 51 (winner median)
+        if ms >= 61:
+            score += 14; reasons.append('Elite Master Score')
+        elif ms >= 51:
+            score += 10; reasons.append('Strong Master Score')
+        elif ms >= 43:
+            score += 4
+
+        # Position score (winner median 48)
+        if pos >= 71:
+            score += 14; reasons.append('Elite Position')
+        elif pos >= 48:
+            score += 10; reasons.append('Strong Position')
+        elif pos >= 34:
+            score += 4
+
+        # Trend quality (winner median 66)
+        if tq >= 89:
+            score += 12; reasons.append('Exceptional TQ')
+        elif tq >= 66:
+            score += 9; reasons.append('Strong TQ')
+        elif tq >= 40:
+            score += 3
+
+        # Breakout score
+        if brk >= 74:
+            score += 10; reasons.append('High Breakout')
+        elif brk >= 51:
+            score += 6; reasons.append('Good Breakout')
+        elif brk >= 35:
+            score += 2
+
+        # Rank
+        if rk <= 200:
+            score += 10; reasons.append('Top 200 Rank')
+        elif rk <= 562:
+            score += 6; reasons.append('Top-Half Rank')
+        elif rk <= 986:
+            score += 2
+
+        # From high
+        if fh >= -8:
+            score += 6; reasons.append('Near High')
+        elif fh >= -18:
+            score += 3
+
+        # Momentum score
+        if mom >= 67:
+            score += 6; reasons.append('High Momentum')
+        elif mom >= 56:
+            score += 3
+
+        # Position tension
+        if pt >= 94:
+            score += 6; reasons.append('High Tension')
+        elif pt >= 75:
+            score += 3
+
+        # Pattern bonuses (MARKET LEADER 2.2x, CAT LEADER 2.0x)
+        for p in pats:
+            if 'MARKET LEADER' in p:
+                score += 7; reasons.append('Market Leader')
+            elif 'CAT LEADER' in p:
+                score += 6; reasons.append('Cat Leader')
+            elif 'LIQUID LEADER' in p:
+                score += 5; reasons.append('Liquid Leader')
+            elif 'PREMIUM MOMENTUM' in p:
+                score += 5; reasons.append('Premium Momentum')
+            elif 'GOLDEN CROSS' in p:
+                score += 4; reasons.append('Golden Cross')
+            elif 'PULLBACK SUPPORT' in p:
+                score += 4; reasons.append('Pullback Support')
+            elif 'STEALTH' in p:
+                score += 6; reasons.append('Stealth (BT+12%)')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+            elif 'CAPITULATION' in p:
+                score += 7; reasons.append('Capitulation (BT#2)')
+
+        # State bonuses
+        if state in ('UPTREND', 'STRONG_UPTREND'):
+            score += 4
+        elif state == 'PULLBACK' and pos >= 40:
+            score += 3
+        # Contrarian state boost (S20 Contrarian = +12.49% alpha, proven)
+        elif state in ('DOWNTREND', 'STRONG_DOWNTREND') and pos >= 30:
+            score += 5; reasons.append('Contrarian State')
+
+        # Path label — Contrarian heavily favoured per backtest (S20=+12.49% vs S19=+0.72%)
+        path = 'Momentum' if is_momentum else ('Contrarian' if is_contrarian else 'Neutral')
+        if is_momentum:
+            score += 2
+        if is_contrarian:
+            score += 8; reasons.append('Contrarian Setup (BT#3)')
+
+        return min(score, 100), reasons, path
+
+    def _score_small(row):
+        """Small Cap: position_score***, trend_quality***, breakout_score***,
+        master_score***, rank***, from_high_pct***, from_low_pct***, position_tension**"""
+        score = 0
+        reasons = []
+        pos = _safe(row, 'position_score')
+        tq = _safe(row, 'trend_quality')
+        brk = _safe(row, 'breakout_score')
+        ms = _safe(row, 'master_score')
+        rk = _safe(row, 'rank', 9999)
+        fh = _safe(row, 'from_high_pct', -99)
+        fl = _safe(row, 'from_low_pct')
+        pt = _safe(row, 'position_tension')
+        pats = _get_patterns(row)
+
+        # Position score (winner median 45, P75=65)
+        if pos >= 65:
+            score += 16; reasons.append('Elite Position')
+        elif pos >= 45:
+            score += 10; reasons.append('Strong Position')
+        elif pos >= 33:
+            score += 4
+
+        # Trend quality (winner median 59, P75=83)
+        if tq >= 83:
+            score += 14; reasons.append('Exceptional TQ')
+        elif tq >= 59:
+            score += 9; reasons.append('Strong TQ')
+        elif tq >= 29:
+            score += 3
+
+        # Breakout score
+        if brk >= 56:
+            score += 10; reasons.append('High Breakout')
+        elif brk >= 45:
+            score += 6; reasons.append('Good Breakout')
+        elif brk >= 34:
+            score += 2
+
+        # Master score
+        if ms >= 56:
+            score += 10; reasons.append('High Master Score')
+        elif ms >= 46:
+            score += 6
+        elif ms >= 40:
+            score += 2
+
+        # Rank
+        if rk <= 400:
+            score += 8; reasons.append('Top 400 Rank')
+        elif rk <= 823:
+            score += 5; reasons.append('Above-Median Rank')
+        elif rk <= 1280:
+            score += 2
+
+        # From high
+        if fh >= -13:
+            score += 8; reasons.append('Near High')
+        elif fh >= -26:
+            score += 4
+
+        # Position tension
+        if pt >= 94:
+            score += 8; reasons.append('High Tension')
+        elif pt >= 83:
+            score += 4
+
+        # From low
+        if fl >= 69:
+            score += 6; reasons.append('Strong Recovery')
+        elif fl >= 54:
+            score += 3
+
+        # Pattern bonuses
+        for p in pats:
+            if 'VELOCITY SQUEEZE' in p:
+                score += 7; reasons.append('Velocity Squeeze')
+            elif 'ACCELERATION' in p:
+                score += 6; reasons.append('Acceleration')
+            elif 'MARKET LEADER' in p:
+                score += 5; reasons.append('Market Leader')
+            elif 'CAT LEADER' in p:
+                score += 5; reasons.append('Cat Leader')
+            elif 'PULLBACK SUPPORT' in p:
+                score += 5; reasons.append('Pullback Support')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+            elif 'RUNAWAY GAP' in p:
+                score += 6; reasons.append('Runaway Gap')
+            elif 'PREMIUM MOMENTUM' in p:
+                score += 4; reasons.append('Premium Momentum')
+            elif 'STEALTH' in p:
+                score += 6; reasons.append('Stealth (BT+12%)')
+            elif 'CAPITULATION' in p:
+                score += 6; reasons.append('Capitulation (BT#2)')
+
+        # State
+        state = str(row.get('market_state', '')).strip()
+        if state in ('UPTREND', 'STRONG_UPTREND'):
+            score += 4
+        elif state == 'PULLBACK':
+            score += 2
+
+        return min(score, 100), reasons
+
+    def _score_micro(row):
+        """Micro Cap — Coiled Spring: LOW volume**, LOW money_flow**, HIGH position_tension*,
+        position_score*, LOW acceleration*. ROTATION state enriched.
+        Patterns: VALUE MOMENTUM 16x, INFO DECAY 3.9x, STEALTH 1.9x"""
+        score = 0
+        reasons = []
+        vol = _safe(row, 'volume_score')
+        mf = _safe(row, 'money_flow_mm')
+        pt = _safe(row, 'position_tension')
+        pos = _safe(row, 'position_score')
+        acc = _safe(row, 'acceleration_score')
+        rvol_s = _safe(row, 'rvol_score')
+        tq = _safe(row, 'trend_quality')
+        rk = _safe(row, 'rank', 9999)
+        pats = _get_patterns(row)
+        state = str(row.get('market_state', '')).strip()
+
+        # LOW volume score (winners 29 vs others 34)
+        if vol <= 15:
+            score += 18; reasons.append('Very Low Volume (Coiled)')
+        elif vol <= 27:
+            score += 12; reasons.append('Low Volume')
+        elif vol <= 34:
+            score += 4
+
+        # LOW money flow (winners 1.7 vs others 31.5)
+        if mf <= 2:
+            score += 16; reasons.append('Minimal Money Flow')
+        elif mf <= 10:
+            score += 10; reasons.append('Low Money Flow')
+        elif mf <= 31:
+            score += 3
+
+        # HIGH position tension (winners 412 vs others 85)
+        if pt >= 400:
+            score += 16; reasons.append('Extreme Tension')
+        elif pt >= 150:
+            score += 10; reasons.append('High Tension')
+        elif pt >= 85:
+            score += 4
+
+        # Position score
+        if pos >= 62:
+            score += 10; reasons.append('High Position')
+        elif pos >= 35:
+            score += 6; reasons.append('Good Position')
+        elif pos >= 29:
+            score += 2
+
+        # LOW rvol score (winners 23 vs others 28)
+        if rvol_s <= 15:
+            score += 6; reasons.append('Low Rvol (Under Radar)')
+
+        # LOW acceleration (winners 49 vs others 51)
+        if acc <= 45:
+            score += 4; reasons.append('Low Acceleration')
+
+        # TQ — trajectory matters more than level
+        if tq >= 77:
+            score += 6; reasons.append('Rising TQ')
+        elif tq >= 43:
+            score += 3
+
+        # Pattern bonuses (VALUE MOMENTUM 16x!)
+        for p in pats:
+            if 'VALUE MOMENTUM' in p:
+                score += 12; reasons.append('Value Momentum (16x!)')
+            elif 'INFORMATION DECAY' in p:
+                score += 8; reasons.append('Info Decay Arb (3.9x)')
+            elif 'STEALTH' in p:
+                score += 7; reasons.append('Stealth (BT+12%)')
+            elif 'GOLDEN CROSS' in p:
+                score += 5; reasons.append('Golden Cross')
+            elif 'MARKET LEADER' in p:
+                score += 4; reasons.append('Market Leader')
+            elif 'CAPITULATION' in p:
+                score += 5; reasons.append('Capitulation (BT#2)')
+            elif 'QUALITY LEADER' in p or 'GARP LEADER' in p:
+                score += 7; reasons.append('Quality/GARP (BT#1)')
+
+        # ROTATION state strongly enriched (+5.8%)
+        if state == 'ROTATION':
+            score += 8; reasons.append('Rotation State')
+        elif state == 'DOWNTREND':
+            score += 3; reasons.append('Downtrend (Potential Coil)')
+        elif state == 'STRONG_DOWNTREND':
+            score += 2
+
+        return min(score, 100), reasons
+
+    # ═══════════════════════════════════════════════════════
+    # SCAN ALL STOCKS
+    # ═══════════════════════════════════════════════════════
+
+    # Build prev-week lookup for TQ trajectory
+    prev_tq_map = {}
+    prev_rank_map = {}
+    if prev_df is not None:
+        for _, r in prev_df.iterrows():
+            tk = str(r['ticker']).strip()
+            tq_v = r.get('trend_quality')
+            rk_v = r.get('rank')
+            if pd.notna(tq_v):
+                try:
+                    prev_tq_map[tk] = float(tq_v)
+                except (ValueError, TypeError):
+                    pass
+            if pd.notna(rk_v):
+                try:
+                    prev_rank_map[tk] = float(rk_v)
+                except (ValueError, TypeError):
+                    pass
+
+    # Build 2-weeks-ago lookup for "New This Week"
+    prev2_tickers = set()
+    if len(dates) >= 3:
+        prev2_df = weekly_data[dates[-3]]
+        prev2_tickers = set(prev2_df['ticker'].astype(str).str.strip())
+
+    # ── Apply sidebar filters: only scan tickers passing global filters ──
+    # Always build the set — empty set correctly shows 0 results when filters exclude everything
+    # None = skip filtering (only when traj_df itself has no data)
+    if filtered_df is not None and not filtered_df.empty:
+        sidebar_tickers = set(filtered_df['ticker'].astype(str).str.strip())
+    elif traj_df is not None and not traj_df.empty:
+        sidebar_tickers = set()          # sidebar excluded everything → show nothing
+    else:
+        sidebar_tickers = None            # no trajectory data at all → don't filter
+
+    results = []
+    for _, row in latest_df.iterrows():
+        tk = str(row['ticker']).strip()
+        cat = str(row.get('category', '')).strip()
+
+        # Respect sidebar filters (sector, category, market state, industry, etc.)
+        if sidebar_tickers is not None and tk not in sidebar_tickers:
+            continue
+
+        # Determine which scanner to use
+        if sel_cat != "All Categories" and cat != sel_cat:
+            # Special case: Mega Cap data might be labeled Large Cap
+            if not (sel_cat == "Mega Cap" and cat == "Large Cap"):
+                continue
+
+        if cat == 'Large Cap':
+            dna_score, reasons = _score_large(row)
+            path = 'Quality Leader'
+        elif cat == 'Mega Cap':
+            dna_score, reasons = _score_mega(row)
+            path = 'Institutional'
+        elif cat == 'Mid Cap':
+            dna_score, reasons, path = _score_mid(row)
+        elif cat == 'Small Cap':
+            dna_score, reasons = _score_small(row)
+            path = 'Position/TQ'
+        elif cat == 'Micro Cap':
+            dna_score, reasons = _score_micro(row)
+            path = 'Coiled Spring'
+        else:
+            continue
+
+        # Conviction level
+        if dna_score >= 65:
+            conviction = '🔴 HIGH'
+        elif dna_score >= 45:
+            conviction = '🟡 MEDIUM'
+        elif dna_score >= 30:
+            conviction = '🟢 LOW'
+        else:
+            continue  # Skip very low scores
+
+        # TQ trend
+        tq_now = _safe(row, 'trend_quality')
+        tq_prev = prev_tq_map.get(tk)
+        if tq_prev is not None:
+            tq_delta = tq_now - tq_prev
+            if tq_delta > 5:
+                tq_trend = f'↑ +{tq_delta:.0f}'
+            elif tq_delta < -5:
+                tq_trend = f'↓ {tq_delta:.0f}'
+            else:
+                tq_trend = f'→ {tq_delta:+.0f}'
+        else:
+            tq_trend = '—'
+
+        # Rank improvement
+        rk_now = _safe(row, 'rank', 9999)
+        rk_prev = prev_rank_map.get(tk)
+        if rk_prev is not None:
+            rk_delta = rk_prev - rk_now  # positive = improved
+            rk_trend = f'↑{rk_delta:.0f}' if rk_delta > 20 else (f'↓{-rk_delta:.0f}' if rk_delta < -20 else '→')
+        else:
+            rk_trend = '—'
+
+        # New this week flag
+        is_new = tk not in prev2_tickers if prev2_tickers else False
+
+        state = str(row.get('market_state', '')).strip()
+        company = str(row.get('company_name', tk)).strip()
+        ms = _safe(row, 'master_score')
+
+        results.append({
+            'Ticker': tk,
+            'Company': company[:25],
+            'Category': cat,
+            'DNA Score': dna_score,
+            'Conviction': conviction,
+            'Path': path,
+            'State': state,
+            'Criteria Met': len(reasons),
+            'Key Signals': ', '.join(reasons[:4]),
+            'TQ': f'{tq_now:.0f}',
+            'TQ Trend': tq_trend,
+            'Rank': f'{rk_now:.0f}',
+            'Rank Δ': rk_trend,
+            'MS': f'{ms:.0f}',
+            'New': '🆕' if is_new else '',
+            '_score': dna_score,
+        })
+
+    if not results:
+        st.warning("No stocks match DNA criteria for this category.")
+        return
+
+    res_df = pd.DataFrame(results).sort_values('_score', ascending=False)
+
+    # ── Summary metrics ──
+    total = len(res_df)
+    high_conv = len(res_df[res_df['Conviction'].str.contains('HIGH')])
+    med_conv = len(res_df[res_df['Conviction'].str.contains('MEDIUM')])
+    new_count = len(res_df[res_df['New'] == '🆕'])
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Total Matches", total)
+    with c2:
+        st.metric("🔴 High Conviction", high_conv)
+    with c3:
+        st.metric("🟡 Medium Conviction", med_conv)
+    with c4:
+        st.metric("🆕 New This Week", new_count)
+
+    # ── Filter options ──
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        min_score = st.slider("Min DNA Score", 30, 90, 45, 5, key='dna_wl_minscore')
+    with fc2:
+        conv_filter = st.multiselect("Conviction", ['🔴 HIGH', '🟡 MEDIUM', '🟢 LOW'],
+                                     default=['🔴 HIGH', '🟡 MEDIUM'], key='dna_wl_conv')
+
+    display_df = res_df[
+        (res_df['_score'] >= min_score) &
+        (res_df['Conviction'].isin(conv_filter))
+    ].copy()
+
+    display_cols = ['New', 'Ticker', 'Company', 'Category', 'DNA Score', 'Conviction',
+                    'Path', 'State', 'Criteria Met', 'Key Signals', 'TQ', 'TQ Trend',
+                    'Rank', 'Rank Δ', 'MS']
+    display_df = display_df[display_cols]
+
+    st.markdown(f"**Showing {len(display_df)} stocks** (sorted by DNA Score)")
+    st.dataframe(display_df, use_container_width=True, height=min(600, 35 * len(display_df) + 40))
+
+    # ── Category breakdown (when All Categories selected) ──
+    if sel_cat == "All Categories":
+        st.markdown("---")
+        st.markdown("#### 📊 Category Breakdown")
+        for cat_name in ['Large Cap', 'Mega Cap', 'Mid Cap', 'Small Cap', 'Micro Cap']:
+            cat_df = res_df[res_df['Category'] == cat_name]
+            if cat_df.empty:
+                continue
+            high_c = len(cat_df[cat_df['Conviction'].str.contains('HIGH')])
+            st.markdown(f"**{cat_name}**: {len(cat_df)} matches ({high_c} high conviction)")
+
+    # ── NEW THIS WEEK SPOTLIGHT ──
+    new_df = display_df[display_df['New'] == '🆕']
+    if not new_df.empty:
+        st.markdown("---")
+        st.markdown("#### 🆕 New DNA Matches This Week")
+        st.markdown("*These stocks just appeared on the DNA radar — early signals.*")
+        st.dataframe(new_df, use_container_width=True, height=min(300, 35 * len(new_df) + 40))
+
+    # ── HIGH CONVICTION DETAIL ──
+    high_df = display_df[display_df['Conviction'] == '🔴 HIGH']
+    if not high_df.empty:
+        st.markdown("---")
+        st.markdown("#### 🔴 High Conviction Picks — Detailed View")
+
+        for _, r in high_df.head(20).iterrows():
+            with st.expander(f"**{r['Ticker']}** — {r['Company']} | DNA: {r['DNA Score']} | {r['Path']}"):
+                dc1, dc2, dc3, dc4 = st.columns(4)
+                with dc1:
+                    st.metric("DNA Score", r['DNA Score'])
+                with dc2:
+                    _tq_d = r['TQ Trend'].replace('↑', '').replace('↓', '').replace('→', '').replace('—', '').strip() or None
+                    st.metric("TQ", r['TQ'], delta=_tq_d)
+                with dc3:
+                    st.metric("Rank", r['Rank'])
+                with dc4:
+                    st.metric("Master Score", r['MS'])
+                st.markdown(f"**State:** {r['State']} | **Path:** {r['Path']} | **Criteria Met:** {r['Criteria Met']}")
+                st.markdown(f"**Key Signals:** {r['Key Signals']}")
+
+    # ── DNA SCORING LEGEND ──
+    with st.expander("📖 DNA Scoring Methodology"):
+        st.markdown(r"""
+        Each category uses a **unique scoring formula** calibrated to actual 6-month winner profiles
+        + **backtest-validated pattern bonuses** (BT = backtest proven):
+
+        | Category | Key Drivers | Winner Archetype |
+        |----------|------------|------------------|
+        | **Large Cap** | Position Score\*\*\*, Position Tension\*\*\*, From Low\*\*\* | Quality leaders with building tension |
+        | **Mega Cap** | Volume Score\*, Near High\*, LOW Tension\*\*\* | Stable blue chips with volume interest |
+        | **Mid Cap** | Master\*\*\*, Position\*\*\*, Breakout\*\*\*, TQ\*\*\*, Rank\*\*\* | Dual-path: Momentum OR **Contrarian (BT#3)** |
+        | **Small Cap** | Position\*\*\*, TQ\*\*\*, Breakout\*\*\*, Rank\*\*\* | TQ & Position driven, pattern enrichment |
+        | **Micro Cap** | LOW Volume\*\*, LOW Money Flow\*\*, HIGH Tension\* | Coiled Spring — under radar, building tension |
+
+        **Backtest-Validated Boosts** (applied across ALL categories):
+        - 🏆 **Quality GARP** (+7): S15 = **+20.28% alpha**, #1 strategy overall
+        - 🔄 **Capitulation** (+5-7): S13 = **+17.82% alpha**, #2 strategy overall
+        - 🤫 **Stealth** (+6-7): S17 = **+12.37% alpha**, #4 strategy overall
+        - 📉 **Contrarian Path** (+8 Mid Cap): S20 = **+12.49% alpha** vs S19 Momentum = +0.72%
+
+        **Conviction Levels:**
+        - 🔴 **HIGH** (65+): Strong DNA match — multiple winner criteria aligned
+        - 🟡 **MEDIUM** (45-64): Moderate match — developing setup, worth monitoring
+        - 🟢 **LOW** (30-44): Early signal — partial match, watch for improvement
+
+        **Pattern Enrichment** (compared to non-winners):
+        - Micro: VALUE MOMENTUM (16.2x!), INFO DECAY (3.9x), STEALTH (1.9x)
+        - Mid: MARKET LEADER (2.2x), CAT LEADER (2.0x), LIQUID LEADER (2.4x)
+        - Small: RUNAWAY GAP (9.0x), VELOCITY SQUEEZE (3.4x), ACCELERATION (2.5x)
+        - Large: 52W HIGH APPROACH (2.2x), PYRAMID (2.0x), VOL EXPLOSION (1.8x)
+        - Mega: PREMIUM MOMENTUM (3.5x), INSTITUTIONAL (3.2x), VOL EXPLOSION (3.0x)
+        """)
+
+
 # UI: ABOUT TAB
 # ============================================
 
@@ -8201,27 +9606,6 @@ def render_about_tab():
     | Top 5% | > 95th | ≥ 60% of weeks | **82** |
     | Top 10% | > 90th | ≥ 60% of weeks | **73** |
     | Top 20% | > 85th | ≥ 55% of weeks | **65** |
-
-    ---
-
-    ### 🎯 3-Stage Selection Funnel
-
-    #### Stage 1: Discovery
-    - **Filter:** Trajectory Score ≥ 70 **OR** Rocket/Breakout pattern
-    - **Output:** ~50-100 candidates
-
-    #### Stage 2: Validation (5 Rules, must pass 4/5)
-    | # | Rule | Threshold | Why |
-    |---|------|-----------|-----|
-    | 1 | Trend Quality (TQ) | ≥ 60 | Confirms Wave Detection quality |
-    | 2 | Market State | ≠ DOWNTREND | 10.1x higher loser ratio! |
-    | 3 | Master Score | ≥ 50 | Minimum quality floor |
-    | 4 | Recent Rank Δ | ≥ -20 | Not in freefall |
-    | 5 | Volume Pattern | VOL / LIQUID / INSTITUTIONAL | Volume confirms conviction |
-
-    #### Stage 3: Final Filter (ALL must pass)
-    - TQ ≥ 70 | Leader Pattern required | No DOWNTREND in last 4 weeks
-    - **Output:** ~5-10 FINAL BUYS
 
     ---
 
@@ -8576,10 +9960,13 @@ def main():
     filtered_df = apply_filters(traj_df, filters)
 
     # ── Tabs ──
-    tab_ranking, tab_search, tab_funnel, tab_discovery, tab_backtest, tab_movers, tab_alerts, tab_export, tab_about = st.tabs([
-        "🏆 Rankings", "🔍 Search & Analyze", "🎯 Funnel", "🔮 Early Discovery",
-        "📊 Backtest", "🔥 Top Movers", "🚨 Alerts", "📤 Export", "ℹ️ About"
+    tab_pulse, tab_ranking, tab_search, tab_backtest, tab_movers, tab_pattern, tab_dna_wl, tab_export, tab_about = st.tabs([
+        "📡 Market Pulse", "🏆 Rankings", "🔍 Search & Analyze",
+        "📊 Backtest", "🔥 Top Movers", "🔬 Pattern Analyser", "🎯 DNA Watchlist", "📤 Export", "ℹ️ About"
     ])
+
+    with tab_pulse:
+        render_market_pulse_tab(filtered_df, traj_df, histories, metadata)
 
     with tab_ranking:
         render_rankings_tab(filtered_df, traj_df, histories, metadata)
@@ -8587,27 +9974,23 @@ def main():
     with tab_search:
         render_search_tab(filtered_df, traj_df, histories, dates_iso)
 
-    with tab_funnel:
-        render_funnel_tab(filtered_df, traj_df, histories, metadata)
-
-    with tab_discovery:
-        render_early_discovery_tab(filtered_df, traj_df, histories, metadata)
-
     with tab_backtest:
         render_backtest_tab(uploaded_files)
 
     with tab_movers:
         render_top_movers_tab(filtered_df, histories)
 
-    with tab_alerts:
-        render_alerts_tab(filtered_df, histories)
+    with tab_pattern:
+        render_pattern_analyser_tab(uploaded_files)
+
+    with tab_dna_wl:
+        render_dna_watchlist_tab(uploaded_files, filtered_df, traj_df, histories)
 
     with tab_export:
         render_export_tab(filtered_df, traj_df, histories)
 
     with tab_about:
         render_about_tab()
-
 
 if __name__ == "__main__":
     main()
