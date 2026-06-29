@@ -3973,6 +3973,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             'sb_cat': [], 'sb_sector': [], 'sb_industry': [], 'sb_market_state': [],
             # v10.2 — advanced signal filters (N1-N4) + ticker search (N10)
             'sb_ticker_search': '', 'sb_pattern_keys': [], 'sb_latest_patterns': [],
+            'sb_combo_patterns': [],
             'sb_market_regime': [], 'sb_sector_alpha': [],
         }
         _sb_keys = list(_defaults.keys())
@@ -4355,8 +4356,45 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                         help="Institutional setup patterns from source CSV (OR logic, substring match)")
                 else:
                     selected_latest_patterns = []
+
+                # ── Combination Pattern Filter (AND logic) ──────────────
+                # Lets users build custom pattern combos: select multiple
+                # patterns and ONLY stocks that have ALL of them pass.
+                # Example: HIGH PE + CAT LEADER + STEALTH → must have all 3.
+                st.markdown(
+                    '<div style="margin:10px 0 6px;padding:8px 10px;'
+                    'background:linear-gradient(135deg,rgba(228,179,65,0.06),rgba(88,166,255,0.06));'
+                    'border:1px solid rgba(228,179,65,0.18);border-radius:8px;'
+                    'font-size:0.72rem;color:#c9d1d9;">'
+                    '🔗 <b style="color:#e3b341;">Combination Filter</b> — '
+                    'select patterns below to find stocks matching <b>ALL</b> of them (AND logic)'
+                    '</div>', unsafe_allow_html=True)
+                if _lp_options:
+                    # Prune stale combo selections
+                    if 'sb_combo_patterns' in st.session_state:
+                        _valid_cp = [t for t in st.session_state['sb_combo_patterns'] if t in _lp_options]
+                        if _valid_cp != list(st.session_state['sb_combo_patterns']):
+                            st.session_state['sb_combo_patterns'] = _valid_cp
+                    selected_combo_patterns = st.multiselect(
+                        "🔗 Must Have ALL (AND)", _lp_options, default=[],
+                        placeholder="Select patterns — stocks must match ALL",
+                        key='sb_combo_patterns',
+                        help="AND logic: only stocks containing EVERY selected pattern are shown. "
+                             "Build combos like: HIGH PE + CAT LEADER + MARKET LEADER + STEALTH")
+                    if selected_combo_patterns:
+                        st.markdown(
+                            '<div style="margin-top:4px;padding:6px 8px;'
+                            'background:rgba(63,185,80,0.06);border:1px solid rgba(63,185,80,0.2);'
+                            'border-radius:6px;font-size:0.7rem;color:#3fb950;">'
+                            f'✅ Showing stocks with <b>ALL {len(selected_combo_patterns)}</b> patterns: '
+                            + ' <span style="color:#e3b341;">+</span> '.join(
+                                f'<b>{p}</b>' for p in selected_combo_patterns)
+                            + '</div>', unsafe_allow_html=True)
+                else:
+                    selected_combo_patterns = []
             else:
                 selected_latest_patterns = []
+                selected_combo_patterns = []
 
             st.markdown("---")
 
@@ -4442,6 +4480,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'ticker_search': ticker_search,
         'pattern_keys': selected_pattern_keys,
         'latest_patterns': selected_latest_patterns,
+        'combo_patterns': selected_combo_patterns,
         'market_regimes': selected_market_regimes,
         'sector_alphas': selected_sector_alphas,
     }
@@ -4485,6 +4524,15 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         for _tok in _lp_lower:
             _mask = _mask | _col.str.contains(_tok, regex=False, na=False)
         df = df[_mask]
+    # N2b — Combination Patterns (AND logic — stock must contain ALL selected patterns)
+    _cps = filters.get('combo_patterns') or []
+    if _cps and 'latest_patterns' in df.columns:
+        _col_lower = df['latest_patterns'].fillna('').astype(str).str.lower()
+        for _cp_tok in _cps:
+            _cp_lower = str(_cp_tok).lower()
+            df = df[_col_lower.str.contains(_cp_lower, regex=False, na=False)]
+            # Refresh series reference after filtering (index changed)
+            _col_lower = df['latest_patterns'].fillna('').astype(str).str.lower()
     # N3 — Market regime (multi)
     _mrs = filters.get('market_regimes') or []
     if _mrs and 'market_regime' in df.columns:
@@ -12773,7 +12821,7 @@ def render_about_tab():
 
     ---
 
-    ### �🏗️ Adaptive Weight System (7 Components)
+    ###  🏗️ Adaptive Weight System (7 Components)
 
     Weights **dynamically shift** based on the stock's average percentile.
     Smooth interpolation between tiers — no hard cutoffs.
