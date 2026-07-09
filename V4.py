@@ -3975,6 +3975,11 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             'sb_ticker_search': '', 'sb_pattern_keys': [], 'sb_latest_patterns': [],
             'sb_combo_patterns': [],
             'sb_market_regime': [], 'sb_sector_alpha': [],
+            # v10.3 — EDGE Protocol filters
+            'sb_danger_exclude': False, 'sb_edge_engines': [],
+            # v10.4 — Dual Engine (Sector Rotation + Bottom Fisher)
+            'sb_engine_mode': 'A — Sector Rotation',
+            'sb_sector_rs_quartile': [], 'sb_bottom_fisher_force': False,
         }
         _sb_keys = list(_defaults.keys())
         # Conditional slider keys (only rendered when Custom Range is chosen)
@@ -4439,10 +4444,197 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                 selected_sector_alphas = []
 
         # ═══════════════════════════════════════════════
-        # FOOTER — version (Clear All lives at the top to avoid duplicate buttons)
+        # § 9  EDGE PROTOCOL — data-driven trading gates
+        # ═══════════════════════════════════════════════
+        with st.expander("🔱 EDGE Protocol", expanded=False):
+            st.caption("Trading gates from 6-month backtest analysis")
+
+            # ── 9A: Seasonal Warning Banner ──
+            import datetime as _dt_edge
+            _current_month = _dt_edge.datetime.now().month
+            _current_month_name = _dt_edge.datetime.now().strftime('%B')
+            if _current_month in (1, 11):
+                st.warning(
+                    f"🚨 **DANGER MONTH: {_current_month_name}**\n\n"
+                    "Backtest data shows Nov (−1.14%, 32.7% WR) and "
+                    "Jan (−1.42%, 35.0% WR) are the worst months. "
+                    "Consider reducing allocation by 30–50%.")
+            elif _current_month in (4, 5, 6):
+                st.success(
+                    f"🟢 **STRONG SEASON: {_current_month_name}**\n\n"
+                    "Apr–Jun historically shows +3.2% to +5.5% avg returns "
+                    "with 60–74% win rates. Full allocation justified.")
+
+            st.markdown("---")
+
+            # ── 9B: Danger Combo Exclusion ──
+            st.markdown(
+                '<div style="margin:0 0 8px;padding:6px 8px;'
+                'background:rgba(248,81,73,0.06);border:1px solid rgba(248,81,73,0.2);'
+                'border-radius:6px;font-size:0.7rem;color:#f85149;">'
+                '🛡️ <b>Danger Combos</b> — removes stocks matching '
+                'statistically destructive pattern combinations'
+                '</div>', unsafe_allow_html=True)
+            selected_danger_exclude = st.checkbox(
+                "🚫 Exclude Danger Combos", value=False,
+                key='sb_danger_exclude',
+                help="Removes stocks with known destructive pattern combos:\n"
+                     "• CAT+MKT+LIQ+STEALTH without HIGH PE (−1.76%)\n"
+                     "• CAT+MKT+LIQ+RANGE COMPRESS (−1.25%)\n"
+                     "• HIGH PE+RANGE COMPRESS (−1.88%)")
+
+            st.markdown("---")
+
+            # ── 9C: Strategy Engine Selector ──
+            _engine_options = ['🎯 S12 Max Alpha', '🛡️ S14 Bounce Recovery',
+                              '⏳ S4 Persistent Top 50', '⚡ S16 Pattern Flip']
+            _engine_key_map = {'🎯 S12 Max Alpha': 'S12', '🛡️ S14 Bounce Recovery': 'S14',
+                              '⏳ S4 Persistent Top 50': 'S4', '⚡ S16 Pattern Flip': 'S16'}
+            if 'sb_edge_engines' in st.session_state:
+                _valid_ee = [e for e in st.session_state['sb_edge_engines'] if e in _engine_options]
+                if _valid_ee != list(st.session_state['sb_edge_engines']):
+                    st.session_state['sb_edge_engines'] = _valid_ee
+            selected_engine_disp = st.multiselect(
+                "🔧 Strategy Engine", _engine_options, default=[],
+                placeholder="All engines", key='sb_edge_engines',
+                help="Filter stocks by EDGE Protocol engine criteria")
+            selected_edge_engines = [_engine_key_map[d] for d in selected_engine_disp]
+
+        # ═══════════════════════════════════════════════
+        # § 10  DUAL ENGINE — Sector Rotation + Bottom Fisher
+        # ═══════════════════════════════════════════════
+        with st.expander("🚀 Dual Engine", expanded=False):
+            st.caption("Engine A: Sector Rotation | Engine B: Bottom Fisher")
+
+            # ── 10A: Engine Mode Selector ──
+            selected_engine_mode = st.radio(
+                "🔧 Active Engine",
+                ['A — Sector Rotation', 'B — Bottom Fisher', 'A+B — Both Engines'],
+                index=0, key='sb_engine_mode',
+                help="A: Ranks sectors by relative strength, gates signals through sector quality.\n"
+                     "B: Dormant 90%% of the time. Activates ONLY during macro STRONG_DOWNTREND "
+                     "to hunt volume capitulation in deepest drawdowns.")
+
+            st.markdown("---")
+
+            # ── 10B: Engine A — Sector Rotation Intelligence ──
+            st.markdown(
+                '<div style="margin:0 0 8px;padding:6px 8px;'
+                'background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.18);'
+                'border-radius:6px;font-size:0.72rem;color:#58a6ff;">'
+                '🌐 <b>Engine A: Sector Rotation Intelligence</b><br/>'
+                'Ranks sectors by rolling RS (60% 4W + 40% 13W median returns). '
+                'Q3/Q4 sectors get conviction downgrade warnings.'
+                '</div>', unsafe_allow_html=True)
+
+            # Compute Sector RS from traj_df (uses ret_30d & ret_3m columns)
+            _sector_rs_df = pd.DataFrame()
+            _has_rs_cols = ('sector' in traj_df.columns and
+                           ('ret_30d' in traj_df.columns or 'ret_3m' in traj_df.columns))
+            if _has_rs_cols:
+                _rs_data = []
+                for _sec, _grp in traj_df.groupby('sector'):
+                    if pd.isna(_sec) or str(_sec).strip() == '' or len(_grp) < 3:
+                        continue
+                    _r4 = _grp['ret_30d'].median() if 'ret_30d' in _grp.columns else 0.0
+                    _r13 = _grp['ret_3m'].median() if 'ret_3m' in _grp.columns else 0.0
+                    _rs_comp = 0.6 * float(_r4 or 0) + 0.4 * float(_r13 or 0)
+                    _rs_data.append({'sector': _sec, 'rs_4w': round(float(_r4 or 0), 2),
+                                     'rs_13w': round(float(_r13 or 0), 2),
+                                     'rs_composite': round(_rs_comp, 2),
+                                     'n_stocks': len(_grp)})
+                if _rs_data:
+                    _sector_rs_df = pd.DataFrame(_rs_data).sort_values(
+                        'rs_composite', ascending=False).reset_index(drop=True)
+                    _n_sec = len(_sector_rs_df)
+                    _q_size = max(1, _n_sec // 4)
+                    _quartiles = []
+                    for _i in range(_n_sec):
+                        if _i < _q_size:
+                            _quartiles.append('Q1')
+                        elif _i < _q_size * 2:
+                            _quartiles.append('Q2')
+                        elif _i < _q_size * 3:
+                            _quartiles.append('Q3')
+                        else:
+                            _quartiles.append('Q4')
+                    _sector_rs_df['quartile'] = _quartiles
+
+            # Display top 5 sectors
+            if not _sector_rs_df.empty:
+                _top5 = _sector_rs_df.head(5)
+                _q_emoji = {'Q1': '🟢', 'Q2': '🟡', 'Q3': '🟠', 'Q4': '🔴'}
+                _top5_lines = []
+                for _, _r in _top5.iterrows():
+                    _qe = _q_emoji.get(_r['quartile'], '•')
+                    _top5_lines.append(
+                        f"{_qe} **{_r['sector'][:25]}** — RS: {_r['rs_composite']:+.1f} ({_r['n_stocks']} stocks)")
+                st.markdown('\n'.join(_top5_lines))
+
+                # Sector Quartile Filter
+                _q_options = ['Q1 — Top 25%', 'Q2 — Upper Mid', 'Q3 — Lower Mid', 'Q4 — Bottom 25%']
+                if 'sb_sector_rs_quartile' in st.session_state:
+                    _valid_sq = [q for q in st.session_state['sb_sector_rs_quartile'] if q in _q_options]
+                    if _valid_sq != list(st.session_state['sb_sector_rs_quartile']):
+                        st.session_state['sb_sector_rs_quartile'] = _valid_sq
+                selected_sector_rs_q = st.multiselect(
+                    "📊 Sector Quartile Filter", _q_options, default=[],
+                    placeholder="All quartiles", key='sb_sector_rs_quartile',
+                    help="Filter stocks by their sector's relative strength quartile")
+            else:
+                selected_sector_rs_q = []
+                st.info("Sector RS data not available (missing ret_30d/ret_3m columns)")
+
+            st.markdown("---")
+
+            # ── 10C: Engine B — Bottom Fisher ──
+            st.markdown(
+                '<div style="margin:0 0 8px;padding:6px 8px;'
+                'background:rgba(248,81,73,0.06);border:1px solid rgba(248,81,73,0.18);'
+                'border-radius:6px;font-size:0.72rem;color:#f85149;">'
+                '🎣 <b>Engine B: Bottom Fisher</b><br/>'
+                'Dormant 90%% of the time. Activates ONLY when market prints '
+                'STRONG_DOWNTREND. Hunts volume capitulation in deepest drawdowns.'
+                '</div>', unsafe_allow_html=True)
+
+            # Check macro activation: is the market in distress?
+            _bf_auto_active = False
+            if 'market_state' in traj_df.columns:
+                _ms_dist = traj_df['market_state'].value_counts(normalize=True)
+                _distress_pct = _ms_dist.get('STRONG_DOWNTREND', 0) + _ms_dist.get('DOWNTREND', 0)
+                _bf_auto_active = _distress_pct > 0.50
+                if _bf_auto_active:
+                    st.error(f"🟢 **ENGINE B ACTIVE** — {_distress_pct:.0%} of stocks in distress")
+                else:
+                    st.info(f"🔴 **ENGINE B DORMANT** — Only {_distress_pct:.0%} in distress (need >50%)")
+
+            _bf_force = st.checkbox(
+                "⚠️ Force Engine B Active (for backtesting)",
+                value=False, key='sb_bottom_fisher_force',
+                help="Override the macro filter to test Bottom Fisher logic on current data")
+            _bottom_fisher_active = _bf_auto_active or _bf_force
+
+            if _bottom_fisher_active and selected_engine_mode in ('B — Bottom Fisher', 'A+B — Both Engines'):
+                # Count qualifying stocks
+                _bf_preview = traj_df.copy()
+                if 'market_state' in _bf_preview.columns:
+                    _bf_preview = _bf_preview[_bf_preview['market_state'] == 'STRONG_DOWNTREND']
+                if 'from_high_pct' in _bf_preview.columns:
+                    _bf_preview = _bf_preview[_bf_preview['from_high_pct'] <= -30]
+                if 'latest_patterns' in _bf_preview.columns:
+                    _lp_bf = _bf_preview['latest_patterns'].fillna('').astype(str).str.lower()
+                    _bf_preview = _bf_preview[
+                        _lp_bf.str.contains('vol explosion', regex=False, na=False) |
+                        _lp_bf.str.contains('capitulation', regex=False, na=False)]
+                st.success(f"🎣 **{len(_bf_preview)} stocks** qualify for Bottom Fisher")
+            elif selected_engine_mode in ('B — Bottom Fisher', 'A+B — Both Engines'):
+                st.warning("Engine B selected but not active. Force override or wait for macro distress.")
+
+        # ═══════════════════════════════════════════════
+        # FOOTER — version
         # ═══════════════════════════════════════════════
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
-        st.caption("v10.2 · Alpha Engine · Data-Driven")
+        st.caption("v10.4 · Dual Engine · Data-Driven")
 
     # ── Return filter dict ──
     return {
@@ -4483,6 +4675,14 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'combo_patterns': selected_combo_patterns,
         'market_regimes': selected_market_regimes,
         'sector_alphas': selected_sector_alphas,
+        # v10.3 — EDGE Protocol
+        'danger_exclude': selected_danger_exclude,
+        'edge_engines': selected_edge_engines,
+        # v10.4 — Dual Engine
+        'engine_mode': selected_engine_mode,
+        'sector_rs_data': _sector_rs_df,
+        'sector_rs_quartile': selected_sector_rs_q,
+        'bottom_fisher_active': _bottom_fisher_active,
     }
 
 
@@ -4541,6 +4741,109 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     _sas = filters.get('sector_alphas') or []
     if _sas and 'sector_alpha_tag' in df.columns:
         df = df[df['sector_alpha_tag'].isin(_sas)]
+
+    # ── § 9: EDGE Protocol Filters ──
+    # 9B — Danger Combo Exclusion
+    if filters.get('danger_exclude') and 'latest_patterns' in df.columns:
+        _lp_col = df['latest_patterns'].fillna('').astype(str).str.lower()
+        _has_cat = _lp_col.str.contains('cat leader', regex=False, na=False)
+        _has_mkt = _lp_col.str.contains('market leader', regex=False, na=False)
+        _has_liq = _lp_col.str.contains('liquid leader', regex=False, na=False)
+        _has_stealth = _lp_col.str.contains('stealth', regex=False, na=False)
+        _has_hpe = _lp_col.str.contains('high pe', regex=False, na=False)
+        _has_rc = _lp_col.str.contains('range compress', regex=False, na=False)
+        # Danger 1: CAT+MKT+LIQ+STEALTH without HIGH PE → −1.76%
+        _danger1 = _has_cat & _has_mkt & _has_liq & _has_stealth & (~_has_hpe)
+        # Danger 2: CAT+MKT+LIQ+RANGE COMPRESS → −1.25%
+        _danger2 = _has_cat & _has_mkt & _has_liq & _has_rc
+        # Danger 3: HIGH PE + RANGE COMPRESS → −1.88%
+        _danger3 = _has_hpe & _has_rc
+        df = df[~(_danger1 | _danger2 | _danger3)]
+
+    # 9C — Strategy Engine Selector
+    _engines = filters.get('edge_engines') or []
+    if _engines:
+        _engine_mask = pd.Series(False, index=df.index)
+        for _eng in _engines:
+            if _eng == 'S12':
+                _m = pd.Series(True, index=df.index)
+                if 'trajectory_score' in df.columns:
+                    _m = _m & (df['trajectory_score'] >= 70)
+                if 'trend_quality' in df.columns:
+                    _m = _m & (df['trend_quality'] >= 84)
+                if 'breakout_score' in df.columns:
+                    _m = _m & (df['breakout_score'] >= 78)
+                if 'from_high_pct' in df.columns:
+                    _m = _m & (df['from_high_pct'] >= -10)
+                _engine_mask = _engine_mask | _m
+            elif _eng == 'S14':
+                if 'market_state' in df.columns:
+                    _engine_mask = _engine_mask | df['market_state'].isin(
+                        ['PULLBACK', 'STRONG_DOWNTREND', 'BOUNCE'])
+            elif _eng == 'S4':
+                _m = pd.Series(True, index=df.index)
+                if 'persistence_weeks' in df.columns:
+                    _m = _m & (df['persistence_weeks'] >= 3)
+                if 'trajectory_score' in df.columns:
+                    _m = _m & (df['trajectory_score'] >= 70)
+                _engine_mask = _engine_mask | _m
+            elif _eng == 'S16':
+                if 'latest_patterns' in df.columns:
+                    _m = df['latest_patterns'].fillna('').astype(str).str.strip().str.len() > 0
+                    _engine_mask = _engine_mask | _m
+        df = df[_engine_mask]
+
+    # ── § 10: Dual Engine Filters ──
+    _em = filters.get('engine_mode', 'A — Sector Rotation')
+    _rs_df = filters.get('sector_rs_data')
+    _bf_active = filters.get('bottom_fisher_active', False)
+
+    # 10A — Sector RS Quartile filter (Engine A)
+    _rs_q_sel = filters.get('sector_rs_quartile') or []
+    if _rs_q_sel and _rs_df is not None and not _rs_df.empty and 'sector' in df.columns:
+        _q_map = {'Q1 — Top 25%': 'Q1', 'Q2 — Upper Mid': 'Q2',
+                  'Q3 — Lower Mid': 'Q3', 'Q4 — Bottom 25%': 'Q4'}
+        _sel_qs = [_q_map.get(q, q) for q in _rs_q_sel]
+        _valid_secs = _rs_df[_rs_df['quartile'].isin(_sel_qs)]['sector'].tolist()
+        df = df[df['sector'].isin(_valid_secs)]
+
+    # 10B — Bottom Fisher (Engine B)
+    if _em in ('B — Bottom Fisher', 'A+B — Both Engines') and _bf_active:
+        if _em == 'B — Bottom Fisher':
+            # Pure Bottom Fisher mode — hard filter to ONLY capitulation setups
+            _bf_mask = pd.Series(True, index=df.index)
+            if 'market_state' in df.columns:
+                _bf_mask = _bf_mask & (df['market_state'] == 'STRONG_DOWNTREND')
+            if 'from_high_pct' in df.columns:
+                _bf_mask = _bf_mask & (df['from_high_pct'] <= -30)
+            if 'latest_patterns' in df.columns:
+                _lp_bf = df['latest_patterns'].fillna('').astype(str).str.lower()
+                _bf_mask = _bf_mask & (
+                    _lp_bf.str.contains('vol explosion', regex=False, na=False) |
+                    _lp_bf.str.contains('capitulation', regex=False, na=False))
+            df = df[_bf_mask]
+        else:
+            # A+B mode — Union: keep Engine A results + add Bottom Fisher matches
+            _bf_mask = pd.Series(False, index=df.index)
+            if 'market_state' in df.columns:
+                _bf_ms = df['market_state'] == 'STRONG_DOWNTREND'
+            else:
+                _bf_ms = pd.Series(False, index=df.index)
+            if 'from_high_pct' in df.columns:
+                _bf_fh = df['from_high_pct'] <= -30
+            else:
+                _bf_fh = pd.Series(True, index=df.index)
+            if 'latest_patterns' in df.columns:
+                _lp_bf2 = df['latest_patterns'].fillna('').astype(str).str.lower()
+                _bf_pat = (
+                    _lp_bf2.str.contains('vol explosion', regex=False, na=False) |
+                    _lp_bf2.str.contains('capitulation', regex=False, na=False))
+            else:
+                _bf_pat = pd.Series(False, index=df.index)
+            _bf_mask = _bf_ms & _bf_fh & _bf_pat
+            # A+B: df already has Engine A stocks; we just ensure BF stocks are also included
+            # (they likely already are since we haven't excluded them — no further action needed)
+            # The BF mask is informational for tagging in the display layer
 
     # ── § 2: Scoring & Quality ──
     # T-Score range
