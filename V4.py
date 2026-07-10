@@ -3982,6 +3982,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             'sb_inst_flow': (0, 100), 'sb_harmony': (0, 100), 'sb_fundamental': (0, 100),
             'sb_rank_chg': 'All', 'sb_persist': (0, 20), 'sb_rankvol': 'All',
             'sb_cat': [], 'sb_sector': [], 'sb_industry': [], 'sb_market_state': [],
+            'sb_cyclicality_tier': [],
             # v10.2 — advanced signal filters (N1-N4) + ticker search (N10)
             'sb_ticker_search': '', 'sb_pattern_keys': [], 'sb_latest_patterns': [],
             'sb_combo_patterns': [],
@@ -4312,6 +4313,13 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                     selected_market_states = []
             else:
                 selected_market_states = []
+
+            # ── Cyclicality Tier ──
+            if 'cyclicality_tier' in traj_df.columns:
+                tiers = sorted(traj_df['cyclicality_tier'].dropna().loc[lambda s: s.str.strip() != ''].unique().tolist())
+                selected_tiers = st.multiselect("Cyclicality Tier", tiers, default=[], placeholder="All", key='sb_cyclicality_tier')
+            else:
+                selected_tiers = []
 
         # ═══════════════════════════════════════════════
         # § 8  📐 ADVANCED SIGNAL FILTERS — N1–N4 + N10
@@ -4646,11 +4654,8 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                 if 'latest_patterns' in _bf_preview.columns:
                     _lp_bf = _bf_preview['latest_patterns'].fillna('').astype(str).str.lower()
                     _bf_preview = _bf_preview[
-                        _lp_bf.str.contains('vol explosion', regex=False, na=False) |
-                        _lp_bf.str.contains('capitulation', regex=False, na=False)]
-                    # Verify it's BUYING volume (accumulation), not panic selling
-                    if 'volume_score' in _bf_preview.columns:
-                        _bf_preview = _bf_preview[_bf_preview['volume_score'] >= 60]
+                        _lp_bf.str.contains('stopping volume', regex=False, na=False)]
+                    # Remove the volume_score >= 60 trap, as stopping volume is explicitly price-validated
                     # Apply Quality Gate to preview so counts match
                     _bf_trap = (
                         _lp_bf.str.contains('rotation leader', regex=False, na=False) |
@@ -4660,7 +4665,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                         _lp_bf.str.contains('momentum wave', regex=False, na=False) |
                         _lp_bf.str.contains('premium momentum', regex=False, na=False) |
                         _lp_bf.str.contains('acceleration', regex=False, na=False) |
-                        _lp_bf.str.contains('vol explosion', regex=False, na=False))
+                        _lp_bf.str.contains('stopping volume', regex=False, na=False))
                     _bare_gc = _has_gc & (~_has_mom)
                     _bf_preview = _bf_preview[(~_bf_trap) & (~_bare_gc)]
                 # Exclude Micro Caps (too illiquid for reliable bottom fishing)
@@ -4766,6 +4771,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         'persist_range': persist_range,
         'rankvol': selected_rankvol,
         'market_states': selected_market_states,
+        'cyclicality_tiers': selected_tiers,
         # v10.2 — N1-N4 + N10
         'ticker_search': ticker_search,
         'pattern_keys': selected_pattern_keys,
@@ -4800,6 +4806,8 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         df = df[df['industry'].isin(filters['industries'])]
     if filters.get('market_states') and 'market_state' in df.columns:
         df = df[df['market_state'].isin(filters['market_states'])]
+    if filters.get('cyclicality_tiers') and 'cyclicality_tier' in df.columns:
+        df = df[df['cyclicality_tier'].isin(filters['cyclicality_tiers'])]
 
     # ── § 8: Advanced Signal (N1-N4 + N10) — applied early to shrink df fast ──
     # N10 — Ticker search (case-insensitive, comma/newline separated)
@@ -4925,13 +4933,9 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                 _bf_mask = _bf_mask & (df['from_high_pct'] <= -30)
             if 'latest_patterns' in df.columns:
                 _lp_bf = df['latest_patterns'].fillna('').astype(str).str.lower()
-                # Require VOL EXPLOSION or CAPITULATION trigger
+                # Require STOPPING VOLUME (price-validated accumulation)
                 _bf_mask = _bf_mask & (
-                    _lp_bf.str.contains('vol explosion', regex=False, na=False) |
-                    _lp_bf.str.contains('capitulation', regex=False, na=False))
-                # Verify it's BUYING volume (accumulation), not panic selling
-                if 'volume_score' in df.columns:
-                    _bf_mask = _bf_mask & (df['volume_score'] >= 60)
+                    _lp_bf.str.contains('stopping volume', regex=False, na=False))
                 # QUALITY GATE — exclude proven trap patterns
                 _bf_trap = (
                     _lp_bf.str.contains('rotation leader', regex=False, na=False) |
@@ -4942,7 +4946,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                     _lp_bf.str.contains('momentum wave', regex=False, na=False) |
                     _lp_bf.str.contains('premium momentum', regex=False, na=False) |
                     _lp_bf.str.contains('acceleration', regex=False, na=False) |
-                    _lp_bf.str.contains('vol explosion', regex=False, na=False))
+                    _lp_bf.str.contains('stopping volume', regex=False, na=False))
                 _bare_gc = _has_gc & (~_has_mom)
                 _bf_mask = _bf_mask & (~_bf_trap) & (~_bare_gc)
             # Exclude Micro Caps
@@ -4963,11 +4967,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
             if 'latest_patterns' in df.columns:
                 _lp_bf2 = df['latest_patterns'].fillna('').astype(str).str.lower()
                 _bf_pat = (
-                    _lp_bf2.str.contains('vol explosion', regex=False, na=False) |
-                    _lp_bf2.str.contains('capitulation', regex=False, na=False))
-                # Verify it's BUYING volume (accumulation)
-                if 'volume_score' in df.columns:
-                    _bf_pat = _bf_pat & (df['volume_score'] >= 60)
+                    _lp_bf2.str.contains('stopping volume', regex=False, na=False))
                 # Same quality gate as pure B mode
                 _bf_trap2 = (
                     _lp_bf2.str.contains('rotation leader', regex=False, na=False) |
@@ -4977,7 +4977,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                     _lp_bf2.str.contains('momentum wave', regex=False, na=False) |
                     _lp_bf2.str.contains('premium momentum', regex=False, na=False) |
                     _lp_bf2.str.contains('acceleration', regex=False, na=False) |
-                    _lp_bf2.str.contains('vol explosion', regex=False, na=False))
+                    _lp_bf2.str.contains('stopping volume', regex=False, na=False))
                 _bare_gc2 = _has_gc2 & (~_has_mom2)
                 _bf_pat = _bf_pat & (~_bf_trap2) & (~_bare_gc2)
             else:
