@@ -4637,6 +4637,9 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                     _bf_preview = _bf_preview[
                         _lp_bf.str.contains('vol explosion', regex=False, na=False) |
                         _lp_bf.str.contains('capitulation', regex=False, na=False)]
+                    # Verify it's BUYING volume (accumulation), not panic selling
+                    if 'volume_score' in _bf_preview.columns:
+                        _bf_preview = _bf_preview[_bf_preview['volume_score'] >= 60]
                     # Apply Quality Gate to preview so counts match
                     _bf_trap = (
                         _lp_bf.str.contains('rotation leader', regex=False, na=False) |
@@ -4649,6 +4652,9 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                         _lp_bf.str.contains('vol explosion', regex=False, na=False))
                     _bare_gc = _has_gc & (~_has_mom)
                     _bf_preview = _bf_preview[(~_bf_trap) & (~_bare_gc)]
+                # Exclude Micro Caps (too illiquid for reliable bottom fishing)
+                if 'category' in _bf_preview.columns:
+                    _bf_preview = _bf_preview[_bf_preview['category'] != 'Micro Cap']
                 
                 _bf_count = len(_bf_preview)
                 st.success(f"🎣 **{_bf_count} stocks** qualify for Bottom Fisher")
@@ -4869,6 +4875,9 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                 _bf_mask = _bf_mask & (
                     _lp_bf.str.contains('vol explosion', regex=False, na=False) |
                     _lp_bf.str.contains('capitulation', regex=False, na=False))
+                # Verify it's BUYING volume (accumulation), not panic selling
+                if 'volume_score' in df.columns:
+                    _bf_mask = _bf_mask & (df['volume_score'] >= 60)
                 # QUALITY GATE — exclude proven trap patterns
                 _bf_trap = (
                     _lp_bf.str.contains('rotation leader', regex=False, na=False) |
@@ -4882,6 +4891,9 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                     _lp_bf.str.contains('vol explosion', regex=False, na=False))
                 _bare_gc = _has_gc & (~_has_mom)
                 _bf_mask = _bf_mask & (~_bf_trap) & (~_bare_gc)
+            # Exclude Micro Caps
+            if 'category' in df.columns:
+                _bf_mask = _bf_mask & (df['category'] != 'Micro Cap')
             df = df[_bf_mask]
         else:
             # A+B mode — Union: Engine A results + quality-gated Bottom Fisher
@@ -4899,6 +4911,9 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                 _bf_pat = (
                     _lp_bf2.str.contains('vol explosion', regex=False, na=False) |
                     _lp_bf2.str.contains('capitulation', regex=False, na=False))
+                # Verify it's BUYING volume (accumulation)
+                if 'volume_score' in df.columns:
+                    _bf_pat = _bf_pat & (df['volume_score'] >= 60)
                 # Same quality gate as pure B mode
                 _bf_trap2 = (
                     _lp_bf2.str.contains('rotation leader', regex=False, na=False) |
@@ -4913,6 +4928,9 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                 _bf_pat = _bf_pat & (~_bf_trap2) & (~_bare_gc2)
             else:
                 _bf_pat = pd.Series(False, index=df.index)
+            # Exclude Micro Caps
+            if 'category' in df.columns:
+                _bf_pat = _bf_pat & (df['category'] != 'Micro Cap')
             _bf_mask = _bf_ms & _bf_fh & _bf_pat
             # A+B: Engine A stocks already in df; BF mask is informational for display tagging
 
