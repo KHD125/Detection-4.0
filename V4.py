@@ -110,6 +110,7 @@ import shutil
 from typing import Dict, List, Tuple, Optional, Any
 from io import BytesIO
 import concurrent.futures as _cf  # PERF: parallel CSV parsing
+from cyclicality_tier import INDUSTRY_TIER, SECTOR_TIER_FALLBACK, TIER_LABELS
 
 warnings.filterwarnings('ignore')
 np.seterr(all='ignore')
@@ -1049,6 +1050,16 @@ def load_and_compute(uploaded_files: list) -> Tuple[Optional[pd.DataFrame], Opti
         traj['industry'] = h['industry']
         traj['market_state'] = h['market_state']
         traj['latest_patterns'] = h['patterns']
+        
+        # Add Cyclicality Tier (Hard Invariant: VIEW ONLY)
+        ind = traj.get('industry', '').strip()
+        sec = traj.get('sector', '').strip()
+        tier_code = INDUSTRY_TIER.get(ind)
+        if not tier_code:
+            tier_code = SECTOR_TIER_FALLBACK.get(sec, 'F')
+        traj['cyclicality_tier_code'] = tier_code
+        traj['cyclicality_tier'] = TIER_LABELS.get(tier_code, 'Catch-all')
+
         results.append(traj)
 
     # Build DataFrame and sort (v6.2: Confidence-Aware Ranking with Tie-Breakers)
@@ -5834,6 +5845,8 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         'Company':  ('company_name', 'Company', 'Company name (truncated)', None),
         'Sector':   ('sector', 'Sector', 'Business sector', None),
         'Category': ('category', 'Category', 'Large/Mid/Small Cap', None),
+        'CycTier':  ('cyclicality_tier_code', 'Cyc', 'Cyclicality Tier (A=Deep, B=Cyc, C=Def, D=Struct)', None),
+        'TierName': ('cyclicality_tier', 'TierName', 'Full Cyclicality Tier Name', None),
         '₹ Price':  ('latest_price', '₹ Price', 'Latest closing price (₹)',
                      st.column_config.NumberColumn(format="₹%.2f")),
         'T-Score':  ('trajectory_score', 'T-Score', 'Composite trajectory score (0-100)',
@@ -5895,15 +5908,15 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
     VIEW_PRESETS = {
         'Compact':  ['T-Rank', 'Ticker', '₹ Price', 'T-Score', 'Alpha', 'Grade', 'Pattern',
                      'Δ Total', 'Streak', 'Trajectory'],
-        'Standard': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Alpha', 'Grade',
+        'Standard': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', 'CycTier', '₹ Price', 'T-Score', 'Alpha', 'Grade',
                      'Pattern', 'Signals', 'TMI', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Stage', 'RallyGain', 'Rally%', 'Trajectory'],
-        'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Alpha', 'Grade',
+        'Signals':  ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', 'CycTier', '₹ Price', 'T-Score', 'Alpha', 'Grade',
                      'Pattern', 'Signals', 'Price Signal', 'Decay', 'Sect Alpha', 'Trajectory'],
-        'Trading':  ['T-Rank', 'Ticker', 'Company', '₹ Price', 'T-Score', 'Alpha', 'Grade', 'Conviction',
+        'Trading':  ['T-Rank', 'Ticker', 'Company', 'CycTier', '₹ Price', 'T-Score', 'Alpha', 'Grade', 'Conviction',
                      'Conv Tag', 'Risk-Adj', 'Exit Risk', 'Exit Tag', 'Hot Streak',
                      'Wave', 'WF Label', 'Confluence', 'Inst Flow', 'Rally%', 'RallyGain', 'Stage', 'Streak', 'Trajectory'],
-        'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', '₹ Price', 'T-Score', 'Alpha',
+        'Complete': ['T-Rank', 'Ticker', 'Company', 'Sector', 'Category', 'CycTier', 'TierName', '₹ Price', 'T-Score', 'Alpha',
                      'Grade', 'Pattern', 'Signals', 'Best', 'Δ Total', 'Δ Week', 'Streak', 'Wks',
                      'Trend', 'Velocity', 'Consistency', 'Positional', 'RetQuality', 'Price Signal', 'Decay', 'Sect Alpha',
                      'Conviction', 'Risk-Adj', 'Exit Risk', 'Hot Streak',
