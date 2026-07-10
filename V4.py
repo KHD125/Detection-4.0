@@ -4522,24 +4522,31 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                 '<div style="margin:0 0 8px;padding:6px 8px;'
                 'background:rgba(88,166,255,0.06);border:1px solid rgba(88,166,255,0.18);'
                 'border-radius:6px;font-size:0.72rem;color:#58a6ff;">'
-                '🌐 <b>Engine A: Sector Rotation Intelligence</b><br/>'
-                'Ranks sectors by rolling RS (60% 4W + 40% 13W median returns). '
-                'Q3/Q4 sectors get conviction downgrade warnings.'
+                '🌐 <b>Engine A: Industry Rotation Intelligence</b><br/>'
+                'Ranks <i>industries</i> (not sectors) by rolling RS. '
+                'Full-universe validated dispersion. n≥5 included, '
+                '✅=high confidence (n≥15), ⚠️=watch (n=5-14).'
                 '</div>', unsafe_allow_html=True)
 
-            # Compute Sector RS from traj_df (uses ret_30d & ret_3m columns)
+            # Compute Industry RS from traj_df (uses ret_30d & ret_3m columns)
+            # KEY: Groups by 'industry' not 'sector' — industry-level dispersion
+            # is where the real edge lives (validated on full 2119-ticker universe).
+            # Min-N=5 (statistical minimum for meaningful median). Many sub-industries
+            # have only 1-4 stocks — those are excluded. N count shown in display
+            # so user can judge reliability visually; n≥15 = high confidence.
             _sector_rs_df = pd.DataFrame()
-            _has_rs_cols = ('sector' in traj_df.columns and
+            _rs_group_col = 'industry' if 'industry' in traj_df.columns else 'sector'
+            _has_rs_cols = (_rs_group_col in traj_df.columns and
                            ('ret_30d' in traj_df.columns or 'ret_3m' in traj_df.columns))
             if _has_rs_cols:
                 _rs_data = []
-                for _sec, _grp in traj_df.groupby('sector'):
-                    if pd.isna(_sec) or str(_sec).strip() == '' or len(_grp) < 3:
+                for _ind, _grp in traj_df.groupby(_rs_group_col):
+                    if pd.isna(_ind) or str(_ind).strip() == '' or len(_grp) < 5:
                         continue
                     _r4 = _grp['ret_30d'].median() if 'ret_30d' in _grp.columns else 0.0
                     _r13 = _grp['ret_3m'].median() if 'ret_3m' in _grp.columns else 0.0
                     _rs_comp = 0.6 * float(_r4 or 0) + 0.4 * float(_r13 or 0)
-                    _rs_data.append({'sector': _sec, 'rs_4w': round(float(_r4 or 0), 2),
+                    _rs_data.append({'industry': _ind, 'rs_4w': round(float(_r4 or 0), 2),
                                      'rs_13w': round(float(_r13 or 0), 2),
                                      'rs_composite': round(_rs_comp, 2),
                                      'n_stocks': len(_grp)})
@@ -4560,30 +4567,32 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                             _quartiles.append('Q4')
                     _sector_rs_df['quartile'] = _quartiles
 
-            # Display top 5 sectors
+            # Display top 5 industries
             if not _sector_rs_df.empty:
                 _top5 = _sector_rs_df.head(5)
                 _q_emoji = {'Q1': '🟢', 'Q2': '🟡', 'Q3': '🟠', 'Q4': '🔴'}
                 _top5_lines = []
                 for _, _r in _top5.iterrows():
                     _qe = _q_emoji.get(_r['quartile'], '•')
+                    _n = int(_r['n_stocks'])
+                    _conf = '✅' if _n >= 15 else '⚠️'
                     _top5_lines.append(
-                        f"{_qe} **{_r['sector'][:25]}** — RS: {_r['rs_composite']:+.1f} ({_r['n_stocks']} stocks)")
+                        f"{_qe} **{str(_r['industry'])[:28]}** — RS: {_r['rs_composite']:+.1f} ({_n}t {_conf})")
                 st.markdown('\n'.join(_top5_lines))
 
-                # Sector Quartile Filter
+                # Industry Quartile Filter
                 _q_options = ['Q1 — Top 25%', 'Q2 — Upper Mid', 'Q3 — Lower Mid', 'Q4 — Bottom 25%']
                 if 'sb_sector_rs_quartile' in st.session_state:
                     _valid_sq = [q for q in st.session_state['sb_sector_rs_quartile'] if q in _q_options]
                     if _valid_sq != list(st.session_state['sb_sector_rs_quartile']):
                         st.session_state['sb_sector_rs_quartile'] = _valid_sq
                 selected_sector_rs_q = st.multiselect(
-                    "📊 Sector Quartile Filter", _q_options, default=[],
+                    "📊 Industry Quartile Filter", _q_options, default=[],
                     placeholder="All quartiles", key='sb_sector_rs_quartile',
-                    help="Filter stocks by their sector's relative strength quartile")
+                    help="Filter stocks by their industry's relative strength quartile (n≥5 floor)")
             else:
                 selected_sector_rs_q = []
-                st.info("Sector RS data not available (missing ret_30d/ret_3m columns)")
+                st.info("Industry RS: not enough data (need industry col + ret_30d/ret_3m, n≥5/industry)")
 
             st.markdown("---")
 
@@ -4592,9 +4601,11 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                 '<div style="margin:0 0 8px;padding:6px 8px;'
                 'background:rgba(248,81,73,0.06);border:1px solid rgba(248,81,73,0.18);'
                 'border-radius:6px;font-size:0.72rem;color:#f85149;">'
-                '🎣 <b>Engine B: Bottom Fisher</b><br/>'
-                'Dormant 90%% of the time. Activates ONLY when market prints '
-                'STRONG_DOWNTREND. Hunts volume capitulation in deepest drawdowns.'
+                '🎣 <b>Engine B: Bottom Fisher (Quality-Gated)</b><br/>'
+                'Dormant 90%% of the time. STRONG_DOWNTREND + deepest drawdown '
+                '+ VOL EXPLOSION/CAPITULATION trigger.<br/>'
+                '<b>Quality Gate:</b> Excludes Rotation Leader (−α both cohorts), '
+                '52W High Approach (−9.36% in losers), bare Golden Cross (−4.97% in losers).'
                 '</div>', unsafe_allow_html=True)
 
             # Check macro activation: is the market in distress?
@@ -4634,7 +4645,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
         # FOOTER — version
         # ═══════════════════════════════════════════════
         st.markdown('<div class="sb-divider"></div>', unsafe_allow_html=True)
-        st.caption("v10.4 · Dual Engine · Data-Driven")
+        st.caption("v10.5 · Dual Engine · Quality-Gated · Industry RS")
 
     # ── Return filter dict ──
     return {
@@ -4798,16 +4809,25 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     _rs_df = filters.get('sector_rs_data')
     _bf_active = filters.get('bottom_fisher_active', False)
 
-    # 10A — Sector RS Quartile filter (Engine A)
+    # 10A — Industry RS Quartile filter (Engine A)
+    # Uses 'industry' column (not sector) — validated dispersion lives at industry level
     _rs_q_sel = filters.get('sector_rs_quartile') or []
-    if _rs_q_sel and _rs_df is not None and not _rs_df.empty and 'sector' in df.columns:
+    _rs_match_col = 'industry' if 'industry' in df.columns else 'sector'
+    if _rs_q_sel and _rs_df is not None and not _rs_df.empty and _rs_match_col in df.columns:
         _q_map = {'Q1 — Top 25%': 'Q1', 'Q2 — Upper Mid': 'Q2',
                   'Q3 — Lower Mid': 'Q3', 'Q4 — Bottom 25%': 'Q4'}
         _sel_qs = [_q_map.get(q, q) for q in _rs_q_sel]
-        _valid_secs = _rs_df[_rs_df['quartile'].isin(_sel_qs)]['sector'].tolist()
-        df = df[df['sector'].isin(_valid_secs)]
+        _rs_col_name = 'industry' if 'industry' in _rs_df.columns else 'sector'
+        _valid_inds = _rs_df[_rs_df['quartile'].isin(_sel_qs)][_rs_col_name].tolist()
+        df = df[df[_rs_match_col].isin(_valid_inds)]
 
-    # 10B — Bottom Fisher (Engine B)
+    # 10B — Bottom Fisher (Engine B) — with Quality Gate
+    # Quality Gate rationale (from full-universe validation):
+    #   - Rotation Leader: negative alpha in BOTH winner & loser cohorts
+    #   - 52W High Approach: −9.36% avg, 10.5% hit rate in losers
+    #   - Bare Golden Cross: flips from +1.03% (winners) to −4.97% (losers)
+    #   These are reversal-shaped signals that are actually traps — a dying
+    #   stock produces convincing bounce patterns more often than a healthy one.
     if _em in ('B — Bottom Fisher', 'A+B — Both Engines') and _bf_active:
         if _em == 'B — Bottom Fisher':
             # Pure Bottom Fisher mode — hard filter to ONLY capitulation setups
@@ -4818,12 +4838,26 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                 _bf_mask = _bf_mask & (df['from_high_pct'] <= -30)
             if 'latest_patterns' in df.columns:
                 _lp_bf = df['latest_patterns'].fillna('').astype(str).str.lower()
+                # Require VOL EXPLOSION or CAPITULATION trigger
                 _bf_mask = _bf_mask & (
                     _lp_bf.str.contains('vol explosion', regex=False, na=False) |
                     _lp_bf.str.contains('capitulation', regex=False, na=False))
+                # QUALITY GATE — exclude proven trap patterns
+                _bf_trap = (
+                    _lp_bf.str.contains('rotation leader', regex=False, na=False) |
+                    _lp_bf.str.contains('52w high approach', regex=False, na=False))
+                # Bare Golden Cross = has golden cross but NO other momentum signal
+                _has_gc = _lp_bf.str.contains('golden cross', regex=False, na=False)
+                _has_mom = (
+                    _lp_bf.str.contains('momentum wave', regex=False, na=False) |
+                    _lp_bf.str.contains('premium momentum', regex=False, na=False) |
+                    _lp_bf.str.contains('acceleration', regex=False, na=False) |
+                    _lp_bf.str.contains('vol explosion', regex=False, na=False))
+                _bare_gc = _has_gc & (~_has_mom)
+                _bf_mask = _bf_mask & (~_bf_trap) & (~_bare_gc)
             df = df[_bf_mask]
         else:
-            # A+B mode — Union: keep Engine A results + add Bottom Fisher matches
+            # A+B mode — Union: Engine A results + quality-gated Bottom Fisher
             _bf_mask = pd.Series(False, index=df.index)
             if 'market_state' in df.columns:
                 _bf_ms = df['market_state'] == 'STRONG_DOWNTREND'
@@ -4838,12 +4872,22 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                 _bf_pat = (
                     _lp_bf2.str.contains('vol explosion', regex=False, na=False) |
                     _lp_bf2.str.contains('capitulation', regex=False, na=False))
+                # Same quality gate as pure B mode
+                _bf_trap2 = (
+                    _lp_bf2.str.contains('rotation leader', regex=False, na=False) |
+                    _lp_bf2.str.contains('52w high approach', regex=False, na=False))
+                _has_gc2 = _lp_bf2.str.contains('golden cross', regex=False, na=False)
+                _has_mom2 = (
+                    _lp_bf2.str.contains('momentum wave', regex=False, na=False) |
+                    _lp_bf2.str.contains('premium momentum', regex=False, na=False) |
+                    _lp_bf2.str.contains('acceleration', regex=False, na=False) |
+                    _lp_bf2.str.contains('vol explosion', regex=False, na=False))
+                _bare_gc2 = _has_gc2 & (~_has_mom2)
+                _bf_pat = _bf_pat & (~_bf_trap2) & (~_bare_gc2)
             else:
                 _bf_pat = pd.Series(False, index=df.index)
             _bf_mask = _bf_ms & _bf_fh & _bf_pat
-            # A+B: df already has Engine A stocks; we just ensure BF stocks are also included
-            # (they likely already are since we haven't excluded them — no further action needed)
-            # The BF mask is informational for tagging in the display layer
+            # A+B: Engine A stocks already in df; BF mask is informational for display tagging
 
     # ── § 2: Scoring & Quality ──
     # T-Score range
