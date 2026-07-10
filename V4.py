@@ -4629,7 +4629,7 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                 # Count qualifying stocks
                 _bf_preview = traj_df.copy()
                 if 'market_state' in _bf_preview.columns:
-                    _bf_preview = _bf_preview[_bf_preview['market_state'] == 'STRONG_DOWNTREND']
+                    _bf_preview = _bf_preview[_bf_preview['market_state'].isin(['STRONG_DOWNTREND', 'BOUNCE'])]
                 if 'from_high_pct' in _bf_preview.columns:
                     _bf_preview = _bf_preview[_bf_preview['from_high_pct'] <= -30]
                 if 'latest_patterns' in _bf_preview.columns:
@@ -4866,7 +4866,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
             # Pure Bottom Fisher mode — hard filter to ONLY capitulation setups
             _bf_mask = pd.Series(True, index=df.index)
             if 'market_state' in df.columns:
-                _bf_mask = _bf_mask & (df['market_state'] == 'STRONG_DOWNTREND')
+                _bf_mask = _bf_mask & df['market_state'].isin(['STRONG_DOWNTREND', 'BOUNCE'])
             if 'from_high_pct' in df.columns:
                 _bf_mask = _bf_mask & (df['from_high_pct'] <= -30)
             if 'latest_patterns' in df.columns:
@@ -4899,7 +4899,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
             # A+B mode — Union: Engine A results + quality-gated Bottom Fisher
             _bf_mask = pd.Series(False, index=df.index)
             if 'market_state' in df.columns:
-                _bf_ms = df['market_state'] == 'STRONG_DOWNTREND'
+                _bf_ms = df['market_state'].isin(['STRONG_DOWNTREND', 'BOUNCE'])
             else:
                 _bf_ms = pd.Series(False, index=df.index)
             if 'from_high_pct' in df.columns:
