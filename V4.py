@@ -4501,19 +4501,19 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
             selected_edge_engines = [_engine_key_map[d] for d in selected_engine_disp]
 
         # ═══════════════════════════════════════════════
-        # § 10  DUAL ENGINE — Sector Rotation + Bottom Fisher
+        # § 10  TRINITY ENGINE — Sector Rotation + Bottom Fisher + Dip Buyer
         # ═══════════════════════════════════════════════
-        with st.expander("🚀 Dual Engine", expanded=False):
-            st.caption("Engine A: Sector Rotation | Engine B: Bottom Fisher")
+        with st.expander("🚀 Trinity Engine", expanded=False):
+            st.caption("A: Sector Rotation | B: Bottom Fisher | C: Winner Dip Buyer")
 
             # ── 10A: Engine Mode Selector ──
             selected_engine_mode = st.radio(
                 "🔧 Active Engine",
-                ['A — Sector Rotation', 'B — Bottom Fisher', 'A+B — Both Engines'],
+                ['A — Sector Rotation', 'B — Bottom Fisher', 'C — Winner Dip Buyer', 'A+B+C — All Engines'],
                 index=0, key='sb_engine_mode',
                 help="A: Ranks sectors by relative strength, gates signals through sector quality.\n"
-                     "B: Dormant 90%% of the time. Activates ONLY during macro STRONG_DOWNTREND "
-                     "to hunt volume capitulation in deepest drawdowns.")
+                     "B: Hunts capitulation in deep crashes (Dormant 90% of time).\n"
+                     "C: Hunts healthy pullbacks in strong structural winners.")
 
             st.markdown("---")
 
@@ -4671,8 +4671,51 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                                     _fh_val = _bf_preview.iloc[_i-1]['from_high_pct']
                                     _fh = f" ({_fh_val:+.0f}% from high)"
                                 st.markdown(f"`{_i}.` **{_tk}**{_fh}")
-            elif selected_engine_mode in ('B — Bottom Fisher', 'A+B — Both Engines'):
+            elif selected_engine_mode in ('B — Bottom Fisher', 'A+B+C — All Engines'):
                 st.warning("Engine B selected but not active. Force override or wait for macro distress.")
+
+            # ── 10D: Engine C — Winner Dip Buyer Preview ──
+            if selected_engine_mode in ('C — Winner Dip Buyer', 'A+B+C — All Engines'):
+                st.markdown("---")
+                _ec_preview = traj_df.copy()
+                if 'market_state' in _ec_preview.columns:
+                    _ec_preview = _ec_preview[_ec_preview['market_state'].isin(['PULLBACK', 'ROTATION'])]
+                if 'from_high_pct' in _ec_preview.columns:
+                    _ec_preview = _ec_preview[(_ec_preview['from_high_pct'] >= -25) & (_ec_preview['from_high_pct'] <= -5)]
+                if 'category' in _ec_preview.columns:
+                    _ec_preview = _ec_preview[_ec_preview['category'] != 'Micro Cap']
+                if 'latest_patterns' in _ec_preview.columns:
+                    _lp_ec = _ec_preview['latest_patterns'].fillna('').astype(str).str.lower()
+                    # Positive triggers (quiet accumulation / support)
+                    _ec_trigger = (
+                        _lp_ec.str.contains('stealth', regex=False, na=False) |
+                        _lp_ec.str.contains('range compress', regex=False, na=False) |
+                        _lp_ec.str.contains('pullback support', regex=False, na=False)
+                    )
+                    # Negative triggers (noisy distribution / panic)
+                    _ec_trap = (
+                        _lp_ec.str.contains('vol explosion', regex=False, na=False) |
+                        _lp_ec.str.contains('distribution', regex=False, na=False) |
+                        _lp_ec.str.contains('velocity squeeze', regex=False, na=False)
+                    )
+                    _ec_preview = _ec_preview[_ec_trigger & (~_ec_trap)]
+                
+                _ec_count = len(_ec_preview)
+                if _ec_count > 0:
+                    st.success(f"🧲 **{_ec_count} stocks** qualify for Winner Dip Buyer")
+                    _tk_col = 'ticker' if 'ticker' in _ec_preview.columns else (
+                        'company_name' if 'company_name' in _ec_preview.columns else None)
+                    if _tk_col:
+                        _ec_tickers = _ec_preview[_tk_col].tolist()
+                        with st.expander(f"👁️ View {_ec_count} Dip Buyer picks", expanded=True):
+                            for _i, _tk in enumerate(_ec_tickers, 1):
+                                _fh = ''
+                                if 'from_high_pct' in _ec_preview.columns:
+                                    _fh_val = _ec_preview.iloc[_i-1]['from_high_pct']
+                                    _fh = f" ({_fh_val:+.0f}% from high)"
+                                st.markdown(f"`{_i}.` **{_tk}**{_fh}")
+                else:
+                    st.info("🧲 **0 stocks** qualify for Winner Dip Buyer currently.")
 
         # ═══════════════════════════════════════════════
         # FOOTER — version
@@ -4861,7 +4904,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     #   - Bare Golden Cross: flips from +1.03% (winners) to −4.97% (losers)
     #   These are reversal-shaped signals that are actually traps — a dying
     #   stock produces convincing bounce patterns more often than a healthy one.
-    if _em in ('B — Bottom Fisher', 'A+B — Both Engines') and _bf_active:
+    if _em in ('B — Bottom Fisher', 'A+B+C — All Engines') and _bf_active:
         if _em == 'B — Bottom Fisher':
             # Pure Bottom Fisher mode — hard filter to ONLY capitulation setups
             _bf_mask = pd.Series(True, index=df.index)
@@ -4896,7 +4939,7 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                 _bf_mask = _bf_mask & (df['category'] != 'Micro Cap')
             df = df[_bf_mask]
         else:
-            # A+B mode — Union: Engine A results + quality-gated Bottom Fisher
+            # A+B+C mode — Union: Engine A results + quality-gated Bottom Fisher
             _bf_mask = pd.Series(False, index=df.index)
             if 'market_state' in df.columns:
                 _bf_ms = df['market_state'].isin(['STRONG_DOWNTREND', 'BOUNCE'])
@@ -4932,7 +4975,50 @@ def apply_filters(traj_df: pd.DataFrame, filters: dict) -> pd.DataFrame:
             if 'category' in df.columns:
                 _bf_pat = _bf_pat & (df['category'] != 'Micro Cap')
             _bf_mask = _bf_ms & _bf_fh & _bf_pat
-            # A+B: Engine A stocks already in df; BF mask is informational for display tagging
+            # A+B+C: Engine A stocks already in df; BF mask is informational for display tagging
+            
+    # 10C — Winner Dip Buyer (Engine C) — Pullback Support
+    _ec_mask = pd.Series(False, index=df.index)
+    if _em in ('C — Winner Dip Buyer', 'A+B+C — All Engines'):
+        _ec_m = pd.Series(True, index=df.index)
+        if 'market_state' in df.columns:
+            _ec_m = _ec_m & df['market_state'].isin(['PULLBACK', 'ROTATION'])
+        if 'from_high_pct' in df.columns:
+            _ec_m = _ec_m & (df['from_high_pct'] >= -25) & (df['from_high_pct'] <= -5)
+        if 'category' in df.columns:
+            _ec_m = _ec_m & (df['category'] != 'Micro Cap')
+        if 'latest_patterns' in df.columns:
+            _lp_ec = df['latest_patterns'].fillna('').astype(str).str.lower()
+            # Triggers
+            _ec_trigger = (
+                _lp_ec.str.contains('stealth', regex=False, na=False) |
+                _lp_ec.str.contains('range compress', regex=False, na=False) |
+                _lp_ec.str.contains('pullback support', regex=False, na=False))
+            # Traps (Volume Explosion / Distribution / Squeeze)
+            _ec_trap = (
+                _lp_ec.str.contains('vol explosion', regex=False, na=False) |
+                _lp_ec.str.contains('distribution', regex=False, na=False) |
+                _lp_ec.str.contains('velocity squeeze', regex=False, na=False))
+            _ec_m = _ec_m & _ec_trigger & (~_ec_trap)
+        
+        if _em == 'C — Winner Dip Buyer':
+            df = df[_ec_m]
+        else:
+            _ec_mask = _ec_m
+            
+    # Assign informational masks to dataframe for downstream UI display
+    if 'is_bf_qualifier' not in df.columns:
+        # Default all False if mask wasn't generated
+        df['is_bf_qualifier'] = False
+    if 'is_ec_qualifier' not in df.columns:
+        df['is_ec_qualifier'] = False
+        
+    if _em in ('A+B — Both Engines', 'A+B+C — All Engines') and '_bf_mask' in locals():
+        # Only label them if they actually exist in the current df (Engine A filtered)
+        df['is_bf_qualifier'] = _bf_mask
+        
+    if _em == 'A+B+C — All Engines' and '_ec_mask' in locals():
+        df['is_ec_qualifier'] = _ec_mask
 
     # ── § 2: Scoring & Quality ──
     # T-Score range
@@ -5579,7 +5665,8 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
                          ('company_name', ''), ('category', ''), ('industry', ''),
                          ('alpha_score', 0), ('conviction', 0), ('tmi', 0),
                          ('rally_gain', 0), ('rally_stage', 'UNKNOWN'),
-                         ('rally_leg_pct', 0), ('confidence', 0)]:
+                         ('rally_leg_pct', 0), ('confidence', 0),
+                         ('is_bf_qualifier', False), ('is_ec_qualifier', False)]:
         if col not in all_local.columns:
             all_local[col] = default
         if col not in filtered_local.columns:
@@ -5711,12 +5798,26 @@ def render_rankings_tab(filtered_df: pd.DataFrame, all_df: pd.DataFrame,
         col_name, ascending = 'trajectory_score', False
     display_df = filtered_local.sort_values(col_name, ascending=ascending).head(display_n).reset_index(drop=True)
     table_n = len(display_df)
+    
+    # ── Engine B/C Visual Tags ──
+    # Append the respective emojis to the ticker column so they stand out in the grid
+    if 'is_bf_qualifier' in display_df.columns:
+        _bf_idx = display_df['is_bf_qualifier'] == True
+        if _bf_idx.any():
+            display_df.loc[_bf_idx, 'ticker'] = display_df.loc[_bf_idx, 'ticker'].astype(str) + ' 🎣'
+            
+    if 'is_ec_qualifier' in display_df.columns:
+        _ec_idx = display_df['is_ec_qualifier'] == True
+        if _ec_idx.any():
+            display_df.loc[_ec_idx, 'ticker'] = display_df.loc[_ec_idx, 'ticker'].astype(str) + ' 🧲'
 
     # ── Add latest price from histories (B2: use NaN for missing so cell shows blank, not fake ₹0.00) ──
     _price_map = {}
-    for _tk in display_df['ticker'].astype(str):
-        _prices = histories.get(_tk, {}).get('prices', [])
-        _price_map[_tk] = round(float(_prices[-1]), 2) if _prices else float('nan')
+    # Clean the ticker keys for price map (remove the appended emojis)
+    for _tk_raw in display_df['ticker'].astype(str):
+        _tk_clean = _tk_raw.replace(' 🎣', '').replace(' 🧲', '').strip()
+        _prices = histories.get(_tk_clean, {}).get('prices', [])
+        _price_map[_tk_raw] = round(float(_prices[-1]), 2) if _prices else float('nan')
     display_df['latest_price'] = display_df['ticker'].astype(str).map(_price_map)
 
     # ── B3: Coerce numeric format columns to safe defaults so "%+d" / "%d" don't choke on NaN ──
