@@ -4637,7 +4637,34 @@ def render_sidebar(metadata: dict, traj_df: pd.DataFrame):
                     _bf_preview = _bf_preview[
                         _lp_bf.str.contains('vol explosion', regex=False, na=False) |
                         _lp_bf.str.contains('capitulation', regex=False, na=False)]
-                st.success(f"🎣 **{len(_bf_preview)} stocks** qualify for Bottom Fisher")
+                    # Apply Quality Gate to preview so counts match
+                    _bf_trap = (
+                        _lp_bf.str.contains('rotation leader', regex=False, na=False) |
+                        _lp_bf.str.contains('52w high approach', regex=False, na=False))
+                    _has_gc = _lp_bf.str.contains('golden cross', regex=False, na=False)
+                    _has_mom = (
+                        _lp_bf.str.contains('momentum wave', regex=False, na=False) |
+                        _lp_bf.str.contains('premium momentum', regex=False, na=False) |
+                        _lp_bf.str.contains('acceleration', regex=False, na=False) |
+                        _lp_bf.str.contains('vol explosion', regex=False, na=False))
+                    _bare_gc = _has_gc & (~_has_mom)
+                    _bf_preview = _bf_preview[(~_bf_trap) & (~_bare_gc)]
+                
+                _bf_count = len(_bf_preview)
+                st.success(f"🎣 **{_bf_count} stocks** qualify for Bottom Fisher")
+                # Show the actual qualifying tickers so user can see them
+                if _bf_count > 0:
+                    _tk_col = 'ticker' if 'ticker' in _bf_preview.columns else (
+                        'company_name' if 'company_name' in _bf_preview.columns else None)
+                    if _tk_col:
+                        _bf_tickers = _bf_preview[_tk_col].tolist()
+                        with st.expander(f"👁️ View {_bf_count} Bottom Fisher picks", expanded=True):
+                            for _i, _tk in enumerate(_bf_tickers, 1):
+                                _fh = ''
+                                if 'from_high_pct' in _bf_preview.columns:
+                                    _fh_val = _bf_preview.iloc[_i-1]['from_high_pct']
+                                    _fh = f" ({_fh_val:+.0f}% from high)"
+                                st.markdown(f"`{_i}.` **{_tk}**{_fh}")
             elif selected_engine_mode in ('B — Bottom Fisher', 'A+B — Both Engines'):
                 st.warning("Engine B selected but not active. Force override or wait for macro distress.")
 
